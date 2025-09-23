@@ -1145,6 +1145,7 @@ int lightweight_vio::Estimator::create_initial_map_points(std::shared_ptr<Frame>
             Eigen::Vector3f world_pos = world_point.head<3>();
             
             auto map_point = std::make_shared<MapPoint>(world_pos);
+            map_point->add_observation(frame, i);
             m_map_points.push_back(map_point);
             
             // Associate with frame
