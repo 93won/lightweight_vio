@@ -292,6 +292,21 @@ bool TUMPlayer::setup_ground_truth_matching(const std::string& dataset_path,
                                              const std::vector<ImageData>& image_data,
                                              size_t& start_frame_idx, 
                                              size_t& end_frame_idx) {
+    // Check if this is a room sequence (only room sequences have ground truth)
+    std::string dataset_name = dataset_path;
+    size_t last_slash = dataset_name.find_last_of("/\\");
+    if (last_slash != std::string::npos) {
+        dataset_name = dataset_name.substr(last_slash + 1);
+    }
+    
+    // Only room sequences have ground truth data in TUM VI dataset
+    if (dataset_name.find("room") == std::string::npos) {
+        spdlog::info("[TUMPlayer] Non-room sequence detected ({}), skipping ground truth loading", dataset_name);
+        return false;
+    }
+    
+    spdlog::info("[TUMPlayer] Room sequence detected ({}), attempting to load ground truth", dataset_name);
+    
     // Load ground truth data
     if (!TUMUtils::load_ground_truth(dataset_path)) {
         spdlog::warn("[TUMPlayer] Failed to load ground truth data, continuing without it");
