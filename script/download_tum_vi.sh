@@ -5,7 +5,7 @@
 # Usage: ./download_tum_vi.sh [dataset_name] [download_directory]
 # If no arguments provided, shows available datasets and prompts for selection
 
-set -e  # Exit on any error
+# set -e  # Exit on any error - disabled for download_all mode to continue on errors
 
 # Color codes for output
 RED='\033[0;31m'
@@ -131,6 +131,7 @@ download_dataset() {
     local url="${BASE_URL}/dataset-${dataset_name}_512_16.tar"
     local filename="dataset-${dataset_name}_512_16.tar"
     local full_path="${download_dir}/${filename}"
+    local extracted_folder="${download_dir}/dataset-${dataset_name}_512_16"
     
     echo -e "${GREEN}Downloading TUM VI dataset: ${dataset_name}${NC}"
     echo -e "${BLUE}URL: ${url}${NC}"
@@ -140,18 +141,50 @@ download_dataset() {
     # Create download directory if it doesn't exist
     mkdir -p "$download_dir"
     
+    # Check if extracted folder already exists
+    if [[ -d "$extracted_folder" ]]; then
+        echo -e "${YELLOW}Dataset already extracted: ${extracted_folder}${NC}"
+        echo -e "${BLUE}Skipping download of ${dataset_name}${NC}"
+        echo -e "${GREEN}✓ Dataset already available: ${dataset_name}${NC}"
+        return 0
+    fi
+    
     # Check if file already exists
     if [[ -f "$full_path" ]]; then
-        echo -e "${YELLOW}File already exists: ${full_path}${NC}"
+        echo -e "${YELLOW}Tar file already exists: ${full_path}${NC}"
         if [[ "$auto_mode" == "false" ]]; then
             read -p "Do you want to re-download? (y/N): " -n 1 -r
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 echo -e "${BLUE}Skipping download of ${dataset_name}${NC}"
+                # Try to extract existing tar file
+                echo -e "${GREEN}Extracting existing ${filename}...${NC}"
+                cd "$download_dir"
+                if tar -xf "$filename"; then
+                    echo -e "${GREEN}✓ Successfully extracted: ${filename}${NC}"
+                    if [[ "$auto_mode" == "true" ]]; then
+                        rm "$filename"
+                        echo -e "${GREEN}✓ Removed tar file: ${filename}${NC}"
+                    fi
+                else
+                    echo -e "${RED}✗ Failed to extract: ${filename}${NC}"
+                    return 1
+                fi
                 return 0
             fi
         else
             echo -e "${BLUE}Auto mode: Skipping download of ${dataset_name}${NC}"
+            # Try to extract existing tar file
+            echo -e "${GREEN}Auto mode: Extracting existing ${filename}...${NC}"
+            cd "$download_dir"
+            if tar -xf "$filename"; then
+                echo -e "${GREEN}✓ Successfully extracted: ${filename}${NC}"
+                rm "$filename"
+                echo -e "${GREEN}✓ Removed tar file: ${filename}${NC}"
+            else
+                echo -e "${RED}✗ Failed to extract: ${filename}${NC}"
+                return 1
+            fi
             return 0
         fi
     fi
@@ -217,25 +250,52 @@ download_all_datasets() {
     
     local failed_downloads=()
     local successful_downloads=0
+    local skipped_downloads=0
+    local total_datasets=${#DATASETS[@]}
     
-    for dataset in "${DATASETS[@]}"; do
-        echo -e "${YELLOW}[$(date)] Downloading dataset $((successful_downloads + 1))/${#DATASETS[@]}: ${dataset}${NC}"
+    for i in "${!DATASETS[@]}"; do
+        local dataset="${DATASETS[$i]}"
+        local current_num=$((i + 1))
         
-        if download_dataset "$dataset" "$download_dir" "true"; then
-            ((successful_downloads++))
-        else
-            failed_downloads+=("$dataset")
-            echo -e "${RED}Failed to download: ${dataset}${NC}"
+        echo -e "${YELLOW}[$(date)] Processing dataset ${current_num}/${total_datasets}: ${dataset}${NC}"
+        
+        # Call download_dataset and capture its return code
+        local extracted_folder="${download_dir}/dataset-${dataset}_512_16"
+        local was_already_extracted=false
+        
+        # Check if already extracted before calling download_dataset
+        if [[ -d "$extracted_folder" ]]; then
+            was_already_extracted=true
         fi
         
-        echo -e "${BLUE}Progress: ${successful_downloads} successful, ${#failed_downloads[@]} failed${NC}"
+        # Call download function and continue regardless of result
+        download_dataset "$dataset" "$download_dir" "true" || true
+        
+        # Update counters based on result
+        if [[ -d "$extracted_folder" ]]; then
+            if [[ "$was_already_extracted" == "true" ]]; then
+                ((skipped_downloads++))
+                echo -e "${BLUE}⊘ Skipped (already exists): ${dataset}${NC}"
+            else
+                ((successful_downloads++))
+                echo -e "${GREEN}✓ Successfully processed: ${dataset}${NC}"
+            fi
+        else
+            failed_downloads+=("$dataset")
+            echo -e "${RED}✗ Failed: ${dataset}${NC}"
+        fi
+        
+        echo -e "${BLUE}Progress: ${successful_downloads} new, ${skipped_downloads} skipped, ${#failed_downloads[@]} failed${NC}"
         echo "----------------------------------------"
+        echo ""
     done
     
     echo ""
-    echo -e "${GREEN}Download Summary:${NC}"
-    echo -e "${GREEN}Successful downloads: ${successful_downloads}${NC}"
+    echo -e "${GREEN}=== FINAL SUMMARY ===${NC}"
+    echo -e "${GREEN}New downloads: ${successful_downloads}${NC}"
+    echo -e "${BLUE}Skipped (already existed): ${skipped_downloads}${NC}"
     echo -e "${RED}Failed downloads: ${#failed_downloads[@]}${NC}"
+    echo -e "${YELLOW}Total processed: ${total_datasets}${NC}"
     
     if [[ ${#failed_downloads[@]} -gt 0 ]]; then
         echo -e "${RED}Failed datasets:${NC}"
@@ -252,22 +312,12 @@ main() {
     
     # Parse arguments
     if [[ $# -eq 0 ]]; then
-        # Interactive mode
-        print_usage
-        show_datasets
-        echo -e "${YELLOW}Enter dataset name (or 'all' for all datasets): ${NC}"
-        read -r DATASET_NAME
-        
-        if [[ -z "$DATASET_NAME" ]]; then
-            echo -e "${RED}No dataset name provided. Exiting.${NC}"
-            exit 1
-        fi
-        
-        echo -e "${YELLOW}Enter download directory (press Enter for current directory): ${NC}"
-        read -r USER_DIR
-        if [[ -n "$USER_DIR" ]]; then
-            DOWNLOAD_DIR="$USER_DIR"
-        fi
+        # Default to downloading all datasets
+        echo -e "${GREEN}No arguments provided - downloading ALL TUM VI datasets by default${NC}"
+        echo -e "${YELLOW}This will download ~150GB+ of data. Press Ctrl+C to cancel within 5 seconds...${NC}"
+        sleep 5
+        DATASET_NAME="all"
+        DOWNLOAD_DIR="."
         
     elif [[ $# -eq 1 ]]; then
         # Check if argument is a path (contains / or starts with . or ~) or looks like a directory

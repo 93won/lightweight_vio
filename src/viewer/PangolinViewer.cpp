@@ -59,7 +59,7 @@ PangolinViewer::PangolinViewer()
     , m_trajectory_width(2.0f)
     , m_frame_id("ui.Frame ID", 0)
     , m_successful_matches("ui.Num Tracked Map Points", 0, 0, get_max_features_from_config())
-    , m_auto_mode_checkbox("ui.1. Auto Mode", false, true)
+    , m_auto_mode_checkbox("ui.1. Auto Mode", true, true)
     , m_show_map_point_indices("ui.2. Show Map Point IDs", true, true)
     , m_show_accumulated_map_points("ui.3. Show Local Map Points", true, true)
     , m_show_current_map_points("ui.4. Show Current Map Points", true, true)
@@ -86,7 +86,7 @@ bool PangolinViewer::initialize(int width, int height) {
     m_window_height = height;
     
     // Create OpenGL window with Pangolin
-    pangolin::CreateWindowAndBind("Lightweight Visual Odometry", width, height);
+    pangolin::CreateWindowAndBind("Visual-Inertial Odometry", width, height);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -220,7 +220,7 @@ void PangolinViewer::setup_panels() {
 
 void PangolinViewer::shutdown() {
     if (m_initialized) {
-        pangolin::DestroyWindow("Lightweight Visual Odometry");
+        pangolin::DestroyWindow("Visual-Inertial Odometry");
         m_initialized = false;
     }
 }
@@ -329,34 +329,56 @@ void PangolinViewer::render() {
 
     // Follow Frame mode
     if (m_follow_frame_checkbox && !m_current_camera_pose.isZero()) {
-        // Get current camera position and orientation
+        // Get current camera position
         Eigen::Vector3f cam_pos = m_current_camera_pose.block<3, 1>(0, 3);
-        Eigen::Matrix3f cam_rot = m_current_camera_pose.block<3, 3>(0, 0);
         
-        // Camera coordinate system: X-right, Y-down, Z-forward
-        Eigen::Vector3f cam_forward = cam_rot.col(2);   // +Z axis (forward direction)
-        Eigen::Vector3f cam_right = cam_rot.col(0);     // +X axis (right direction) 
-        Eigen::Vector3f cam_up = -cam_rot.col(1);       // -Y axis (up direction, camera Y is down)
+        // Use Follow method which allows user zoom/pan while following the position
+        pangolin::OpenGlMatrix follow_matrix = pangolin::OpenGlMatrix::Translate(
+            cam_pos.x(), cam_pos.y(), cam_pos.z()
+        );
         
-        // Position the viewer camera behind and slightly above the current camera
-        float follow_distance = 10.0f;  // Distance behind the camera (increased from 1.0f)
-        float follow_height = 0.4f;    // Height above the camera (slightly increased from 0.3f)
-        Eigen::Vector3f viewer_pos = cam_pos - cam_forward * follow_distance + cam_up * follow_height;
+        // Follow with smooth following (allows user interaction like zoom/pan)
+        s_cam.Follow(follow_matrix, true); // true = follow rotation smoothly
         
-        // Look at a point in front of the current camera
-        float look_ahead_distance = 2.0f;  // Look ahead distance
-        Eigen::Vector3f look_at = cam_pos + cam_forward * look_ahead_distance;
+        // Set a good default view on first activation or when camera pose changes significantly
+        static Eigen::Vector3f last_pos = cam_pos;
+        static bool first_activation = true;
         
-        // Smooth camera up vector (use world up with slight forward bias)
-        Eigen::Vector3f world_up(0.0f, 0.0f, 1.0f);  // World Z-up
-        Eigen::Vector3f smooth_up = (cam_up * 0.7f + world_up * 0.3f).normalized();
-        
-        // Update the camera view with tracking
-        s_cam.SetModelViewMatrix(pangolin::ModelViewLookAt(
-            viewer_pos.x(), viewer_pos.y(), viewer_pos.z(),     // Viewer camera position (behind and above)
-            look_at.x(), look_at.y(), look_at.z(),              // Look ahead of the current camera
-            smooth_up.x(), smooth_up.y(), smooth_up.z()         // Smooth up vector
-        ));
+        float pos_change = (cam_pos - last_pos).norm();
+        if (first_activation || pos_change > 5.0f) { // Reset view if large position change
+            Eigen::Matrix3f cam_rot = m_current_camera_pose.block<3, 3>(0, 0);
+            Eigen::Vector3f cam_forward = cam_rot.col(2);
+            Eigen::Vector3f cam_up = -cam_rot.col(1);
+            
+            // Position viewer behind and slightly above the camera (30 degree angle)
+            float follow_distance = 4.0f;  // Distance behind camera (reduced from 8.0f)
+            float follow_height = 2.3f;    // Height above camera (4 * tan(30°) ≈ 2.3)
+            Eigen::Vector3f viewer_pos = cam_pos - cam_forward * follow_distance + Eigen::Vector3f(0.0f, 0.0f, follow_height);
+            
+            // Look at the camera position with fixed world up vector
+            // Make sure the look direction and up vector are not parallel
+            Eigen::Vector3f look_direction = (cam_pos - viewer_pos).normalized();
+            Eigen::Vector3f world_up(0.0f, 0.0f, 1.0f);
+            
+            // Check if look direction and up vector are too parallel (within 5 degrees)
+            float dot_product = std::abs(look_direction.dot(world_up));
+            if (dot_product > 0.996f) { // cos(5°) ≈ 0.996
+                // Use a slightly different up vector to avoid parallel vectors
+                world_up = Eigen::Vector3f(0.1f, 0.0f, 1.0f).normalized();
+            }
+            
+            pangolin::OpenGlMatrix view_matrix = pangolin::ModelViewLookAt(
+                viewer_pos.x(), viewer_pos.y(), viewer_pos.z(),
+                cam_pos.x(), cam_pos.y(), cam_pos.z(),
+                world_up.x(), world_up.y(), world_up.z()
+            );
+            s_cam.SetModelViewMatrix(view_matrix);
+            
+            first_activation = false;
+            last_pos = cam_pos;
+        } else {
+            last_pos = cam_pos;
+        }
     }
 
     // Legacy follow camera mode (fallback)

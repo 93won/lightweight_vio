@@ -96,9 +96,10 @@ The repository includes a convenience script to download TUM VI datasets automat
 
 ```bash
 chmod +x script/download_tum_vi.sh
-./script/download_tum_vi.sh /path/to/datasets    # Download ALL datasets
+./script/download_tum_vi.sh                      # Download ALL datasets (default)
+./script/download_tum_vi.sh /path/to/datasets    # Download ALL datasets to specified path
 ./script/download_tum_vi.sh corridor1            # Download specific dataset
-./script/download_tum_vi.sh                      # Interactive mode
+./script/download_tum_vi.sh corridor1 /path/to/datasets  # Download specific dataset to path
 ```
 
 This will download sequences into the specified directory structure:
