@@ -1,8 +1,17 @@
-# Downloading the EuRoC Dataset
+# Downloading Datasets
 
-This guide explains how to download the EuRoC MAV dataset required for testing the stereo visual-inertial odometry system.
+This guide explains how to download the datasets required for testing the stereo visual-inertial odometry system.
 
-## EuRoC Dataset Overview
+## Supported Datasets
+
+- **EuRoC MAV Dataset**: Indoor drone flights with stereo cameras and IMU
+- **TUM VI Dataset**: Indoor/outdoor sequences with fisheye stereo cameras and IMU
+
+---
+
+## EuRoC Dataset
+
+### EuRoC Dataset Overview
 
 The EuRoC MAV (European Robotics Challenge Micro Aerial Vehicle) dataset contains stereo camera images, IMU data, and ground truth trajectory data from a micro aerial vehicle flying in indoor environments. It includes 11 sequences total with different difficulty levels.
 
@@ -71,6 +80,79 @@ MH_01_easy/
 
 Make sure you have sufficient disk space before downloading all sequences.
 
+---
+
+## TUM VI Dataset
+
+### TUM VI Dataset Overview
+
+The TUM VI (Technical University of Munich Visual-Inertial) dataset contains stereo fisheye camera images, IMU data, and ground truth trajectory data recorded in various indoor and outdoor environments. It includes 28 sequences total with different environments and motion patterns.
+
+### Download Options
+
+#### Option 1: Using the Provided Script (Recommended)
+
+The repository includes a convenience script to download TUM VI datasets automatically.
+
+```bash
+chmod +x script/download_tum_vi.sh
+./script/download_tum_vi.sh /path/to/datasets    # Download ALL datasets
+./script/download_tum_vi.sh corridor1            # Download specific dataset
+./script/download_tum_vi.sh                      # Interactive mode
+```
+
+This will download sequences into the specified directory structure:
+```
+/path/to/datasets/
+├── dataset-corridor1_512_16/
+├── dataset-corridor2_512_16/
+├── dataset-room1_512_16/
+├── dataset-magistrale1_512_16/
+└── ...
+```
+
+#### Option 2: Manual Download
+
+You can manually download specific sequences from the [TUM VI dataset website](https://vision.in.tum.de/data/datasets/visual-inertial-dataset).
+
+1. Visit the TUM VI dataset page
+2. Download the desired sequences in EuRoC format (512x512)
+3. Extract the files into the appropriate directory structure
+
+### Dataset Structure
+
+Each TUM VI sequence follows the EuRoC format:
+```
+dataset-corridor1_512_16/
+├── mav0/
+│   ├── cam0/           # Left fisheye camera images
+│   │   ├── data/
+│   │   └── data.csv
+│   ├── cam1/           # Right fisheye camera images
+│   │   ├── data/
+│   │   └── data.csv
+│   ├── imu0/           # IMU data
+│   │   └── data.csv
+│   └── mocap0/         # Ground truth poses
+│       └── data.csv
+```
+
+### Available Sequences
+
+**Environment Types:**
+- **Corridor sequences** (5): corridor1-5 - Indoor office corridors
+- **Room sequences** (6): room1-6 - Indoor rooms and labs  
+- **Magistrale sequences** (6): magistrale1-6 - Indoor large halls
+- **Outdoor sequences** (8): outdoors1-8 - Outdoor campus environments
+- **Slides sequences** (3): slides1-3 - Presentation rooms
+
+### Storage Requirements
+
+- **Single sequence**: ~1-4 GB
+- **All sequences**: ~150+ GB
+
+Make sure you have sufficient disk space before downloading all sequences.
+
 ## Troubleshooting
 
 ### Download Issues
@@ -81,6 +163,7 @@ Make sure you have sufficient disk space before downloading all sequences.
 ### Script Permissions
 ```bash
 chmod +x script/download_euroc.sh
+chmod +x script/download_tum_vi.sh
 ```
 
 ## Next Steps

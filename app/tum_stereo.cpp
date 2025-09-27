@@ -1,8 +1,8 @@
 /**
- * @file      euroc_stereo.cpp
- * @brief     Main application entry point for the EuRoC stereo pipeline (VO/VIO configurable via YAML).
+ * @file      tum_stereo.cpp
+ * @brief     Main application entry point for the TUM VI stereo pipeline (VO/VIO configurable via YAML).
  * @author    Seungwon Choi (csw3575@snu.ac.kr)
- * @date      2025-09-16
+ * @date      2024-09-27
  * @copyright Copyright (c) 2025 Seungwon Choi. All rights reserved.
  *
  * @par License
@@ -11,7 +11,7 @@
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
-#include "player/euroc_player.h"
+#include "player/tum_player.h"
 #include <util/Config.h>
 #include <glog/logging.h>
 
@@ -29,19 +29,19 @@ int main(int argc, char* argv[]) {
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
     
     if (argc != 3) {
-        spdlog::error("Usage: {} <config_file_path> <euroc_dataset_path>", argv[0]);
-        spdlog::error("Example: {} config/euroc_vio.yaml /path/to/MH_01_easy", argv[0]);
-        spdlog::error("         {} config/euroc_vo.yaml /path/to/MH_01_easy", argv[0]);
+        spdlog::error("Usage: {} <config_file_path> <tum_dataset_path>", argv[0]);
+        spdlog::error("Example: {} config/tum_vio.yaml /path/to/dataset-room1_512_16", argv[0]);
+        spdlog::error("         {} config/tum_vo.yaml /path/to/dataset-room1_512_16", argv[0]);
         return -1;
     }
     
     // Setup configuration
-    EurocPlayerConfig config;
+    TUMPlayerConfig config;
     config.config_path = argv[1];
     config.dataset_path = argv[2];
     config.enable_statistics = true;          // File statistics
     config.enable_console_statistics = true;  // Console statistics
-    config.step_mode = false;
+    config.step_mode = true;  // Enable step mode like euroc_player
     
     // Load config to get all settings from YAML
     Config::getInstance().load(argv[1]);
@@ -58,8 +58,8 @@ int main(int argc, char* argv[]) {
     spdlog::info("  viewer_width: {}", config.viewer_width);
     spdlog::info("  viewer_height: {}", config.viewer_height);
     
-    // Create and run EuRoC player
-    EurocPlayer player;
+    // Create and run TUM VI player
+    TUMPlayer player;
     auto result = player.run(config);
     
     if (result.success) {

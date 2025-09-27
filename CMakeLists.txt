@@ -94,6 +94,22 @@ add_executable(euroc_stereo app/euroc_stereo.cpp
     src/viewer/PangolinViewer.cpp
 )
 
+# Add TUM VI stereo pipeline (VO/VIO configurable via YAML)
+add_executable(tum_stereo app/tum_stereo.cpp 
+    app/player/tum_player.cpp
+    src/database/Frame.cpp
+    src/database/Feature.cpp
+    src/database/MapPoint.cpp
+    src/processing/FeatureTracker.cpp
+    src/processing/Optimizer.cpp
+    src/processing/Estimator.cpp
+    src/processing/IMUHandler.cpp
+    src/optimization/Factors.cpp
+    src/optimization/Parameters.cpp
+    src/util/Config.cpp
+    src/util/TUMUtils.cpp
+    src/viewer/PangolinViewer.cpp
+)
 
 # Link libraries
 target_link_libraries(euroc_stereo 
@@ -112,12 +128,30 @@ target_link_libraries(euroc_stereo
     pango_image
 )
 
+target_link_libraries(tum_stereo 
+    ${OpenCV_LIBS} 
+    yaml-cpp 
+    OpenGL::GL 
+    GLEW::GLEW
+    Threads::Threads
+    ceres
+    Sophus::Sophus
+    spdlog::spdlog
+    pango_display
+    pango_windowing
+    pango_opengl
+    pango_core
+    pango_image
+)
+
 # Link Eigen3 to all targets
 if(TARGET Eigen3::Eigen)
     target_link_libraries(euroc_stereo Eigen3::Eigen)
+    target_link_libraries(tum_stereo Eigen3::Eigen)
 else()
     # Fallback for older CMake versions
     target_include_directories(euroc_stereo PRIVATE ${EIGEN3_INCLUDE_DIR})
+    target_include_directories(tum_stereo PRIVATE ${EIGEN3_INCLUDE_DIR})
 endif()
 
 # Print OpenCV information for debugging
