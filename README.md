@@ -15,7 +15,7 @@ This project is licensed under the 🚀MIT License🚀 - see the [LICENSE](LICEN
 
 ## Dataset Download
 
-📁 **[Dataset Download Guide](docs/Download_Dataset.md)** - EuRoC dataset download and preparation
+📁 **[Dataset Download Guide](docs/Download_Dataset.md)** - Dataset download and preparation
 
 ## Running the Application
 
