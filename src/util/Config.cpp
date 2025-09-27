@@ -169,6 +169,22 @@ bool Config::load(const std::string& config_file) {
         m_image_height = (int)camera["image_height"];
         m_border_size = (int)camera["border_size"];
         
+        // Load camera model
+        cv::FileNode camera_model_node = camera["model"];
+        if (!camera_model_node.empty()) {
+            std::string model_str = (std::string)camera_model_node;
+            if (model_str == "fisheye") {
+                m_camera_model = CameraModel::FISHEYE;
+                std::cout << "[Config] Camera model: FISHEYE" << std::endl;
+            } else {
+                m_camera_model = CameraModel::PINHOLE; // default
+                std::cout << "[Config] Camera model: PINHOLE" << std::endl;
+            }
+        } else {
+            m_camera_model = CameraModel::PINHOLE; // default
+            std::cout << "[Config] Camera model: PINHOLE (default)" << std::endl;
+        }
+        
         // Load camera intrinsics
         cv::FileNode left_intrinsics = camera["left_intrinsics"];
         cv::FileNode right_intrinsics = camera["right_intrinsics"];

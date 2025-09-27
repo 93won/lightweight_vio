@@ -16,6 +16,10 @@
 
 namespace lightweight_vio
 {
+    enum class CameraModel {
+        PINHOLE,
+        FISHEYE
+    };
 
     class Config
     {
@@ -44,6 +48,7 @@ namespace lightweight_vio
         cv::Mat right_camera_matrix() const { return m_right_camera_matrix.clone(); }
         cv::Mat left_dist_coeffs() const { return m_left_dist_coeffs.clone(); }
         cv::Mat right_dist_coeffs() const { return m_right_dist_coeffs.clone(); }
+        CameraModel get_camera_model() const { return m_camera_model; }
         cv::Mat left_to_right_transform() const { return m_T_left_right.clone(); }
         cv::Mat left_T_BC() const { return m_T_left_BC.clone(); }
         cv::Mat right_T_BC() const { return m_T_right_BC.clone(); }
@@ -164,6 +169,9 @@ namespace lightweight_vio
         cv::Mat m_T_left_right;
         cv::Mat m_T_left_BC;
         cv::Mat m_T_right_BC;
+        
+        // Camera model type
+        CameraModel m_camera_model = CameraModel::PINHOLE;
     };
 
 } // namespace lightweight_vio

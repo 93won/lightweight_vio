@@ -207,6 +207,10 @@ private:
     
     // Camera extrinsics (body to camera transformation)
     Eigen::Matrix4d m_T_CB;      // Transform from camera to body frame (T_CB = T_BC.inverse())
+    
+    // Undistorted image border limits (calculated from image corners)
+    double m_undist_x_min, m_undist_x_max;  // X bounds in undistorted coordinates
+    double m_undist_y_min, m_undist_y_max;  // Y bounds in undistorted coordinates
 
     // Pose (camera pose in world frame)
     Eigen::Matrix3f m_rotation;    // Rotation matrix (DEPRECATED - use reference keyframe approach)
@@ -248,7 +252,9 @@ private:
 
     // Helper functions
     void update_feature_index();
-    bool is_in_border(const cv::Point2f& point, int border_size = 1) const;
+    bool is_in_border(const cv::Point2f& point) const;
+    void calculate_border();  // Calculate undistorted image borders
+    void undistort_corner_points(const std::vector<cv::Point2f>& corner_points);  // Helper for calculate_border
     
     // Internal processing methods
     void extract_features(int max_features = 150);

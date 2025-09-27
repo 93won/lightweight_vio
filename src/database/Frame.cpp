@@ -63,6 +63,9 @@ Frame::Frame(long long timestamp, int frame_id)
         // Initialize with identity transform (will be updated by tracking)
         m_T_relative_from_ref = Eigen::Matrix4f::Identity();
     }
+    
+    // Calculate undistorted border limits
+    calculate_border();
 }
 
 Frame::Frame(long long timestamp, int frame_id, 
@@ -99,6 +102,9 @@ Frame::Frame(long long timestamp, int frame_id,
         m_reference_keyframe = m_last_keyframe;
         m_T_relative_from_ref = Eigen::Matrix4f::Identity();
     }
+    
+    // Calculate undistorted border limits
+    calculate_border();
 }
 
 Frame::Frame(long long timestamp, int frame_id,
@@ -138,6 +144,9 @@ Frame::Frame(long long timestamp, int frame_id,
         m_reference_keyframe = m_last_keyframe;
         m_T_relative_from_ref = Eigen::Matrix4f::Identity();
     }
+    
+    // Calculate undistorted border limits
+    calculate_border();
 }
 
 Frame::Frame(long long timestamp, int frame_id,
@@ -201,6 +210,9 @@ Frame::Frame(long long timestamp, int frame_id,
         m_reference_keyframe = m_last_keyframe;
         m_T_relative_from_ref = Eigen::Matrix4f::Identity();
     }
+    
+    // Calculate undistorted border limits
+    calculate_border();
 }
 
 void Frame::set_pose(const Eigen::Matrix3f& rotation, const Eigen::Vector3f& translation) {
@@ -556,11 +568,15 @@ void Frame::update_feature_index() {
     }
 }
 
-bool Frame::is_in_border(const cv::Point2f& point, int border_size) const {
-    int img_x = cvRound(point.x);
-    int img_y = cvRound(point.y);
-    return border_size <= img_x && img_x < m_left_image.cols - border_size && 
-           border_size <= img_y && img_y < m_left_image.rows - border_size;
+bool Frame::is_in_border(const cv::Point2f& point) const {
+    // First undistort the input point to get its undistorted coordinates
+    cv::Point2f undistorted_point = undistort_point(point);
+    
+    // Check against undistorted boundaries
+    return (m_undist_x_min <= undistorted_point.x && 
+            undistorted_point.x <= m_undist_x_max && 
+            m_undist_y_min <= undistorted_point.y && 
+            undistorted_point.y <= m_undist_y_max);
 }
 
 void Frame::compute_stereo_matches() {
@@ -761,8 +777,14 @@ void Frame::undistort_features() {
             std::vector<cv::Point2f> distorted_pts = {pixel_pt};
             std::vector<cv::Point2f> undistorted_pts;
             
-            // Undistort to normalized coordinates (output is already normalized)
-            cv::undistortPoints(distorted_pts, undistorted_pts, left_K, left_D);
+            // Undistort to normalized coordinates based on camera model
+            if (config.get_camera_model() == CameraModel::FISHEYE) {
+                // Use fisheye undistortion
+                cv::fisheye::undistortPoints(distorted_pts, undistorted_pts, left_K, left_D);
+            } else {
+                // Use standard pinhole undistortion (default)
+                cv::undistortPoints(distorted_pts, undistorted_pts, left_K, left_D);
+            }
 
             
             // Convert normalized coordinates back to pixel coordinates for set_undistorted_coord
@@ -786,7 +808,14 @@ void Frame::undistort_features() {
                     std::vector<cv::Point2f> right_distorted = {right_pixel};
                     std::vector<cv::Point2f> right_undistorted;
                     
-                    cv::undistortPoints(right_distorted, right_undistorted, right_K, right_D);
+                    // For right camera, undistort to normalized coordinates based on camera model
+                    if (config.get_camera_model() == CameraModel::FISHEYE) {
+                        // Use fisheye undistortion
+                        cv::fisheye::undistortPoints(right_distorted, right_undistorted, right_K, right_D);
+                    } else {
+                        // Use standard pinhole undistortion (default)
+                        cv::undistortPoints(right_distorted, right_undistorted, right_K, right_D);
+                    }
                     
                     // Also calculate normalized coordinates for right camera
                     Eigen::Vector2f right_normalized(right_undistorted[0].x, right_undistorted[0].y);
@@ -1408,4 +1437,86 @@ void Frame::initialize_velocity_from_preintegration() {
     
 }
 
+void Frame::calculate_border() {
+    // Get image dimensions
+    int img_width = m_left_image.cols;
+    int img_height = m_left_image.rows;
+    
+    // Define the four corner points of the image
+    std::vector<cv::Point2f> corner_points = {
+        cv::Point2f(0, 0),                           // Top-left
+        cv::Point2f(img_width - 1, 0),               // Top-right  
+        cv::Point2f(0, img_height - 1),              // Bottom-left
+        cv::Point2f(img_width - 1, img_height - 1)   // Bottom-right
+    };
+    
+    undistort_corner_points(corner_points);
+
+    spdlog::info("[BORDER] Frame {}: Undistorted borders - X:[{:.1f}, {:.1f}], Y:[{:.1f}, {:.1f}]", 
+                m_frame_id, m_undist_x_min, m_undist_x_max, m_undist_y_min, m_undist_y_max);
+}
+
+void Frame::undistort_corner_points(const std::vector<cv::Point2f>& corner_points) {
+    const Config& config = Config::getInstance();
+    cv::Mat left_K = config.left_camera_matrix();
+    cv::Mat left_D = config.left_dist_coeffs();
+    
+    if (left_K.empty() || left_D.empty()) {
+        std::cerr << "Camera calibration not available for border calculation" << std::endl;
+        // Fallback to simple pixel boundaries
+        m_undist_x_min = 0;
+        m_undist_x_max = m_left_image.cols - 1;
+        m_undist_y_min = 0; 
+        m_undist_y_max = m_left_image.rows - 1;
+        return;
+    }
+    
+    // Undistort corner points to normalized coordinates
+    std::vector<cv::Point2f> undistorted_corners;
+    
+    if (config.get_camera_model() == CameraModel::FISHEYE) {
+        // Use fisheye undistortion
+        cv::fisheye::undistortPoints(corner_points, undistorted_corners, left_K, left_D);
+    } else {
+        // Use standard pinhole undistortion (default)
+        cv::undistortPoints(corner_points, undistorted_corners, left_K, left_D);
+    }
+    
+    // Convert back to pixel coordinates to get undistorted boundary
+    std::vector<cv::Point2f> undistorted_pixels;
+    for (const auto& norm_pt : undistorted_corners) {
+        cv::Point2f pixel_pt;
+        pixel_pt.x = norm_pt.x * m_fx + m_cx;
+        pixel_pt.y = norm_pt.y * m_fy + m_cy;
+        undistorted_pixels.push_back(pixel_pt);
+    }
+    
+    // Find min/max bounds from all undistorted corner points
+    m_undist_x_min = undistorted_pixels[0].x;
+    m_undist_x_max = undistorted_pixels[0].x;
+    m_undist_y_min = undistorted_pixels[0].y;
+    m_undist_y_max = undistorted_pixels[0].y;
+    
+    for (const auto& pt : undistorted_pixels) {
+        m_undist_x_min = std::min(m_undist_x_min, static_cast<double>(pt.x));
+        m_undist_x_max = std::max(m_undist_x_max, static_cast<double>(pt.x));
+        m_undist_y_min = std::min(m_undist_y_min, static_cast<double>(pt.y));
+        m_undist_y_max = std::max(m_undist_y_max, static_cast<double>(pt.y));
+    }
+    
+    // Debug output for border calculation
+    const Config& config_debug = Config::getInstance();
+    if (config_debug.m_enable_debug_output) {
+        spdlog::info("[BORDER] Frame {}: Undistorted borders - X:[{:.1f}, {:.1f}], Y:[{:.1f}, {:.1f}]", 
+                    m_frame_id, m_undist_x_min, m_undist_x_max, m_undist_y_min, m_undist_y_max);
+        
+        // Show original vs undistorted corner coordinates
+        for (size_t i = 0; i < corner_points.size(); ++i) {
+            spdlog::debug("[BORDER] Corner {}: ({:.1f},{:.1f}) -> normalized:({:.3f},{:.3f}) -> undist_pixel:({:.1f},{:.1f})", 
+                         i, corner_points[i].x, corner_points[i].y,
+                         undistorted_corners[i].x, undistorted_corners[i].y,
+                         undistorted_pixels[i].x, undistorted_pixels[i].y);
+        }
+    }
+}
 } // namespace lightweight_vio

@@ -20,6 +20,7 @@ performance:
 # Camera Parameters (EuRoC dataset specific)
 # Image dimensions and processing parameters
 camera:
+  model: "pinhole"            # Camera model: "pinhole" or "fisheye"
   image_width: 752            # Image width in pixels (EuRoC standard)
   image_height: 480           # Image height in pixels (EuRoC standard)  
   border_size: 1              # Border size to exclude from feature detection (pixels)
