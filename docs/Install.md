@@ -24,8 +24,8 @@ This method builds the project and all its dependencies directly on your system.
 ### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/93won/lightweight_vo.git
-cd lightweight_vo
+git clone https://github.com/93won/lightweight_vio.git
+cd lightweight_vio
 ```
 
 ### Step 2: Run the Build Script
@@ -71,8 +71,8 @@ Follow the official Docker installation guide for your distribution.
 ### Step 2: Clone the Repository
 
 ```bash
-git clone https://github.com/93won/lightweight_vo.git
-cd lightweight_vo
+git clone https://github.com/93won/lightweight_vio.git
+cd lightweight_vio
 ```
 
 ### Step 3: Build the Docker Image
