@@ -6,6 +6,7 @@ This guide explains how to download the datasets required for testing the stereo
 
 - **EuRoC MAV Dataset**: Indoor drone flights with stereo cameras and IMU
 - **TUM VI Dataset**: Indoor/outdoor sequences with fisheye stereo cameras and IMU
+- **TUM RGB-D Dataset**: Indoor sequences with RGB-D cameras for visual odometry
 
 ---
 
@@ -80,8 +81,6 @@ MH_01_easy/
 
 Make sure you have sufficient disk space before downloading all sequences.
 
----
-
 ## TUM VI Dataset
 
 ### TUM VI Dataset Overview
@@ -154,6 +153,80 @@ dataset-corridor1_512_16/
 
 Make sure you have sufficient disk space before downloading all sequences.
 
+
+
+---
+
+## TUM RGB-D Dataset
+
+### TUM RGB-D Dataset Overview
+
+The TUM RGB-D dataset contains RGB-D camera sequences with ground truth trajectory data recorded in various indoor environments. It includes multiple sequences with different objects, lighting conditions, and camera motions, specifically designed for RGB-D SLAM and visual odometry evaluation.
+
+### Download Options
+
+#### Option 1: Official TUM RGB-D Dataset
+
+You can download the complete dataset from the official TUM RGB-D dataset website:
+
+**Official Dataset:** [https://cvg.cit.tum.de/data/datasets/rgbd-dataset](https://cvg.cit.tum.de/data/datasets/rgbd-dataset)
+
+The dataset includes various sequences such as:
+- `rgbd_dataset_freiburg1_xyz` - Simple translational motions
+- `rgbd_dataset_freiburg1_rpy` - Simple rotational motions  
+- `rgbd_dataset_freiburg2_desk` - Desk scenes with objects
+- `rgbd_dataset_freiburg3_office` - Office environments
+
+#### Option 2: Quick Start Sample Dataset
+
+For quick testing and evaluation, we provide a sample dataset ready to use:
+
+**Sample Dataset:** [https://drive.google.com/file/d/1HRWnBq9kq-m4gkjVuLdKUHeaZcztacIs/view?usp=sharing](https://drive.google.com/file/d/1HRWnBq9kq-m4gkjVuLdKUHeaZcztacIs/view?usp=sharing)
+
+This sample includes the `rgbd_dataset_freiburg2_desk` sequence, which is ideal for testing RGB-D visual odometry functionality.
+
+### Dataset Structure
+
+Each RGB-D sequence contains the following files:
+```
+rgbd_dataset_freiburg2_desk/
+├── rgb.txt              # RGB image timestamps and filenames
+├── depth.txt            # Depth image timestamps and filenames
+├── groundtruth.txt      # Ground truth trajectory
+├── rgb/                 # RGB images
+│   ├── 1311868164.363181.png
+│   ├── 1311868164.399026.png
+│   └── ...
+└── depth/               # Depth images
+    ├── 1311868164.374026.png
+    ├── 1311868164.407668.png
+    └── ...
+```
+
+### Storage Requirements
+
+- **Single sequence**: ~500MB - 2GB depending on sequence length
+- **Complete dataset**: ~30+ GB
+
+### Installation Instructions
+
+1. Download the dataset from either source above
+2. Extract to your preferred dataset directory (e.g., `/home/user/data/RGBD/`)
+3. The directory structure should look like:
+```
+/home/user/data/RGBD/
+└── rgbd_dataset_freiburg2_desk/
+    ├── rgb.txt
+    ├── depth.txt
+    ├── groundtruth.txt
+    ├── rgb/
+    └── depth/
+```
+
+---
+
+
+
 ## Troubleshooting
 
 ### Download Issues
@@ -166,6 +239,10 @@ Make sure you have sufficient disk space before downloading all sequences.
 chmod +x script/download_euroc.sh
 chmod +x script/download_tum_vi.sh
 ```
+
+
+
+
 
 ## Next Steps
 

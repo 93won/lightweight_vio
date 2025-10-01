@@ -55,6 +55,18 @@ public:
     // Simple stereo constructor - uses Config for camera parameters
     Frame(long long timestamp, int frame_id,
           const cv::Mat& left_image, const cv::Mat& right_image);
+          
+    // RGB-D constructor - uses Config for camera parameters
+    Frame(long long timestamp, int frame_id,
+          const cv::Mat& rgb_image, const cv::Mat& depth_image, 
+          double depth_scale_factor);
+          
+    // RGB-D constructor with manual camera parameters
+    Frame(long long timestamp, int frame_id,
+          const cv::Mat& gray_image, const cv::Mat& rgb_image, const cv::Mat& depth_image,
+          double fx, double fy, double cx, double cy, 
+          const std::vector<double>& distortion_coeffs,
+          double depth_scale_factor);
     ~Frame(); // Use explicit destructor
 
 
@@ -64,12 +76,31 @@ public:
     const cv::Mat& get_left_image() const { return m_left_image; }
     const cv::Mat& get_right_image() const { return m_right_image; }
     const cv::Mat& get_image() const { return m_left_image; } // For backward compatibility
+    
+    // RGB-D specific getters
+    const cv::Mat& get_depth_image() const { return m_depth_image; }
+    const cv::Mat& get_rgb_image() const { return m_rgb_image; }  // Get original RGB image
+    double get_depth_scale_factor() const { return m_depth_scale_factor; }
+    bool is_rgbd() const { return m_is_rgbd; }
+    double get_rgbd_depth(const cv::Point2f& pixel) const;  // Get depth from RGB-D depth image
+    
+    // RGB-D dense point cloud generation
+    struct ColorPoint {
+        Eigen::Vector3f position;
+        Eigen::Vector3i color;  // RGB values [0-255]
+    };
+    std::vector<ColorPoint> generate_dense_color_cloud(int downsample_factor = 4) const;
+    
+    // Get cached dense color cloud (generated at frame creation for RGB-D frames)
+    const std::vector<ColorPoint>& get_dense_color_cloud() const { return m_dense_color_cloud; }
+    bool has_dense_color_cloud() const { return !m_dense_color_cloud.empty(); }
+    
     const std::vector<std::shared_ptr<Feature>>& get_features() const { return m_features; }
     std::vector<std::shared_ptr<Feature>>& get_features_mutable() { return m_features; }
     const Eigen::Matrix3f& get_rotation() const { return m_rotation; }
     const Eigen::Vector3f& get_translation() const { return m_translation; }
     bool is_keyframe() const { return m_is_keyframe; }
-    bool is_stereo() const { return true; } // Always stereo
+    bool is_stereo() const { return !m_is_rgbd; } // Stereo only if not RGB-D
 
     // Pose management
     void set_pose(const Eigen::Matrix3f& rotation, const Eigen::Vector3f& translation);
@@ -96,7 +127,13 @@ public:
     double get_dt_from_last_keyframe() const { return m_dt_from_last_keyframe; }
     void set_dt_from_last_keyframe(double dt) { m_dt_from_last_keyframe = dt; }
     
-    void set_keyframe(bool is_keyframe) { m_is_keyframe = is_keyframe; }
+    void set_keyframe(bool is_keyframe) { 
+        m_is_keyframe = is_keyframe; 
+        // Generate dense color cloud when frame becomes a keyframe (RGB-D only)
+        if (is_keyframe && m_is_rgbd && m_dense_color_cloud.empty()) {
+            m_dense_color_cloud = generate_dense_color_cloud(1);  // Downsample by factor 4
+        }
+    }
     
     // Reference keyframe management
     void set_reference_keyframe(std::shared_ptr<Frame> reference_kf);
@@ -142,6 +179,9 @@ public:
     
     // Undistort a single point
     cv::Point2f undistort_point(const cv::Point2f& distorted_point) const;
+    
+    // RGB-D specific operations
+    cv::Mat get_undistorted_rgb_image() const;  // Get undistorted RGB image for point cloud generation
 
     // Feature operations
     void extract_stereo_features(int max_features = 150);
@@ -185,6 +225,15 @@ private:
     int m_frame_id;               // Unique frame ID
     cv::Mat m_left_image;          // Left camera grayscale image
     cv::Mat m_right_image;         // Right camera grayscale image (always provided)
+    
+    // RGB-D specific members
+    cv::Mat m_depth_image;         // Depth image (for RGB-D cameras)
+    cv::Mat m_rgb_image;           // Original RGB image (for RGB-D cameras, before grayscale conversion)
+    double m_depth_scale_factor;   // Scale factor to convert depth pixels to meters
+    bool m_is_rgbd;               // Whether this frame is from RGB-D camera
+    
+    // Cached dense color cloud (generated once at frame creation for RGB-D frames)
+    std::vector<ColorPoint> m_dense_color_cloud;
     
     // Features
     std::vector<std::shared_ptr<Feature>> m_features;      // Left camera features

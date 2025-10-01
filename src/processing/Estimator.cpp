@@ -322,6 +322,182 @@ Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, 
     return result;
 }
 
+// RGB-D process_frame implementation
+Estimator::EstimationResult Estimator::process_frame(const cv::Mat& rgb_image, const cv::Mat& depth_image, 
+                                                    long long timestamp, double depth_scale_factor) {
+    auto total_start_time = std::chrono::high_resolution_clock::now();
+    
+    EstimationResult result;
+    result.success = false;
+    
+    // Frame processing starts
+    if (Config::getInstance().m_enable_debug_output) {
+        std::cout<<"\n";
+        spdlog::info("============================== RGB-D Frame {} ==============================\n", m_frame_id_counter);
+    }
+
+    // Increment frame counter since last keyframe for every new frame
+    m_frames_since_last_keyframe++;
+    
+    // Create RGB-D frame using provided depth scale factor
+    m_current_frame = create_frame(rgb_image, depth_image, timestamp, depth_scale_factor);
+    if (!m_current_frame) {
+        spdlog::error("Failed to create RGB-D frame!");
+        return result;
+    }
+    
+    // ===== FRAME TRACKING =====
+    if (m_previous_frame) {
+        // Predict initial pose using motion model
+        predict_state();
+        
+        // Track features from previous frame using FeatureTracker
+        // FeatureTracker handles both tracking and map point association/creation
+        m_feature_tracker->track_features(m_current_frame, m_previous_frame);
+        
+        result.num_features = m_current_frame->get_feature_count();
+        
+        // Compute depth for all features (RGB-D uses depth image directly)
+        m_current_frame->compute_stereo_depth();
+        
+        // Count how many features have associated map points
+        int num_tracked_with_map_points = count_features_with_map_points(m_current_frame);
+        
+        if (Config::getInstance().m_enable_debug_output) {
+            spdlog::info("[TRACKING] {} features tracked, {} with map points", 
+                        result.num_features, num_tracked_with_map_points);
+        }
+        
+        if (num_tracked_with_map_points > 0) {
+            if (num_tracked_with_map_points >= 5) {
+                // Pose optimization
+                auto opt_result = optimize_pose(m_current_frame);
+                
+                result.success = opt_result.success;
+                result.num_inliers = opt_result.num_inliers;
+                result.num_outliers = opt_result.num_outliers;
+                
+                if (opt_result.success) {
+                    m_current_pose = opt_result.optimized_pose;
+                    m_current_frame->set_Twb(m_current_pose);
+                    
+                    if (Config::getInstance().m_enable_debug_output) {
+                        spdlog::info("[POSE_OPT] ✅ Optimization successful: {} inliers, {} outliers", 
+                                      opt_result.num_inliers, opt_result.num_outliers);
+                    }
+                } else {
+                    if (Config::getInstance().m_enable_debug_output) {
+                        spdlog::warn("[POSE_OPT] ❌ Optimization failed - keeping previous pose");
+                    }
+                    // Keep predicted pose from motion model
+                    m_current_pose = m_current_frame->get_Twb();
+                }
+                
+                // Update transform from last frame for velocity estimation
+                update_transform_from_last();
+            } else {
+                if (Config::getInstance().m_enable_debug_output) {
+                    spdlog::warn("[POSE_OPT] ⚠️ Not enough map point associations for optimization: {} (need ≥5)", num_tracked_with_map_points);
+                }
+                // Fallback: use current pose as-is
+                m_current_pose = m_current_frame->get_Twb();
+                
+                // Update transform from last frame for velocity estimation
+                update_transform_from_last();
+                
+                result.success = true;
+                result.num_inliers = num_tracked_with_map_points;
+                result.num_outliers = 0;
+            }
+        } else {
+            // No tracking, keep previous pose (already set in create_frame)
+            m_current_pose = m_current_frame->get_Twb();
+            
+            // Update transform from last frame for velocity estimation (even if tracking failed)
+            update_transform_from_last();
+            
+            result.success = false;
+        }
+        
+        // Decide whether to create keyframe
+        bool is_keyframe = should_create_keyframe(m_current_frame);
+        
+        // Only create new map points for keyframes to avoid trajectory drift
+        if (is_keyframe) {
+            int new_map_points = create_new_map_points(m_current_frame);
+            result.num_new_map_points = new_map_points;
+            
+            // Create keyframe
+            create_keyframe(m_current_frame);
+            m_frames_since_last_keyframe = 0;  // Reset to 0 after creating keyframe
+            
+            if (Config::getInstance().m_enable_debug_output) {
+                spdlog::info("[MAP_POINTS] Created {} new map points by new keyframe insertion", new_map_points);
+            }
+        } else {
+            result.num_new_map_points = 0;
+        }
+        
+        // Count tracked features and features with map points
+        result.num_tracked_features = m_current_frame->get_feature_count();
+        result.num_features_with_map_points = count_features_with_map_points(m_current_frame);
+        
+        // Compute reprojection error statistics for keyframes
+        if (is_keyframe && count_features_with_map_points(m_current_frame) > 5) {
+            compute_reprojection_error_statistics(m_current_frame);
+        }
+        
+    } else {
+        // First frame - extract features and create initial map points
+        spdlog::debug("Processing first RGB-D frame");
+        
+        m_feature_tracker->track_features(m_current_frame, nullptr);
+        result.num_features = m_current_frame->get_feature_count();
+        
+        // Compute depth for all features (RGB-D uses depth image directly)
+        m_current_frame->compute_stereo_depth();
+        
+        // First frame - keep identity pose (already set in create_frame)
+        m_current_pose = m_current_frame->get_Twb();
+        
+        // Increment frame counter (first frame processing)
+        m_frames_since_last_keyframe++;
+        
+        // Create initial map points from RGB-D
+        int initial_map_points = create_initial_map_points(m_current_frame);
+        result.num_new_map_points = initial_map_points;
+        
+        // Create first keyframe
+        create_keyframe(m_current_frame);
+        m_frames_since_last_keyframe = 0;  // Reset after creating first keyframe
+        
+        // Count features with map points
+        result.num_tracked_features = m_current_frame->get_feature_count();
+        result.num_features_with_map_points = count_features_with_map_points(m_current_frame);
+        
+        spdlog::info("[MAP_POINTS] Created {} initial map points", initial_map_points);
+        
+        result.success = true;
+    }
+    
+    // Add processed frame to all frames vector for trajectory export
+    m_all_frames.push_back(m_current_frame);
+    
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - total_start_time);
+    result.optimization_time_ms = duration.count() / 1000.0;
+    
+    // Set reference keyframe for non-keyframe frames (after pose optimization)
+    if (!m_current_frame->is_keyframe() && m_last_keyframe) {
+        m_current_frame->set_reference_keyframe(m_last_keyframe);
+    }
+    
+    // Update state
+    m_previous_frame = m_current_frame;
+    
+    return result;
+}
+
 // // IMU process_frame overload
 // Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, const cv::Mat& right_image, 
 //                                                     long long timestamp, const std::vector<IMUData>& imu_data_from_last_frame) {
@@ -1088,6 +1264,62 @@ std::shared_ptr<Frame> Estimator::create_frame(const cv::Mat& left_image, const 
         frame->set_Twb(m_previous_frame->get_Twb());
 
       
+        // Initialize velocity to zero
+        frame->set_velocity(Eigen::Vector3f::Zero());
+    } else {
+        // First frame - use ground truth pose if available, otherwise identity
+        if (m_has_initial_gt_pose) {
+            frame->set_Twb(m_initial_gt_pose);
+        } else {
+            frame->set_Twb(Eigen::Matrix4f::Identity());
+        }
+        
+        // First frame velocity is zero
+        frame->set_velocity(Eigen::Vector3f::Zero());
+    }
+    
+    // Inherit IMU bias from the last keyframe (if available)
+    if (m_last_keyframe && m_imu_handler) {
+        m_imu_handler->inherit_bias_from_keyframe(frame.get(), m_last_keyframe.get());
+    }
+    
+    return frame;
+}
+
+std::shared_ptr<Frame> Estimator::create_frame(const cv::Mat& rgb_image, const cv::Mat& depth_image, long long timestamp, double depth_scale_factor) {
+    if (rgb_image.empty() || depth_image.empty()) {
+        spdlog::error("RGB-D images are empty!");
+        return nullptr;
+    }
+    
+    // Convert RGB to grayscale for feature extraction
+    cv::Mat gray_image;
+    if (rgb_image.channels() == 3) {
+        cv::cvtColor(rgb_image, gray_image, cv::COLOR_BGR2GRAY);
+    } else {
+        gray_image = rgb_image.clone();
+    }
+    
+    // Create frame with RGB-D data
+    // Get camera parameters from global config
+    const auto& global_config = Config::getInstance();
+    cv::Mat left_K = global_config.left_camera_matrix();
+    
+    auto frame = std::make_shared<Frame>(
+        timestamp, 
+        m_frame_id_counter++,
+        gray_image, rgb_image, depth_image,
+        left_K.at<double>(0, 0), left_K.at<double>(1, 1), left_K.at<double>(0, 2), left_K.at<double>(1, 2),
+        global_config.left_dist_coeffs(),
+        depth_scale_factor
+    );
+    
+    // Set initial pose and velocity
+    if (m_previous_frame) {
+        // For non-first frames, start with previous frame pose
+        // Actual prediction will be done in process_rgbd_frame() via predict_state()
+        frame->set_Twb(m_previous_frame->get_Twb());
+        
         // Initialize velocity to zero
         frame->set_velocity(Eigen::Vector3f::Zero());
     } else {

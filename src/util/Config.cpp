@@ -205,44 +205,75 @@ bool Config::load(const std::string& config_file) {
                 0, 0, 1);
         }
         
-        if (!left_distortion.empty() && left_distortion.size() == 4) {
-            m_left_dist_coeffs = (cv::Mat_<double>(1, 4) << 
-                (double)left_distortion[0], (double)left_distortion[1],
-                (double)left_distortion[2], (double)left_distortion[3]);
+        // Handle distortion coefficients - support both 4 and 5 parameters
+        if (!left_distortion.empty() && (left_distortion.size() == 4 || left_distortion.size() == 5)) {
+            if (left_distortion.size() == 4) {
+                m_left_dist_coeffs = (cv::Mat_<double>(1, 4) << 
+                    (double)left_distortion[0], (double)left_distortion[1],
+                    (double)left_distortion[2], (double)left_distortion[3]);
+            } else {
+                // 5 parameters: [k1, k2, p1, p2, k3]
+                m_left_dist_coeffs = (cv::Mat_<double>(1, 5) << 
+                    (double)left_distortion[0], (double)left_distortion[1],
+                    (double)left_distortion[2], (double)left_distortion[3],
+                    (double)left_distortion[4]);
+            }
         }
         
-        if (!right_distortion.empty() && right_distortion.size() == 4) {
-            m_right_dist_coeffs = (cv::Mat_<double>(1, 4) << 
-                (double)right_distortion[0], (double)right_distortion[1],
-                (double)right_distortion[2], (double)right_distortion[3]);
+        if (!right_distortion.empty() && (right_distortion.size() == 4 || right_distortion.size() == 5)) {
+            if (right_distortion.size() == 4) {
+                m_right_dist_coeffs = (cv::Mat_<double>(1, 4) << 
+                    (double)right_distortion[0], (double)right_distortion[1],
+                    (double)right_distortion[2], (double)right_distortion[3]);
+            } else {
+                // 5 parameters: [k1, k2, p1, p2, k3]
+                m_right_dist_coeffs = (cv::Mat_<double>(1, 5) << 
+                    (double)right_distortion[0], (double)right_distortion[1],
+                    (double)right_distortion[2], (double)right_distortion[3],
+                    (double)right_distortion[4]);
+            }
         }
         
         // Load extrinsics (T_BC - camera to body transform)
         cv::FileNode left_T_BC = camera["left_T_BC"];
         cv::FileNode right_T_BC = camera["right_T_BC"];
         
-        if (!left_T_BC.empty() && !right_T_BC.empty() && 
-            left_T_BC.size() == 16 && right_T_BC.size() == 16) {
-            
+        // Load left camera extrinsics (always required)
+        if (!left_T_BC.empty() && left_T_BC.size() == 16) {
             cv::Mat T_BC_left = (cv::Mat_<double>(4, 4) << 
                 (double)left_T_BC[0], (double)left_T_BC[1], (double)left_T_BC[2], (double)left_T_BC[3],
                 (double)left_T_BC[4], (double)left_T_BC[5], (double)left_T_BC[6], (double)left_T_BC[7],
                 (double)left_T_BC[8], (double)left_T_BC[9], (double)left_T_BC[10], (double)left_T_BC[11],
                 (double)left_T_BC[12], (double)left_T_BC[13], (double)left_T_BC[14], (double)left_T_BC[15]);
-                
+            
+            // Store left camera T_BC matrix (camera to body transform)
+            m_T_left_BC = T_BC_left.clone();
+            
+            if (m_enable_debug_output) {
+                spdlog::info("[CONFIG] Loaded left_T_BC matrix:");
+                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", T_BC_left.at<double>(0,0), T_BC_left.at<double>(0,1), T_BC_left.at<double>(0,2), T_BC_left.at<double>(0,3));
+                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", T_BC_left.at<double>(1,0), T_BC_left.at<double>(1,1), T_BC_left.at<double>(1,2), T_BC_left.at<double>(1,3));
+                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", T_BC_left.at<double>(2,0), T_BC_left.at<double>(2,1), T_BC_left.at<double>(2,2), T_BC_left.at<double>(2,3));
+                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", T_BC_left.at<double>(3,0), T_BC_left.at<double>(3,1), T_BC_left.at<double>(3,2), T_BC_left.at<double>(3,3));
+            }
+        }
+        
+        // Load right camera extrinsics (optional, for stereo systems)
+        if (!right_T_BC.empty() && right_T_BC.size() == 16) {
             cv::Mat T_BC_right = (cv::Mat_<double>(4, 4) << 
                 (double)right_T_BC[0], (double)right_T_BC[1], (double)right_T_BC[2], (double)right_T_BC[3],
                 (double)right_T_BC[4], (double)right_T_BC[5], (double)right_T_BC[6], (double)right_T_BC[7],
                 (double)right_T_BC[8], (double)right_T_BC[9], (double)right_T_BC[10], (double)right_T_BC[11],
                 (double)right_T_BC[12], (double)right_T_BC[13], (double)right_T_BC[14], (double)right_T_BC[15]);
             
-            // Store individual T_BC matrices (camera to body transforms)
-            m_T_left_BC = T_BC_left.clone();
+            // Store right camera T_BC matrix
             m_T_right_BC = T_BC_right.clone();
             
             // Compute stereo baseline transform: T_left_right = T_BC_right.inv() * T_BC_left
             // This gives left-to-right camera transformation for stereo triangulation
-            m_T_left_right = T_BC_right.inv() * T_BC_left;
+            if (!m_T_left_BC.empty()) {
+                m_T_left_right = T_BC_right.inv() * m_T_left_BC;
+            }
         }
     }
     

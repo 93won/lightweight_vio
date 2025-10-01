@@ -69,6 +69,7 @@ PangolinViewer::PangolinViewer()
     , m_follow_frame_checkbox("ui.7. Follow Frame", true, true)
     , m_step_forward_button("ui.8. Step Forward", false, false)
     , m_finish_button("ui.9. Finish & Exit", false, false)
+    , m_show_dense_cloud("ui.10. Show Dense Cloud", true, true)
     , m_step_forward_pressed(false)
     , m_finish_pressed(false)
     , m_Tgw(Eigen::Matrix4f::Identity())
@@ -100,7 +101,7 @@ bool PangolinViewer::initialize(int width, int height) {
     float fy = height * 0.7f;
     s_cam = pangolin::OpenGlRenderState(
         pangolin::ProjectionMatrix(width, height, fx, fy, width/2, height/2, 0.1, 1000),
-        pangolin::ModelViewLookAt(-3, -3, 3, 0, 0, 0, pangolin::AxisZ)  // Changed to AxisZ for better orientation
+        pangolin::ModelViewLookAt(0, -3, 2, 0, 0, 0, pangolin::AxisZ)  // Behind and slightly above origin
     );
 
     // Setup display panels
@@ -260,7 +261,18 @@ void PangolinViewer::render() {
     d_cam.Activate(s_cam);
 
     // Draw 3D content
-    if (m_show_grid) {
+    // Check if current system is RGB-D and don't draw grid for RGB-D
+    bool is_rgbd_system = false;
+    {
+        std::lock_guard<std::mutex> lock(m_data_mutex);
+        if (m_last_keyframe && m_last_keyframe->is_rgbd()) {
+            is_rgbd_system = true;
+        } else if (!m_keyframe_window.empty() && m_keyframe_window.back()->is_rgbd()) {
+            is_rgbd_system = true;
+        }
+    }
+    
+    if (m_show_grid && !is_rgbd_system) {
         draw_grid();
     }
 
@@ -274,6 +286,25 @@ void PangolinViewer::render() {
 
     // Draw map points with color differentiation
     draw_map_points();
+
+    // Draw dense color cloud for RGB-D keyframes
+    if (m_show_dense_cloud && !m_keyframe_window.empty()) {
+        // Check if any keyframe is RGB-D
+        bool has_rgbd_keyframes = false;
+        {
+            std::lock_guard<std::mutex> lock(m_data_mutex);
+            for (const auto& kf : m_keyframe_window) {
+                if (kf && kf->is_rgbd()) {
+                    has_rgbd_keyframes = true;
+                    break;
+                }
+            }
+        }
+        
+        if (has_rgbd_keyframes) {
+            draw_dense_color_cloud();
+        }
+    }
 
     if (m_show_estimated_trajectory && m_show_trajectory && !m_trajectory.empty()) {
         draw_trajectory();
@@ -329,56 +360,34 @@ void PangolinViewer::render() {
 
     // Follow Frame mode
     if (m_follow_frame_checkbox && !m_current_camera_pose.isZero()) {
-        // Get current camera position
+        // Get current camera position and orientation
         Eigen::Vector3f cam_pos = m_current_camera_pose.block<3, 1>(0, 3);
+        Eigen::Matrix3f cam_rot = m_current_camera_pose.block<3, 3>(0, 0);
         
-        // Use Follow method which allows user zoom/pan while following the position
-        pangolin::OpenGlMatrix follow_matrix = pangolin::OpenGlMatrix::Translate(
-            cam_pos.x(), cam_pos.y(), cam_pos.z()
-        );
+        // Camera coordinate system: X-right, Y-down, Z-forward
+        Eigen::Vector3f cam_forward = cam_rot.col(2);   // +Z axis (forward direction)
+        Eigen::Vector3f cam_right = cam_rot.col(0);     // +X axis (right direction) 
+        Eigen::Vector3f cam_up = -cam_rot.col(1);       // -Y axis (up direction, camera Y is down)
         
-        // Follow with smooth following (allows user interaction like zoom/pan)
-        s_cam.Follow(follow_matrix, true); // true = follow rotation smoothly
+        // Position the viewer camera behind and slightly above the current camera
+        float follow_distance = 1.0f;  // Distance behind the camera (increased from 1.0f)
+        float follow_height = 0.4f;    // Height above the camera (slightly increased from 0.3f)
+        Eigen::Vector3f viewer_pos = cam_pos - cam_forward * follow_distance + cam_up * follow_height;
         
-        // Set a good default view on first activation or when camera pose changes significantly
-        static Eigen::Vector3f last_pos = cam_pos;
-        static bool first_activation = true;
+        // Look at a point in front of the current camera
+        float look_ahead_distance = 2.0f;  // Look ahead distance
+        Eigen::Vector3f look_at = cam_pos + cam_forward * look_ahead_distance;
         
-        float pos_change = (cam_pos - last_pos).norm();
-        if (first_activation || pos_change > 5.0f) { // Reset view if large position change
-            Eigen::Matrix3f cam_rot = m_current_camera_pose.block<3, 3>(0, 0);
-            Eigen::Vector3f cam_forward = cam_rot.col(2);
-            Eigen::Vector3f cam_up = -cam_rot.col(1);
-            
-            // Position viewer behind and slightly above the camera (30 degree angle)
-            float follow_distance = 4.0f;  // Distance behind camera (reduced from 8.0f)
-            float follow_height = 2.3f;    // Height above camera (4 * tan(30°) ≈ 2.3)
-            Eigen::Vector3f viewer_pos = cam_pos - cam_forward * follow_distance + Eigen::Vector3f(0.0f, 0.0f, follow_height);
-            
-            // Look at the camera position with fixed world up vector
-            // Make sure the look direction and up vector are not parallel
-            Eigen::Vector3f look_direction = (cam_pos - viewer_pos).normalized();
-            Eigen::Vector3f world_up(0.0f, 0.0f, 1.0f);
-            
-            // Check if look direction and up vector are too parallel (within 5 degrees)
-            float dot_product = std::abs(look_direction.dot(world_up));
-            if (dot_product > 0.996f) { // cos(5°) ≈ 0.996
-                // Use a slightly different up vector to avoid parallel vectors
-                world_up = Eigen::Vector3f(0.1f, 0.0f, 1.0f).normalized();
-            }
-            
-            pangolin::OpenGlMatrix view_matrix = pangolin::ModelViewLookAt(
-                viewer_pos.x(), viewer_pos.y(), viewer_pos.z(),
-                cam_pos.x(), cam_pos.y(), cam_pos.z(),
-                world_up.x(), world_up.y(), world_up.z()
-            );
-            s_cam.SetModelViewMatrix(view_matrix);
-            
-            first_activation = false;
-            last_pos = cam_pos;
-        } else {
-            last_pos = cam_pos;
-        }
+        // Smooth camera up vector (use world up with slight forward bias)
+        Eigen::Vector3f world_up(0.0f, 0.0f, 1.0f);  // World Z-up
+        Eigen::Vector3f smooth_up = (cam_up * 0.7f + world_up * 0.3f).normalized();
+        
+        // Update the camera view with tracking
+        s_cam.SetModelViewMatrix(pangolin::ModelViewLookAt(
+            viewer_pos.x(), viewer_pos.y(), viewer_pos.z(),     // Viewer camera position (behind and above)
+            look_at.x(), look_at.y(), look_at.z(),              // Look ahead of the current camera
+            smooth_up.x(), smooth_up.y(), smooth_up.z()         // Smooth up vector
+        ));
     }
 
     // Legacy follow camera mode (fallback)
@@ -395,7 +404,7 @@ void PangolinViewer::render() {
 }
 
 void PangolinViewer::reset_camera() {
-    s_cam.SetModelViewMatrix(pangolin::ModelViewLookAt(-3, -3, 3, 0, 0, 0, pangolin::AxisZ));
+    s_cam.SetModelViewMatrix(pangolin::ModelViewLookAt(0, -3, 2, 0, 0, 0, pangolin::AxisZ));
 }
 
 void PangolinViewer::draw_grid() {
@@ -1047,6 +1056,59 @@ void PangolinViewer::set_gravity_transformation(const Eigen::Matrix4f& Tgw) {
     spdlog::info("  [{:.6f}, {:.6f}, {:.6f}, {:.6f}]", Tgw(1,0), Tgw(1,1), Tgw(1,2), Tgw(1,3));
     spdlog::info("  [{:.6f}, {:.6f}, {:.6f}, {:.6f}]", Tgw(2,0), Tgw(2,1), Tgw(2,2), Tgw(2,3));
     spdlog::info("  [{:.6f}, {:.6f}, {:.6f}, {:.6f}]", Tgw(3,0), Tgw(3,1), Tgw(3,2), Tgw(3,3));
+}
+
+void PangolinViewer::draw_dense_color_cloud() {
+    std::lock_guard<std::mutex> lock(m_data_mutex);
+    
+    // Collect cached dense color clouds from all keyframes in sliding window
+    std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3i>> all_color_points;
+    
+    for (const auto& keyframe : m_keyframe_window) {
+        if (!keyframe || !keyframe->is_rgbd() || !keyframe->has_dense_color_cloud()) {
+            continue;
+        }
+        
+        // Get cached dense color cloud from keyframe
+        const auto& color_points = keyframe->get_dense_color_cloud();
+        
+        if (color_points.empty()) {
+            continue;
+        }
+        
+        // Get world pose from keyframe (T_wc)
+        Eigen::Matrix4f T_wc = keyframe->get_Twc();
+        
+        // Transform points to world coordinates and add to collection
+        for (const auto& color_point : color_points) {
+            Eigen::Vector4f cam_point(color_point.position[0], color_point.position[1], color_point.position[2], 1.0f);
+            Eigen::Vector4f world_point = T_wc * cam_point;
+            
+            all_color_points.emplace_back(
+                Eigen::Vector3f(world_point[0], world_point[1], world_point[2]),
+                color_point.color
+            );
+        }
+    }
+    
+    if (all_color_points.empty()) {
+        return;
+    }
+    
+    glPointSize(1.0f);  // Small points for dense cloud
+    glBegin(GL_POINTS);
+    
+    for (const auto& point : all_color_points) {
+        const Eigen::Vector3f& pos = point.first;
+        const Eigen::Vector3i& color = point.second;
+        
+        // Normalize color to [0,1] range
+        glColor3f(color[0] / 255.0f, color[1] / 255.0f, color[2] / 255.0f);
+        glVertex3f(pos[0], pos[1], pos[2]);
+    }
+    
+    glEnd();
+    glPointSize(1.0f);  // Reset point size
 }
 
 } // namespace lightweight_vio

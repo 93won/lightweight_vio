@@ -167,6 +167,7 @@ private:
     pangolin::Var<bool> m_follow_frame_checkbox;
     pangolin::Var<bool> m_step_forward_button;
     pangolin::Var<bool> m_finish_button;
+    pangolin::Var<bool> m_show_dense_cloud;  // Control for dense color cloud
     mutable bool m_step_forward_pressed;
     mutable bool m_finish_pressed;
     
@@ -198,6 +199,7 @@ private:
     void draw_axis();
     void draw_points();
     void draw_map_points();  // New function for colored map points
+    void draw_dense_color_cloud();  // New function for RGB-D dense cloud
     void draw_trajectory();
     void draw_keyframe_frustums();
     void draw_gt_trajectory();
