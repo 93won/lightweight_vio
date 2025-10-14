@@ -27,6 +27,7 @@ bool TUMUtils::s_data_loaded = false;
 // Pre-matched pose data
 std::vector<Eigen::Matrix4f> TUMUtils::s_matched_poses;
 std::vector<long long> TUMUtils::s_image_timestamps;
+std::vector<int> TUMUtils::s_matched_image_indices;
 std::vector<double> TUMUtils::s_timestamp_errors;
 
 // IMU data static members
@@ -226,15 +227,17 @@ bool TUMUtils::match_image_timestamps(const std::vector<long long>& image_timest
     // Define GT time range with buffer (5ms = 5,000,000 ns)
     long long gt_start_time = s_ground_truth_data.front().timestamp;
     long long gt_end_time = s_ground_truth_data.back().timestamp;
-    const long long time_threshold_ns = 5000000; // 5ms in nanoseconds
+    const long long time_threshold_ns = 10000000; // 10ms in nanoseconds
     
     s_matched_poses.clear();
     s_image_timestamps.clear();
+    s_matched_image_indices.clear();
     s_timestamp_errors.clear();
     
     // Reserve space for maximum possible matches
     s_matched_poses.reserve(image_timestamps.size());
     s_image_timestamps.reserve(image_timestamps.size());
+    s_matched_image_indices.reserve(image_timestamps.size());
     s_timestamp_errors.reserve(image_timestamps.size());
     
     int skipped_before_gt = 0;
@@ -288,6 +291,7 @@ bool TUMUtils::match_image_timestamps(const std::vector<long long>& image_timest
         // Store matched data
         s_matched_poses.push_back(s_ground_truth_data[index].pose);
         s_image_timestamps.push_back(image_ts);
+        s_matched_image_indices.push_back(static_cast<int>(i));
         
         double time_error_sec = time_diff_ns / 1e9;
         s_timestamp_errors.push_back(time_error_sec);
@@ -329,6 +333,13 @@ long long TUMUtils::get_matched_timestamp(size_t index) {
         return 0;
     }
     return s_image_timestamps[index];
+}
+
+int TUMUtils::get_matched_image_index(size_t matched_index) {
+    if (matched_index >= s_matched_image_indices.size()) {
+        return -1;
+    }
+    return s_matched_image_indices[matched_index];
 }
 
 // Helper function to trim whitespace

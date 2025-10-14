@@ -29,8 +29,9 @@ run_app() {
     local dataset_path=$2
     
     if [ -z "$app_type" ] || [ -z "$dataset_path" ]; then
-        echo "Usage: $0 run <vo|vio> <euroc_dataset_path>"
-        echo "Example: $0 run vio /path/to/euroc/MH_01_easy"
+        echo "Usage: $0 run <vo|vio> <dataset_path>"
+        echo "Example (EuRoC): $0 run vio /path/to/euroc/MH_01_easy"
+        echo "Example (TUM VI): $0 run vio /path/to/dataset-room1_512_16"
         exit 1
     fi
     
@@ -101,6 +102,7 @@ case "$1" in
         echo "  $0 build"
         echo "  $0 run vo /path/to/euroc/MH_01_easy"
         echo "  $0 run vio /path/to/euroc/MH_01_easy"
+        echo "  $0 run vio /path/to/dataset-room1_512_16"
         echo "  $0 shell"
         echo "  $0 clean"
         exit 1

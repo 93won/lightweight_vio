@@ -2,12 +2,32 @@
 
 This is a lightweight stereo visual-inertial odometry (VIO) project designed for real-time performance. It utilizes feature tracking, IMU pre-integration, sliding window optimization with Ceres Solver, and Pangolin for visualization.
 
+This project implements the **statistical uncertainty learning** method proposed in:
+
+**Statistical Uncertainty Learning for Robust Visual-Inertial State Estimation**  
+Seungwon Choi, Donggyu Park, Seo-Yeon Hwang, Tae-Wan Kim  
+[arXiv:2510.01648](https://arxiv.org/abs/2510.01648)
+
+If you use this work in your research, please cite:
+
+```bibtex
+@misc{choi2025statistical,
+      title={Statistical Uncertainty Learning for Robust Visual-Inertial State Estimation}, 
+      author={Seungwon Choi and Donggyu Park and Seo-Yeon Hwang and Tae-Wan Kim},
+      year={2025},
+      eprint={2510.01648},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2510.01648}
+}
+```
+
 ## License
 
 This project is licensed under the 🚀MIT License🚀 - see the [LICENSE](LICENSE) file for details.
 
 ## Demo
-[![Stereo VIO Demo](https://img.youtube.com/vi/41o9R-rKQ1s/0.jpg)](https://youtu.be/41o9R-rKQ1s)
+[![Demo](https://img.youtube.com/vi/Fy-1zU6xXm4/0.jpg)](https://youtu.be/Fy-1zU6xXm4)
 
 ## Installation
 

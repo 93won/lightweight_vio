@@ -20,6 +20,7 @@ performance:
 # Camera Parameters (EuRoC dataset specific)
 # Image dimensions and processing parameters
 camera:
+  model: "pinhole"            # Camera model: "pinhole" or "fisheye"
   image_width: 752            # Image width in pixels (EuRoC standard)
   image_height: 480           # Image height in pixels (EuRoC standard)  
   border_size: 1              # Border size to exclude from feature detection (pixels)
@@ -119,4 +120,11 @@ optimization:
   
   # Information weighting parameters - now using logarithmic scaling (saturation_point=20)
   # Removed pnp_max_observation_weight and sliding_window_max_observation_weight
+
+# MapPoint Uncertainty Parameters
+# Controls uncertainty propagation for 3D map points
+uncertainty:
+  enable: 1                  # Enable uncertainty propagation for MapPoints
+  max_eigenvalue: 1e-1       # Maximum covariance matrix eigenvalue
+  min_eigenvalue: 1e-5       # Minimum covariance matrix eigenvalue
 

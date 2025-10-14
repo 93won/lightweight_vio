@@ -29,18 +29,19 @@ This guide provides detailed instructions for running the Lightweight Stereo VIO
 #### Native Build
 ```bash
 # Visual Odometry (VO) mode
-./build/tum_stereo config/tum_vo.yaml /path/to/dataset-corridor1_512_16
+./build/tum_stereo config/tum_vo.yaml /path/to/dataset-room1_512_16
 
 # Visual-Inertial Odometry (VIO) mode
-./build/tum_stereo config/tum_vio.yaml /path/to/dataset-corridor1_512_16
+./build/tum_stereo config/tum_vio.yaml /path/to/dataset-room1_512_16
 ```
 
-### TUM RGB-D Dataset
-
-#### Native Build
+#### Docker
 ```bash
-# Visual Odometry (VO) mode with RGB-D
-./build/tum_rgbd config/tum_rgbd_vo.yaml /path/to/rgbd_dataset_freiburg2_desk
+# Visual Odometry (VO) mode
+./docker.sh run vo /path/to/dataset-room1_512_16
+
+# Visual-Inertial Odometry (VIO) mode
+./docker.sh run vio /path/to/dataset-room1_512_16
 ```
 
 ---
@@ -71,17 +72,6 @@ The general syntax for running with TUM VI dataset:
 - `<config_file_path>`: Path to the YAML configuration file (tum_vo.yaml or tum_vio.yaml)
 - `<tum_dataset_path>`: Path to a specific TUM VI sequence directory
 
-#### TUM RGB-D Dataset
-The general syntax for running with TUM RGB-D dataset:
-
-```bash
-./build/tum_rgbd <config_file_path> <rgbd_dataset_path>
-```
-
-**Parameters:**
-- `<config_file_path>`: Path to the YAML configuration file (tum_rgbd_vo.yaml)
-- `<rgbd_dataset_path>`: Path to a specific TUM RGB-D sequence directory
-
 ### Configuration Files
 
 The system behavior is controlled by YAML configuration files located in the `config/` directory:
@@ -89,7 +79,6 @@ The system behavior is controlled by YAML configuration files located in the `co
 #### Visual Odometry (VO) Mode
 **EuRoC**: `config/euroc_vo.yaml`
 **TUM VI**: `config/tum_vo.yaml`
-**TUM RGB-D**: `config/tum_rgbd_vo.yaml`
 - Uses only camera data
 - Suitable for scenarios with good visual features
 - Lower computational requirements
@@ -112,20 +101,8 @@ The system behavior is controlled by YAML configuration files located in the `co
 #### TUM VI Dataset Examples
 
 
-**Corridor sequences:**
+**Room sequences:**
 ```bash
-./build/tum_stereo config/tum_vio.yaml /path/to/dataset-corridor1_512_16
-```
-
-#### TUM RGB-D Dataset Examples
-
-**Desk sequences:**
-```bash
-./build/tum_rgbd config/tum_rgbd_vo.yaml /path/to/rgbd_dataset_freiburg2_desk
-```
-
-**Office sequences:**
-```bash
-./build/tum_rgbd config/tum_rgbd_vo.yaml /path/to/rgbd_dataset_freiburg3_office
+./build/tum_stereo config/tum_vio.yaml /path/to/dataset-room1_512_16
 ```
 

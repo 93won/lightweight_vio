@@ -48,7 +48,10 @@ public:
         m_depth = point.z();
     }
     void set_velocity(const Eigen::Vector2f& velocity) { m_velocity = velocity; }
-    void set_depth(float depth) { m_depth = depth; }
+    void set_depth(float depth) { 
+        m_depth = depth; 
+        
+    }
     void set_reprojection_error(float reprojection_error) { m_reprojection_error = reprojection_error; }
     void set_track_count(int count) { m_track_count = count; }
     void set_num_observations_accumulated(int count) { m_num_observations_accumulated = count; }

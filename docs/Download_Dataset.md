@@ -5,8 +5,7 @@ This guide explains how to download the datasets required for testing the stereo
 ## Supported Datasets
 
 - **EuRoC MAV Dataset**: Indoor drone flights with stereo cameras and IMU
-- **TUM VI Dataset**: Indoor/outdoor sequences with fisheye stereo cameras and IMU
-- **TUM RGB-D Dataset**: Indoor sequences with RGB-D cameras for visual odometry
+- **TUM VI Dataset**: Indoor sequences with fisheye stereo cameras and IMU (room sequences with ground truth)
 
 ---
 
@@ -85,30 +84,31 @@ Make sure you have sufficient disk space before downloading all sequences.
 
 ### TUM VI Dataset Overview
 
-The TUM VI (Technical University of Munich Visual-Inertial) dataset contains stereo fisheye camera images, IMU data, and ground truth trajectory data recorded in various indoor and outdoor environments. It includes 28 sequences total with different environments and motion patterns.
+The TUM VI (Technical University of Munich Visual-Inertial) dataset contains stereo fisheye camera images, IMU data, and ground truth trajectory data recorded in various indoor environments. We use the room sequences (room1-6) which have accurate ground truth data for evaluation.
 
 ### Download Options
 
 #### Option 1: Using the Provided Script (Recommended)
 
-The repository includes a convenience script to download TUM VI datasets automatically.
+The repository includes a convenience script to download TUM VI room datasets automatically.
 
 ```bash
 chmod +x script/download_tum_vi.sh
-./script/download_tum_vi.sh                      # Download ALL datasets (default)
-./script/download_tum_vi.sh /path/to/datasets    # Download ALL datasets to specified path
-./script/download_tum_vi.sh corridor1            # Download specific dataset
-./script/download_tum_vi.sh corridor1 /path/to/datasets  # Download specific dataset to path
+./script/download_tum_vi.sh                      # Download ALL room datasets (default)
+./script/download_tum_vi.sh /path/to/datasets    # Download ALL room datasets to specified path
+./script/download_tum_vi.sh room1                # Download specific dataset
+./script/download_tum_vi.sh room1 /path/to/datasets  # Download specific dataset to path
 ```
 
-This will download sequences into the specified directory structure:
+This will download room sequences into the specified directory structure:
 ```
 /path/to/datasets/
-├── dataset-corridor1_512_16/
-├── dataset-corridor2_512_16/
 ├── dataset-room1_512_16/
-├── dataset-magistrale1_512_16/
-└── ...
+├── dataset-room2_512_16/
+├── dataset-room3_512_16/
+├── dataset-room4_512_16/
+├── dataset-room5_512_16/
+└── dataset-room6_512_16/
 ```
 
 #### Option 2: Manual Download
@@ -123,7 +123,7 @@ You can manually download specific sequences from the [TUM VI dataset website](h
 
 Each TUM VI sequence follows the EuRoC format:
 ```
-dataset-corridor1_512_16/
+dataset-room1_512_16/
 ├── mav0/
 │   ├── cam0/           # Left fisheye camera images
 │   │   ├── data/
@@ -139,93 +139,17 @@ dataset-corridor1_512_16/
 
 ### Available Sequences
 
-**Environment Types:**
-- **Corridor sequences** (5): corridor1-5 - Indoor office corridors
-- **Room sequences** (6): room1-6 - Indoor rooms and labs  
-- **Magistrale sequences** (6): magistrale1-6 - Indoor large halls
-- **Outdoor sequences** (8): outdoors1-8 - Outdoor campus environments
-- **Slides sequences** (3): slides1-3 - Presentation rooms
+**Room sequences (with ground truth):**
+- **room1-6**: Indoor rooms and labs with accurate mocap ground truth for VIO evaluation
 
 ### Storage Requirements
 
 - **Single sequence**: ~1-4 GB
-- **All sequences**: ~150+ GB
+- **All room sequences**: ~20+ GB
 
 Make sure you have sufficient disk space before downloading all sequences.
 
-
-
 ---
-
-## TUM RGB-D Dataset
-
-### TUM RGB-D Dataset Overview
-
-The TUM RGB-D dataset contains RGB-D camera sequences with ground truth trajectory data recorded in various indoor environments. It includes multiple sequences with different objects, lighting conditions, and camera motions, specifically designed for RGB-D SLAM and visual odometry evaluation.
-
-### Download Options
-
-#### Option 1: Official TUM RGB-D Dataset
-
-You can download the complete dataset from the official TUM RGB-D dataset website:
-
-**Official Dataset:** [https://cvg.cit.tum.de/data/datasets/rgbd-dataset](https://cvg.cit.tum.de/data/datasets/rgbd-dataset)
-
-The dataset includes various sequences such as:
-- `rgbd_dataset_freiburg1_xyz` - Simple translational motions
-- `rgbd_dataset_freiburg1_rpy` - Simple rotational motions  
-- `rgbd_dataset_freiburg2_desk` - Desk scenes with objects
-- `rgbd_dataset_freiburg3_office` - Office environments
-
-#### Option 2: Quick Start Sample Dataset
-
-For quick testing and evaluation, we provide a sample dataset ready to use:
-
-**Sample Dataset:** [https://drive.google.com/file/d/1HRWnBq9kq-m4gkjVuLdKUHeaZcztacIs/view?usp=sharing](https://drive.google.com/file/d/1HRWnBq9kq-m4gkjVuLdKUHeaZcztacIs/view?usp=sharing)
-
-This sample includes the `rgbd_dataset_freiburg2_desk` sequence, which is ideal for testing RGB-D visual odometry functionality.
-
-### Dataset Structure
-
-Each RGB-D sequence contains the following files:
-```
-rgbd_dataset_freiburg2_desk/
-├── rgb.txt              # RGB image timestamps and filenames
-├── depth.txt            # Depth image timestamps and filenames
-├── groundtruth.txt      # Ground truth trajectory
-├── rgb/                 # RGB images
-│   ├── 1311868164.363181.png
-│   ├── 1311868164.399026.png
-│   └── ...
-└── depth/               # Depth images
-    ├── 1311868164.374026.png
-    ├── 1311868164.407668.png
-    └── ...
-```
-
-### Storage Requirements
-
-- **Single sequence**: ~500MB - 2GB depending on sequence length
-- **Complete dataset**: ~30+ GB
-
-### Installation Instructions
-
-1. Download the dataset from either source above
-2. Extract to your preferred dataset directory (e.g., `/home/user/data/RGBD/`)
-3. The directory structure should look like:
-```
-/home/user/data/RGBD/
-└── rgbd_dataset_freiburg2_desk/
-    ├── rgb.txt
-    ├── depth.txt
-    ├── groundtruth.txt
-    ├── rgb/
-    └── depth/
-```
-
----
-
-
 
 ## Troubleshooting
 

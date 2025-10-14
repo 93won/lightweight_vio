@@ -20,6 +20,10 @@
 #include <cstdio>
 #include <spdlog/spdlog.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 namespace lightweight_vio {
 
 // Helper function to get max features from config
@@ -38,25 +42,27 @@ PangolinViewer::PangolinViewer()
     , m_current_camera_pose(Eigen::Matrix4f::Identity())
     , m_relative_pose_from_last_keyframe(Eigen::Matrix4f::Identity())
     , m_has_tracking_image(false)
-    , m_has_stereo_image(false)
+    , m_has_uncertainty_debug_image(false)
     , m_space_pressed(false)
     , m_next_pressed(false)
     , m_initialized(false)
     , m_window_width(1280)
     , m_window_height(960)
     , m_tracking_image_bottom(0.35f)
-    , m_stereo_image_bottom(0.0f)
+    , m_uncertainty_debug_image_bottom(0.0f)
     , m_panels_created(false)
     , m_show_points(true)
     , m_show_trajectory(true)
     , m_show_keyframe_frustums(true)
-    , m_show_gt_trajectory(true)
     , m_show_camera_frustum(true)
     , m_show_grid(true)
     , m_show_axis(true)
-    , m_follow_camera(false)
+    , m_follow_camera(true)
     , m_point_size(3.0f)
     , m_trajectory_width(2.0f)
+    , m_show_uncertainties(true)
+    , m_uncertainty_scale(1.0f)
+    , m_min_uncertainty_size(0.01f)
     , m_frame_id("ui.Frame ID", 0)
     , m_successful_matches("ui.Num Tracked Map Points", 0, 0, get_max_features_from_config())
     , m_auto_mode_checkbox("ui.1. Auto Mode", true, true)
@@ -64,14 +70,15 @@ PangolinViewer::PangolinViewer()
     , m_show_accumulated_map_points("ui.3. Show Local Map Points", true, true)
     , m_show_current_map_points("ui.4. Show Current Map Points", true, true)
     , m_show_estimated_trajectory("ui.5. Show Estimated Trajectory", true, true)
-    , m_show_ground_truth_trajectory("ui.6. Show Ground Truth Trajectory", true, true)
     , m_show_sliding_window_keyframes("ui.6. Show Sliding Window Keyframes", true, true)
     , m_follow_frame_checkbox("ui.7. Follow Frame", true, true)
     , m_step_forward_button("ui.8. Step Forward", false, false)
     , m_finish_button("ui.9. Finish & Exit", false, false)
-    , m_show_dense_cloud("ui.10. Show Dense Cloud", true, true)
+    , m_show_uncertainty_ellipsoids("ui.10. Show Uncertainty Ellipsoids", true, true)
+    , m_show_observation_point_clouds("ui.11. Show Observation Point Clouds", true, true)
     , m_step_forward_pressed(false)
     , m_finish_pressed(false)
+    , m_previous_follow_frame_state(true)  // Initialize to true since follow frame starts enabled
     , m_Tgw(Eigen::Matrix4f::Identity())
     , m_has_gravity_transformation(false)
 {
@@ -87,7 +94,7 @@ bool PangolinViewer::initialize(int width, int height) {
     m_window_height = height;
     
     // Create OpenGL window with Pangolin
-    pangolin::CreateWindowAndBind("Visual-Inertial Odometry", width, height);
+    pangolin::CreateWindowAndBind("Statistical Uncertainty Learning for Robust Visual-Inertial State Estimation", width, height);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -101,7 +108,7 @@ bool PangolinViewer::initialize(int width, int height) {
     float fy = height * 0.7f;
     s_cam = pangolin::OpenGlRenderState(
         pangolin::ProjectionMatrix(width, height, fx, fy, width/2, height/2, 0.1, 1000),
-        pangolin::ModelViewLookAt(0, -3, 2, 0, 0, 0, pangolin::AxisZ)  // Behind and slightly above origin
+        pangolin::ModelViewLookAt(-3, -3, 3, 0, 0, 0, pangolin::AxisZ)  // Changed to AxisZ for better orientation
     );
 
     // Setup display panels
@@ -130,32 +137,29 @@ void PangolinViewer::setup_panels() {
         image_height = 480.0f;
     }
 
-    // 2. Feature tracking image - dynamically calculated based on UI panel width and actual image ratio
+    // 2. Feature tracking image (top position)
     float tracking_aspect = image_width / image_height;  // 752/480 = 1.567
     float display_width = static_cast<float>(m_window_width) * 0.25f;  // UI panel width (25% of window width)
     float tracking_height = display_width / tracking_aspect;
     float tracking_normalized_height = tracking_height / static_cast<float>(m_window_height);
     
-    // 3. Stereo matching image - width doubled (left and right images combined)
-    float stereo_aspect = (image_width * 2.0f) / image_height;  // (752*2)/480 = 3.133
-    float stereo_height = display_width / stereo_aspect;
-    float stereo_normalized_height = stereo_height / static_cast<float>(m_window_height);
+    // 3. Uncertainty debugging image (bottom position)
+    float uncertainty_aspect = image_width / image_height;  // Same aspect ratio as feature tracking
+    float uncertainty_height = display_width / uncertainty_aspect;
+    float uncertainty_normalized_height = uncertainty_height / static_cast<float>(m_window_height);
     
-    // Dynamically calculate UI panel height - avoid overlapping with images
-    float total_image_height = tracking_normalized_height + stereo_normalized_height;
-    float available_space_for_ui = 1.0f - total_image_height;
-    float ui_panel_height = std::max(0.2f, available_space_for_ui); // Ensure minimum 20% height
-    
-    // Calculate image positions - tracking image now at bottom  
-    m_tracking_image_bottom = 0.0f; // Bottom-most (Feature Tracking)
+    // Layout from TOP to BOTTOM: UI panel -> tracking image (at bottom)
+    // Only tracking image is enabled, placed at the very bottom
+    m_tracking_image_bottom = 0.0f;  // Tracking image at the very bottom
     float tracking_image_top = m_tracking_image_bottom + tracking_normalized_height;
     
-    m_stereo_image_bottom = tracking_image_top; // Stereo image above tracking
-    float stereo_image_top = m_stereo_image_bottom + stereo_normalized_height;
-    
-    // UI panel in the space above images
-    float ui_panel_bottom = stereo_image_top;
+    // UI panel takes the rest of the space above tracking image
+    float ui_panel_bottom = tracking_image_top;
     float ui_panel_top = 1.0f;
+    
+    // Uncertainty image disabled
+    m_uncertainty_debug_image_bottom = 0.0f;
+    float uncertainty_image_top = 0.0f;
     
     if (!m_panels_created) {
         // Create panels only once
@@ -168,17 +172,17 @@ void PangolinViewer::setup_panels() {
             .SetBounds(0.0, 1.0, pangolin::Attach::Frac(ui_panel_ratio), pangolin::Attach::Frac(1.0f))
             .SetHandler(new pangolin::Handler3D(s_cam));
 
-        // 1. UI panel - top left (above images)
+        // 1. UI panel - above tracking image
         d_panel = pangolin::CreatePanel("ui")
             .SetBounds(ui_panel_bottom, ui_panel_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio));
         
-        // 2. Feature tracking image (now at bottom)
+        // 2. Feature tracking image at the bottom
         d_img_left = pangolin::CreateDisplay()
             .SetBounds(m_tracking_image_bottom, tracking_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -tracking_aspect);
             
-        // 3. Stereo matching image (above tracking image)  
-        d_img_right = pangolin::CreateDisplay()
-            .SetBounds(m_stereo_image_bottom, stereo_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -stereo_aspect);
+        // 3. Uncertainty debugging image - DISABLED
+        // d_img_right = pangolin::CreateDisplay()
+        //     .SetBounds(m_uncertainty_debug_image_bottom, uncertainty_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -uncertainty_aspect);
         
         m_panels_created = true;
     } else {
@@ -190,38 +194,34 @@ void PangolinViewer::setup_panels() {
         float new_tracking_height = new_display_width / tracking_aspect;
         float new_tracking_normalized_height = new_tracking_height / static_cast<float>(m_window_height);
         
-        float new_stereo_height = new_display_width / stereo_aspect;
-        float new_stereo_normalized_height = new_stereo_height / static_cast<float>(m_window_height);
+        float new_uncertainty_height = new_display_width / uncertainty_aspect;
+        float new_uncertainty_normalized_height = new_uncertainty_height / static_cast<float>(m_window_height);
         
-        // Dynamically recalculate UI panel height
-        float new_total_image_height = new_tracking_normalized_height + new_stereo_normalized_height;
-        float new_available_space_for_ui = 1.0f - new_total_image_height;
-        float new_ui_panel_height = std::max(0.2f, new_available_space_for_ui);
-        
-        // Recalculate image positions - tracking image now at bottom
-        m_tracking_image_bottom = 0.0f; // Bottom-most (Feature Tracking)  
+        // Layout from TOP to BOTTOM: UI panel -> tracking image (at bottom)
+        m_tracking_image_bottom = 0.0f;  // Tracking image at the very bottom
         float new_tracking_image_top = m_tracking_image_bottom + new_tracking_normalized_height;
         
-        m_stereo_image_bottom = new_tracking_image_top; // Stereo image above tracking
-        float new_stereo_image_top = m_stereo_image_bottom + new_stereo_normalized_height;
-        
-        // UI panel in the space above images
-        float new_ui_panel_bottom = new_stereo_image_top;  // Above stereo image (which is now above tracking)
+        // UI panel takes the rest of the space above tracking image
+        float new_ui_panel_bottom = new_tracking_image_top;
         float new_ui_panel_top = 1.0f;
+        
+        // Uncertainty image disabled
+        float new_uncertainty_image_top = 0.0f;
+        m_uncertainty_debug_image_bottom = 0.0f;
         
         d_cam.SetBounds(0.0, 1.0, pangolin::Attach::Frac(ui_panel_ratio), pangolin::Attach::Frac(1.0f));
         d_panel.SetBounds(new_ui_panel_bottom, new_ui_panel_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio));
         
-        // 원본 이미지 aspect ratio 유지 (이미지 크기는 bounds로, 비율은 고정)
+        // Update tracking image bounds
         d_img_left.SetBounds(m_tracking_image_bottom, new_tracking_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -tracking_aspect);
-        d_img_right.SetBounds(m_stereo_image_bottom, new_stereo_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -stereo_aspect);
+        // d_img_right.SetBounds(m_uncertainty_debug_image_bottom, new_uncertainty_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -uncertainty_aspect);
      
     }
 }
 
 void PangolinViewer::shutdown() {
     if (m_initialized) {
-        pangolin::DestroyWindow("Visual-Inertial Odometry");
+        pangolin::DestroyWindow("Statistical Uncertainty Learning for Robust Visual-Inertial State Estimation");
         m_initialized = false;
     }
 }
@@ -261,18 +261,7 @@ void PangolinViewer::render() {
     d_cam.Activate(s_cam);
 
     // Draw 3D content
-    // Check if current system is RGB-D and don't draw grid for RGB-D
-    bool is_rgbd_system = false;
-    {
-        std::lock_guard<std::mutex> lock(m_data_mutex);
-        if (m_last_keyframe && m_last_keyframe->is_rgbd()) {
-            is_rgbd_system = true;
-        } else if (!m_keyframe_window.empty() && m_keyframe_window.back()->is_rgbd()) {
-            is_rgbd_system = true;
-        }
-    }
-    
-    if (m_show_grid && !is_rgbd_system) {
+    if (m_show_grid) {
         draw_grid();
     }
 
@@ -287,22 +276,19 @@ void PangolinViewer::render() {
     // Draw map points with color differentiation
     draw_map_points();
 
-    // Draw dense color cloud for RGB-D keyframes
-    if (m_show_dense_cloud && !m_keyframe_window.empty()) {
-        // Check if any keyframe is RGB-D
-        bool has_rgbd_keyframes = false;
-        {
-            std::lock_guard<std::mutex> lock(m_data_mutex);
-            for (const auto& kf : m_keyframe_window) {
-                if (kf && kf->is_rgbd()) {
-                    has_rgbd_keyframes = true;
-                    break;
-                }
-            }
+    // Draw uncertainty ellipsoids if enabled
+    if (m_show_uncertainty_ellipsoids) {
+        std::lock_guard<std::mutex> lock(m_data_mutex);
+        if (!m_all_map_points_storage.empty()) {
+            render_map_point_uncertainties(m_all_map_points_storage);
         }
-        
-        if (has_rgbd_keyframes) {
-            draw_dense_color_cloud();
+    }
+
+    // Draw observation point clouds if enabled
+    if (m_show_observation_point_clouds) {
+        std::lock_guard<std::mutex> lock(m_data_mutex);
+        if (!m_all_map_points_storage.empty()) {
+            render_observation_point_clouds(m_all_map_points_storage);
         }
     }
 
@@ -314,10 +300,6 @@ void PangolinViewer::render() {
         draw_keyframe_frustums();
     }
 
-    if (m_show_ground_truth_trajectory && m_show_gt_trajectory && !m_gt_trajectory.empty()) {
-        draw_gt_trajectory();
-    }
-
     if (!m_current_pose.isZero()) {
         draw_pose();
         
@@ -326,21 +308,19 @@ void PangolinViewer::render() {
         }
     }
 
-    // Render images
+    // Render tracking image at the bottom
     if (m_has_tracking_image) {
         d_img_left.Activate();
         glColor3f(1.0, 1.0, 1.0);
         m_tracking_image.RenderToViewport();
     }
 
-    if (m_has_stereo_image) {
-        d_img_right.Activate();
-        glColor3f(1.0, 1.0, 1.0);
-        m_stereo_image.RenderToViewport();
-        
-        // Note: "Stereo Matching" text would be displayed here
-        // Text rendering removed to avoid API compatibility issues
-    }
+    // Uncertainty debug image - DISABLED
+    // if (m_has_uncertainty_debug_image) {
+    //     d_img_right.Activate();
+    //     glColor3f(1.0, 1.0, 1.0);
+    //     m_uncertainty_debug_image.RenderToViewport();
+    // }
 
     // Pangolin automatically renders the UI panel with tracking variables
     // No custom drawing needed - the pangolin::Var variables are displayed automatically
@@ -358,35 +338,35 @@ void PangolinViewer::render() {
     // Process keyboard input - will be handled externally
     // Note: Space bar and 'n' key handling is done in the main application loop
 
-    // Follow Frame mode
-    if (m_follow_frame_checkbox && !m_current_camera_pose.isZero()) {
-        // Get current camera position and orientation
-        Eigen::Vector3f cam_pos = m_current_camera_pose.block<3, 1>(0, 3);
-        Eigen::Matrix3f cam_rot = m_current_camera_pose.block<3, 3>(0, 0);
+    // Follow Frame mode - use current frame directly for most accurate pose
+    if (m_follow_frame_checkbox && m_current_frame) {
+        // Get T_wc (world to camera) from current frame
+        Eigen::Matrix4f T_wc = m_current_frame->get_Twc();
         
-        // Camera coordinate system: X-right, Y-down, Z-forward
-        Eigen::Vector3f cam_forward = cam_rot.col(2);   // +Z axis (forward direction)
-        Eigen::Vector3f cam_right = cam_rot.col(0);     // +X axis (right direction) 
-        Eigen::Vector3f cam_up = -cam_rot.col(1);       // -Y axis (up direction, camera Y is down)
+        Eigen::Vector3f cam_pos = T_wc.block<3, 1>(0, 3);
+        Eigen::Matrix3f cam_rot = T_wc.block<3, 3>(0, 0);
         
-        // Position the viewer camera behind and slightly above the current camera
-        float follow_distance = 1.0f;  // Distance behind the camera (increased from 1.0f)
-        float follow_height = 0.4f;    // Height above the camera (slightly increased from 0.3f)
-        Eigen::Vector3f viewer_pos = cam_pos - cam_forward * follow_distance + cam_up * follow_height;
+        // Camera coordinate system in OpenCV/SLAM: X-right, Y-down, Z-forward
+        // We want to place viewer behind (-Z) and above (-Y which is up)
+        Eigen::Vector3f cam_forward = cam_rot.col(2);   // +Z forward
+        Eigen::Vector3f cam_up = -cam_rot.col(1);       // -Y is up (Y is down in camera frame)
         
-        // Look at a point in front of the current camera
-        float look_ahead_distance = 2.0f;  // Look ahead distance
-        Eigen::Vector3f look_at = cam_pos + cam_forward * look_ahead_distance;
+        // Place viewer behind and above the camera
+        float distance = 2.5f;   // Distance behind camera
+        float height = 1.2f;     // Height above camera
+        Eigen::Vector3f viewer_position = cam_pos - cam_forward * distance + cam_up * height;
         
-        // Smooth camera up vector (use world up with slight forward bias)
-        Eigen::Vector3f world_up(0.0f, 0.0f, 1.0f);  // World Z-up
-        Eigen::Vector3f smooth_up = (cam_up * 0.7f + world_up * 0.3f).normalized();
+        // Look at current camera position
+        Eigen::Vector3f look_at_point = cam_pos;
         
-        // Update the camera view with tracking
+        // Use world Z-up as the up vector for stable view
+        Eigen::Vector3f up_vector(0.0f, 0.0f, 1.0f);
+        
+        // Set the view matrix directly
         s_cam.SetModelViewMatrix(pangolin::ModelViewLookAt(
-            viewer_pos.x(), viewer_pos.y(), viewer_pos.z(),     // Viewer camera position (behind and above)
-            look_at.x(), look_at.y(), look_at.z(),              // Look ahead of the current camera
-            smooth_up.x(), smooth_up.y(), smooth_up.z()         // Smooth up vector
+            viewer_position.x(), viewer_position.y(), viewer_position.z(),
+            look_at_point.x(), look_at_point.y(), look_at_point.z(),
+            up_vector.x(), up_vector.y(), up_vector.z()
         ));
     }
 
@@ -404,7 +384,7 @@ void PangolinViewer::render() {
 }
 
 void PangolinViewer::reset_camera() {
-    s_cam.SetModelViewMatrix(pangolin::ModelViewLookAt(0, -3, 2, 0, 0, 0, pangolin::AxisZ));
+    s_cam.SetModelViewMatrix(pangolin::ModelViewLookAt(-3, -3, 3, 0, 0, 0, pangolin::AxisZ));
 }
 
 void PangolinViewer::draw_grid() {
@@ -510,6 +490,140 @@ void PangolinViewer::draw_map_points() {
     }
    
     
+    // Draw marginalized map points as green wireframe spheres (overlay on top of everything else)
+    if (!m_all_map_points_storage.empty() && m_show_accumulated_map_points) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(0.0f, 1.0f, 0.0f, 0.1f); // Green for marginalized points with alpha 0.3
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); // Enable wireframe mode
+        glLineWidth(1.0f);
+        
+        for (const auto& point : m_all_map_points_storage) {
+            if (point && !point->is_bad() && point->is_marginalized()) {
+                Eigen::Vector3f position = point->get_position();
+                
+                // Draw wireframe sphere using OpenGL primitives
+                glPushMatrix();
+                glTranslatef(position.x(), position.y(), position.z());
+                
+                // Draw a wireframe sphere (radius 0.05 as requested)
+                const float radius = 0.05f;
+                const int slices = 12;
+                const int stacks = 8;
+                
+                for (int i = 0; i < stacks; ++i) {
+                    float lat0 = M_PI * (-0.5f + (float)i / stacks);
+                    float z0 = radius * sin(lat0);
+                    float zr0 = radius * cos(lat0);
+                    
+                    float lat1 = M_PI * (-0.5f + (float)(i + 1) / stacks);
+                    float z1 = radius * sin(lat1);
+                    float zr1 = radius * cos(lat1);
+                    
+                    glBegin(GL_LINE_STRIP);
+                    for (int j = 0; j <= slices; ++j) {
+                        float lng = 2 * M_PI * (float)j / slices;
+                        float x = cos(lng);
+                        float y = sin(lng);
+                        
+                        glVertex3f(x * zr0, y * zr0, z0);
+                        glVertex3f(x * zr1, y * zr1, z1);
+                    }
+                    glEnd();
+                }
+                
+                // Draw longitude lines
+                for (int j = 0; j < slices; ++j) {
+                    float lng = 2 * M_PI * (float)j / slices;
+                    float x = cos(lng);
+                    float y = sin(lng);
+                    
+                    glBegin(GL_LINE_STRIP);
+                    for (int i = 0; i <= stacks; ++i) {
+                        float lat = M_PI * (-0.5f + (float)i / stacks);
+                        float z = radius * sin(lat);
+                        float zr = radius * cos(lat);
+                        
+                        glVertex3f(x * zr, y * zr, z);
+                    }
+                    glEnd();
+                }
+                
+                glPopMatrix();
+            }
+        }
+        
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // Reset to fill mode
+        glDisable(GL_BLEND); // Disable blending
+    }
+    
+    // Also check window map points for marginalized ones
+    if (!m_window_map_points_storage.empty() && m_show_accumulated_map_points) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(0.0f, 1.0f, 0.0f, 0.3f); // Green for marginalized points with alpha 0.3
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); // Enable wireframe mode
+        glLineWidth(1.0f);
+        
+        for (const auto& point : m_window_map_points_storage) {
+            if (point && !point->is_bad() && point->is_marginalized()) {
+                Eigen::Vector3f position = point->get_position();
+                
+                // Draw wireframe sphere using OpenGL primitives
+                glPushMatrix();
+                glTranslatef(position.x(), position.y(), position.z());
+                
+                // Draw a wireframe sphere (radius 0.05 as requested)
+                const float radius = 0.05f;
+                const int slices = 12;
+                const int stacks = 8;
+                
+                for (int i = 0; i < stacks; ++i) {
+                    float lat0 = M_PI * (-0.5f + (float)i / stacks);
+                    float z0 = radius * sin(lat0);
+                    float zr0 = radius * cos(lat0);
+                    
+                    float lat1 = M_PI * (-0.5f + (float)(i + 1) / stacks);
+                    float z1 = radius * sin(lat1);
+                    float zr1 = radius * cos(lat1);
+                    
+                    glBegin(GL_LINE_STRIP);
+                    for (int j = 0; j <= slices; ++j) {
+                        float lng = 2 * M_PI * (float)j / slices;
+                        float x = cos(lng);
+                        float y = sin(lng);
+                        
+                        glVertex3f(x * zr0, y * zr0, z0);
+                        glVertex3f(x * zr1, y * zr1, z1);
+                    }
+                    glEnd();
+                }
+                
+                // Draw longitude lines
+                for (int j = 0; j < slices; ++j) {
+                    float lng = 2 * M_PI * (float)j / slices;
+                    float x = cos(lng);
+                    float y = sin(lng);
+                    
+                    glBegin(GL_LINE_STRIP);
+                    for (int i = 0; i <= stacks; ++i) {
+                        float lat = M_PI * (-0.5f + (float)i / stacks);
+                        float z = radius * sin(lat);
+                        float zr = radius * cos(lat);
+                        
+                        glVertex3f(x * zr, y * zr, z);
+                    }
+                    glEnd();
+                }
+                
+                glPopMatrix();
+            }
+        }
+        
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // Reset to fill mode
+        glDisable(GL_BLEND); // Disable blending
+    }
+   
     // Draw current frame tracking points in red (highest priority - overlay on top)
     if (!m_current_map_points.empty() && m_show_current_map_points) {
         glPointSize(m_point_size * 4.0f); // Largest for visibility
@@ -531,8 +645,12 @@ void PangolinViewer::draw_trajectory() {
     
     if (all_frames.size() < 2) return;
     
+    // Enable blending for transparency
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    
     glLineWidth(m_trajectory_width);
-    glColor3f(1.0f, 1.0f, 0.0f); // Yellow trajectory
+    glColor4f(1.0f, 1.0f, 0.0f, 0.3f); // Yellow trajectory with 0.3 alpha
     
     glBegin(GL_LINE_STRIP);
     for (const auto& frame : all_frames) {
@@ -543,7 +661,10 @@ void PangolinViewer::draw_trajectory() {
     }
     glEnd();
     
-    glLineWidth(1.0f);
+    // Disable blending after drawing
+    glDisable(GL_BLEND);
+    
+    glLineWidth(0.3f);
 }
 
 void PangolinViewer::draw_keyframe_frustums() {
@@ -597,33 +718,6 @@ void PangolinViewer::draw_keyframe_frustums() {
         }
         glEnd();
     }
-}
-
-void PangolinViewer::draw_gt_trajectory() {
-    if (m_gt_trajectory.size() < 2) return;
-    
-    glLineWidth(m_trajectory_width + 1.0f);
-    glColor3f(0.0f, 1.0f, 0.0f); // Green GT trajectory
-
-    auto first_frame = get_first_frame();
-
-    auto prefix = m_gt_trajectory[0].inverse() * first_frame->get_Twb();
-
-
-    
-    glBegin(GL_LINE_STRIP);
-    for (const auto& pose : m_gt_trajectory) {
-        // Apply gravity transformation if available
-
-        Eigen::Matrix4f adjusted_pose = pose * prefix;
-
-        Eigen::Vector3f transformed_pos = adjusted_pose.block<3, 1>(0, 3);
-       
-        glVertex3f(transformed_pos.x(), transformed_pos.y(), transformed_pos.z());
-    }
-    glEnd();
-    
-    glLineWidth(1.0f);
 }
 
 void PangolinViewer::draw_pose() {
@@ -694,8 +788,8 @@ void PangolinViewer::draw_camera_frustum() {
         point = rotation * point + position;
     }
     
-    glLineWidth(2.0f);
-    glColor3f(1.0f, 1.0f, 0.0f); // Yellow frustum
+    glLineWidth(4.0f);  // Thicker lines for current frame
+    glColor3f(1.0f, 0.4f, 0.7f); // Pink/Magenta frustum
     
     // Draw frustum edges
     glBegin(GL_LINES);
@@ -754,64 +848,6 @@ void PangolinViewer::update_trajectory(const std::vector<Eigen::Vector3f>& traje
     m_trajectory = trajectory;
 }
 
-void PangolinViewer::update_trajectory_with_gt(const std::vector<Eigen::Matrix4f>& trajectory, const std::vector<Eigen::Matrix4f>& gt_trajectory) {
-    // Convert trajectory poses to positions for legacy m_trajectory
-    m_trajectory.clear();
-    for (const auto& pose : trajectory) {
-        m_trajectory.push_back(pose.block<3, 1>(0, 3));
-    }
-    
-    // Clear existing GT trajectory to avoid duplication
-    m_gt_trajectory.clear();
-
-    // Use GT trajectory directly as poses with first frame alignment
-    if (!gt_trajectory.empty() && !trajectory.empty()) {
-        // Get first estimated pose from trajectory frames
-        auto first_frame = get_first_frame();
-        if (!first_frame) return;
-        
-        Eigen::Matrix4f first_est_pose = first_frame->get_Twb();
-        Eigen::Matrix4f first_gt_pose = gt_trajectory[0];
-
-        // Apply gravity transformation to GT trajectory if available
-        std::vector<Eigen::Matrix4f> transformed_gt_trajectory;
-        // Apply Tgw to all GT poses (same transformation applied to VIO trajectory)
-        for (const auto& gt_pose : gt_trajectory) {
-            Eigen::Matrix4f transformed_gt_pose = m_Tgw * gt_pose;
-            transformed_gt_trajectory.push_back(transformed_gt_pose);
-        }
-        // Update first GT pose after transformation
-        first_gt_pose = transformed_gt_trajectory[0];
-
-        
-        // Calculate SE(3) prefix for proper alignment (rotation + translation)
-        Eigen::Matrix4f prefix = first_gt_pose.inverse() * first_est_pose;
-        
-        // Apply prefix to all transformed GT poses and add them
-        for (const auto& gt_pose : transformed_gt_trajectory) {
-            // Apply SE(3) alignment prefix
-            Eigen::Matrix4f aligned_gt_pose = gt_pose * prefix;
-            m_gt_trajectory.push_back(aligned_gt_pose);
-        }
-    }
-    
-    // Print trajectory difference for the current frame (using aligned GT)
-    if (!trajectory.empty() && !m_gt_trajectory.empty()) {
-        size_t current_idx = trajectory.size() - 1;
-        if (current_idx < m_gt_trajectory.size()) {
-            Eigen::Vector3f current_est = trajectory[current_idx].block<3, 1>(0, 3);  // Extract position from pose
-            Eigen::Vector3f current_gt = m_gt_trajectory[current_idx].block<3,1>(0,3);
-            float position_error = (current_gt - current_est).norm();
-            
-            // spdlog::info("[VIEWER_TRAJ] Frame {}: EST=({:.3f}, {:.3f}, {:.3f}) GT=({:.3f}, {:.3f}, {:.3f}) ERROR={:.4f}m", 
-            //             current_idx, 
-            //             current_est.x(), current_est.y(), current_est.z(),
-            //             current_gt.x(), current_gt.y(), current_gt.z(),
-            //             position_error);
-        }
-    }
-}
-
 // DEPRECATED: Use update_keyframe_window() instead
 void PangolinViewer::update_keyframe_poses(const std::vector<Eigen::Matrix4f>& keyframe_poses) {
     // This function is deprecated but kept for backward compatibility
@@ -819,12 +855,6 @@ void PangolinViewer::update_keyframe_poses(const std::vector<Eigen::Matrix4f>& k
     spdlog::warn("update_keyframe_poses() is deprecated. Use update_keyframe_window() instead.");
     m_keyframe_poses = keyframe_poses;
 }
-
-void PangolinViewer::add_ground_truth_pose(const Eigen::Matrix4f& gt_pose) {
-    // Store original pose - transformation will be applied during rendering
-    m_gt_trajectory.push_back(gt_pose);
-}
-
 
 void PangolinViewer::update_map_points(const std::vector<Eigen::Vector3f>& all_points, const std::vector<Eigen::Vector3f>& current_points) {
     m_all_map_points = all_points;
@@ -856,7 +886,7 @@ void PangolinViewer::update_tracking_image_with_map_points(const cv::Mat& image,
     // Draw grid overlay for feature distribution visualization
     draw_feature_grid(image_with_grid);
     
-    // Draw map point indices if enabled (replaces the original blue text in Frame.cpp)
+    // Draw map point IDs if enabled (NO colored circles - just text IDs)
     if (m_show_map_point_indices && !features.empty() && !map_points.empty()) {
         // Simple approach: assume features and map_points are aligned by index
         size_t min_size = std::min(features.size(), map_points.size());
@@ -867,13 +897,13 @@ void PangolinViewer::update_tracking_image_with_map_points(const cv::Mat& image,
             
             cv::Point2f pixel_coord = features[i]->get_pixel_coord();
             
-            // Draw map point ID (red text) - NO CIRCLE DRAWING
+            // Draw map point ID (white text for clean tracking view) - NO CIRCLES
             std::string id_text = std::to_string(map_points[i]->get_id());
             cv::Point2f text_pos(pixel_coord.x + 5, pixel_coord.y - 5);  // Offset text slightly
             
-            // Use blue color for text (BGR: 255,0,0) and font size 0.7
+            // Use white color for text (BGR: 255,255,255) for clean tracking view
             cv::putText(image_with_grid, id_text, text_pos, 
-                       cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 255, 0), 1);  
+                       cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(255, 255, 255), 1);  
         }
     }
     
@@ -886,18 +916,156 @@ void PangolinViewer::update_tracking_image_with_map_points(const cv::Mat& image,
     // spdlog::debug("[PangolinViewer] Updated tracking image with features texture {}x{}", image.cols, image.rows);
 }
 
-void PangolinViewer::update_stereo_image(const cv::Mat& image) {
+void PangolinViewer::update_tracking_with_frame(std::shared_ptr<Frame> frame) {
+    if (!frame) return;
+
+    m_current_frame = frame;
+    
+    // Get raw image from frame
+    const cv::Mat& raw_image = frame->get_image();
+    
+    // Get features and map points from frame
+    const auto& features = frame->get_features();
+    const auto& map_points = frame->get_map_points();
+    
+    // Convert raw image to BGR if needed
+    cv::Mat display_image;
+    if (raw_image.channels() == 1) {
+        cv::cvtColor(raw_image, display_image, cv::COLOR_GRAY2BGR);
+    } else {
+        display_image = raw_image.clone();
+    }
+    
+    // Draw features directly on the image
+    int drawn_count = 0;
+    for (size_t i = 0; i < features.size(); ++i) {
+        const auto& feature = features[i];
+        if (feature && feature->is_valid()) {
+            const cv::Point2f& pt = feature->get_pixel_coord();
+            
+            // Determine color based on map point validity
+            cv::Scalar color;
+            if (i < map_points.size() && map_points[i] && !map_points[i]->is_bad()) {
+                color = cv::Scalar(0, 255, 0);  // Green (BGR) for valid map points
+            } else {
+                color = cv::Scalar(0, 0, 255);  // Red (BGR) for no map point
+            }
+            
+            // Draw circle
+            cv::circle(display_image, pt, 3, color, -1);
+            drawn_count++;
+        }
+    }
+    
+    
+    // Update texture with drawn image
+    m_tracking_image = create_texture_from_cv_mat(display_image);
+    m_has_tracking_image = true;
+    
+    // Clear OpenGL feature storage (not used anymore)
+    m_current_features.clear();
+    m_current_feature_colors.clear();
+}
+
+void PangolinViewer::update_tracking_image_direct(const cv::Mat& raw_image,
+                                                 const std::vector<std::shared_ptr<Feature>>& features,
+                                                 const std::vector<std::shared_ptr<MapPoint>>& map_points) {
+    // Convert raw image to BGR if needed (no feature drawing here)
+    cv::Mat display_image;
+    if (raw_image.channels() == 1) {
+        cv::cvtColor(raw_image, display_image, cv::COLOR_GRAY2BGR);
+    } else {
+        display_image = raw_image.clone();
+    }
+    
+    // Just update the texture with raw image - features will be rendered by OpenGL
+    m_tracking_image = create_texture_from_cv_mat(display_image);
+    m_has_tracking_image = true;
+    
+    // Debug: Print feature count
+    spdlog::info("Updated tracking image: {}x{}, {} features", 
+                 raw_image.cols, raw_image.rows, features.size());
+    
+    // Store features data for OpenGL rendering - just draw map point features as circles
+    m_current_features.clear();
+    m_current_feature_colors.clear();
+    
+    for (size_t i = 0; i < features.size(); ++i) {
+        const auto& feature = features[i];
+        if (feature && feature->is_valid()) {
+            const cv::Point2f& pt = feature->get_pixel_coord();
+            
+            // Convert pixel coordinates to normalized coordinates [-1, 1]
+            float norm_x = (2.0f * pt.x / raw_image.cols) - 1.0f;
+            float norm_y = 1.0f - (2.0f * pt.y / raw_image.rows);  // Flip Y
+            
+            m_current_features.push_back(Eigen::Vector2f(norm_x, norm_y));
+            
+            // Determine color based on map point validity
+            if (i < map_points.size() && map_points[i] && !map_points[i]->is_bad()) {
+                m_current_feature_colors.push_back(Eigen::Vector3f(0.0f, 1.0f, 0.0f)); // Green for valid map points
+            } else {
+                m_current_feature_colors.push_back(Eigen::Vector3f(1.0f, 0.0f, 0.0f)); // Red for no map point
+            }
+        }
+    }
+    
+    spdlog::info("Prepared {} features for OpenGL rendering", m_current_features.size());
+}
+
+void PangolinViewer::update_tracking_image_with_uncertainty_debug(const cv::Mat& image, 
+                                                                      const std::vector<std::shared_ptr<Feature>>& features,
+                                                                      const std::vector<std::shared_ptr<MapPoint>>& map_points,
+                                                                      std::shared_ptr<Frame> current_frame) {
+    if (image.empty()) return;
+    
+    // Create a copy of the image to draw on
+    cv::Mat image_with_debug = image.clone();
+    
+    // Draw grid overlay for feature distribution visualization
+    draw_feature_grid(image_with_debug);
+    
+    // Draw uncertainty ellipses for all map points (debugging)
+    debug_uncertainty_projection(image_with_debug, current_frame);
+    
+    // Draw map point indices if enabled
+    if (m_show_map_point_indices && !features.empty() && !map_points.empty()) {
+        // Simple approach: assume features and map_points are aligned by index
+        size_t min_size = std::min(features.size(), map_points.size());
+        
+        for (size_t i = 0; i < min_size; ++i) {
+            if (!features[i] || !features[i]->is_valid()) continue;
+            if (!map_points[i] || map_points[i]->is_bad()) continue;
+            
+            cv::Point2f pixel_coord = features[i]->get_pixel_coord();
+            
+            // Draw map point ID (yellow text for better visibility over uncertainty ellipses)
+            std::string id_text = std::to_string(map_points[i]->get_id());
+            cv::Point2f text_pos(pixel_coord.x + 5, pixel_coord.y - 5);  // Offset text slightly
+            
+            // Use yellow color for text (BGR: 0,255,255) and font size 0.4
+            cv::putText(image_with_debug, id_text, text_pos, 
+                       cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(0, 255, 255), 1);  
+        }
+    }
+    
+    // Convert to texture
+    m_tracking_image = create_texture_from_cv_mat(image_with_debug);
+    m_has_tracking_image = true;
+}
+
+void PangolinViewer::update_uncertainty_debug_image(const cv::Mat& image) {
     if (image.empty()) {
-        spdlog::warn("[PangolinViewer] Received empty stereo image");
+        spdlog::warn("[PangolinViewer] Received empty uncertainty debug image");
         return;
     }
     
-    m_stereo_image = create_texture_from_cv_mat(image);
-    m_has_stereo_image = true;
+    m_uncertainty_debug_image = create_texture_from_cv_mat(image);
+    m_has_uncertainty_debug_image = true;
 
     // The bounds and aspect ratio are now handled exclusively by setup_panels().
     // This function is only responsible for updating the texture.
-    // spdlog::debug("[PangolinViewer] Updated stereo image texture {}x{}", image.cols, image.rows);
+    // spdlog::debug("[PangolinViewer] Updated uncertainty debug image texture {}x{}", image.cols, image.rows);
 }
 
 void PangolinViewer::process_keyboard_input(bool& auto_play, bool& step_mode, bool& advance_frame) {
@@ -1058,57 +1226,467 @@ void PangolinViewer::set_gravity_transformation(const Eigen::Matrix4f& Tgw) {
     spdlog::info("  [{:.6f}, {:.6f}, {:.6f}, {:.6f}]", Tgw(3,0), Tgw(3,1), Tgw(3,2), Tgw(3,3));
 }
 
-void PangolinViewer::draw_dense_color_cloud() {
-    std::lock_guard<std::mutex> lock(m_data_mutex);
+// Uncertainty visualization implementation
+void PangolinViewer::render_map_point_uncertainties(const std::vector<std::shared_ptr<MapPoint>>& map_points) {
+    if (map_points.empty()) return;
     
-    // Collect cached dense color clouds from all keyframes in sliding window
-    std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3i>> all_color_points;
+    // First pass: find min and max uncertainty sizes for normalization
+    float min_size = std::numeric_limits<float>::max();
+    float max_size = std::numeric_limits<float>::min();
     
-    for (const auto& keyframe : m_keyframe_window) {
-        if (!keyframe || !keyframe->is_rgbd() || !keyframe->has_dense_color_cloud()) {
-            continue;
+    for (const auto& mp : map_points) {
+        if (!mp || !mp->has_uncertainty()) continue;
+        
+        Eigen::Matrix3f combined_uncertainty = mp->get_world_uncertainty();
+        
+        // Calculate uncertainty size as the trace (sum of eigenvalues) of covariance matrix
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(combined_uncertainty);
+        if (solver.info() == Eigen::Success) {
+            Eigen::Vector3f eigenvalues = solver.eigenvalues();
+            float uncertainty_size = eigenvalues.sum(); // Total uncertainty volume
+            min_size = std::min(min_size, uncertainty_size);
+            max_size = std::max(max_size, uncertainty_size);
+        }
+    }
+    
+    // Render each map point's COMBINED uncertainty with size-based coloring
+    for (const auto& mp : map_points) {
+        if (!mp || !mp->has_uncertainty()) continue;
+        
+        Eigen::Vector3f position = mp->get_position();
+        Eigen::Matrix3f combined_uncertainty = mp->get_world_uncertainty();
+        
+        // Calculate uncertainty size and normalize it
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(combined_uncertainty);
+        Eigen::Vector3f color(0.3f, 0.9f, 0.7f); // Mint color for all 3D ellipsoids
+        
+        if (solver.info() == Eigen::Success) {
+            // Keep mint color regardless of uncertainty size
+            // Mint color: light green-blue combination
+            color.x() = 0.3f; // Red component (low for mint)
+            color.y() = 0.9f; // Green component (high for mint)
+            color.z() = 0.7f; // Blue component (medium-high for mint)
         }
         
-        // Get cached dense color cloud from keyframe
-        const auto& color_points = keyframe->get_dense_color_cloud();
+        float exaggeration_factor = 1.96f;
         
-        if (color_points.empty()) {
-            continue;
+        // Draw combined uncertainty ellipsoid with size-based color
+        draw_uncertainty_ellipsoid(position, combined_uncertainty, color, 0.3f, m_uncertainty_scale * exaggeration_factor);
+    }
+}
+
+void PangolinViewer::draw_uncertainty_ellipsoid(const Eigen::Vector3f& position, 
+                                               const Eigen::Matrix3f& covariance,
+                                               const Eigen::Vector3f& color,
+                                               float alpha,
+                                               float scale_factor) {
+    // Check if covariance is valid
+    if (covariance.determinant() <= 0) {
+        return;  // Skip invalid covariance matrices
+    }
+
+
+
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> orig_solver(covariance);
+    if (orig_solver.info() == Eigen::Success) {
+        Eigen::Vector3f orig_eigenvalues = orig_solver.eigenvalues();
+    }
+
+    Eigen::Vector3f eigenvalues = orig_solver.eigenvalues();
+    Eigen::Matrix3f eigenvectors = orig_solver.eigenvectors();
+  
+    // Save current OpenGL state
+    glPushMatrix();
+    
+    // Translate to position
+    glTranslatef(position.x(), position.y(), position.z());
+    
+    // Apply rotation (eigenvectors as rotation matrix)
+    Eigen::Matrix4f transform = Eigen::Matrix4f::Identity();
+    transform.block<3,3>(0,0) = eigenvectors;
+    
+    // Convert to column-major for OpenGL
+    float gl_matrix[16];
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            gl_matrix[i*4 + j] = transform(j, i);
         }
+    }
+    glMultMatrixf(gl_matrix);
+    
+    // Set color with transparency (더 투명하게)
+    glColor4f(color.x(), color.y(), color.z(), alpha * 0.8f);
+    
+    // Enable blending for transparency
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    
+    // Draw wireframe ellipsoid using lines (no need for glScalef since we pass radii directly)
+    draw_wireframe_ellipsoid(eigenvalues.x(), eigenvalues.y(), eigenvalues.z(), 16, 12);
+    
+    // Restore OpenGL state
+    glDisable(GL_BLEND);
+    glPopMatrix();
+}
+
+void PangolinViewer::draw_wireframe_ellipsoid(float a, float b, float c, int slices, int stacks) {
+    // Generate ellipsoid vertices with different radii for each axis
+    std::vector<Eigen::Vector3f> vertices;
+    
+    // Generate vertices for ellipsoid
+    for (int i = 0; i <= stacks; ++i) {
+        float phi = M_PI * float(i) / float(stacks);  // Vertical angle (0 to π)
+        float sin_phi = sin(phi);
+        float cos_phi = cos(phi);
         
-        // Get world pose from keyframe (T_wc)
-        Eigen::Matrix4f T_wc = keyframe->get_Twc();
-        
-        // Transform points to world coordinates and add to collection
-        for (const auto& color_point : color_points) {
-            Eigen::Vector4f cam_point(color_point.position[0], color_point.position[1], color_point.position[2], 1.0f);
-            Eigen::Vector4f world_point = T_wc * cam_point;
+        for (int j = 0; j <= slices; ++j) {
+            float theta = 2.0f * M_PI * float(j) / float(slices);  // Horizontal angle (0 to 2π)
+            float sin_theta = sin(theta);
+            float cos_theta = cos(theta);
             
-            all_color_points.emplace_back(
-                Eigen::Vector3f(world_point[0], world_point[1], world_point[2]),
-                color_point.color
-            );
+            // Parametric ellipsoid equations:
+            // x = a * sin(phi) * cos(theta)
+            // y = b * sin(phi) * sin(theta)  
+            // z = c * cos(phi)
+            float x = a * sin_phi * cos_theta;
+            float y = b * sin_phi * sin_theta;
+            float z = c * cos_phi;
+            
+            vertices.push_back(Eigen::Vector3f(x, y, z));
         }
     }
     
-    if (all_color_points.empty()) {
-        return;
+    // Draw horizontal circles (latitude lines)
+    glBegin(GL_LINES);
+    for (int i = 0; i < stacks; ++i) {
+        for (int j = 0; j < slices; ++j) {
+            int current = i * (slices + 1) + j;
+            int next = i * (slices + 1) + ((j + 1) % (slices + 1));
+            
+            // Skip the last slice to avoid duplication
+            if (j < slices) {
+                glVertex3f(vertices[current].x(), vertices[current].y(), vertices[current].z());
+                glVertex3f(vertices[next].x(), vertices[next].y(), vertices[next].z());
+            }
+        }
     }
     
-    glPointSize(1.0f);  // Small points for dense cloud
-    glBegin(GL_POINTS);
-    
-    for (const auto& point : all_color_points) {
-        const Eigen::Vector3f& pos = point.first;
-        const Eigen::Vector3i& color = point.second;
-        
-        // Normalize color to [0,1] range
-        glColor3f(color[0] / 255.0f, color[1] / 255.0f, color[2] / 255.0f);
-        glVertex3f(pos[0], pos[1], pos[2]);
+    // Draw vertical circles (longitude lines)
+    for (int j = 0; j < slices; j += 2) {  // Draw every 2nd longitude line to avoid clutter
+        for (int i = 0; i < stacks; ++i) {
+            int current = i * (slices + 1) + j;
+            int below = (i + 1) * (slices + 1) + j;
+            
+            glVertex3f(vertices[current].x(), vertices[current].y(), vertices[current].z());
+            glVertex3f(vertices[below].x(), vertices[below].y(), vertices[below].z());
+        }
     }
-    
     glEnd();
+}
+
+void PangolinViewer::draw_wireframe_sphere(float radius, int slices, int stacks) {
+    // This is just a special case of ellipsoid where a = b = c = radius
+    draw_wireframe_ellipsoid(radius, radius, radius, slices, stacks);
+}
+Eigen::Vector3f PangolinViewer::uncertainty_to_color(float uncertainty_magnitude, 
+                                                   float min_uncertainty, 
+                                                   float max_uncertainty) {
+    if (max_uncertainty <= min_uncertainty) {
+        return Eigen::Vector3f(0.0f, 0.0f, 1.0f);  // Blue for uniform uncertainty
+    }
+    
+    // Normalize uncertainty to [0, 1]
+    float normalized = (uncertainty_magnitude - min_uncertainty) / (max_uncertainty - min_uncertainty);
+    normalized = std::max(0.0f, std::min(1.0f, normalized));
+    
+    // HSV color mapping: Blue (low) -> Green -> Yellow -> Red (high)
+    float hue = (1.0f - normalized) * 240.0f;  // 240° = blue, 0° = red
+    float saturation = 1.0f;
+    float value = 1.0f;
+    
+    // Convert HSV to RGB
+    float c = value * saturation;
+    float x = c * (1.0f - std::abs(std::fmod(hue / 60.0f, 2.0f) - 1.0f));
+    float m = value - c;
+    
+    float r, g, b;
+    if (hue >= 0 && hue < 60) {
+        r = c; g = x; b = 0;
+    } else if (hue >= 60 && hue < 120) {
+        r = x; g = c; b = 0;
+    } else if (hue >= 120 && hue < 180) {
+        r = 0; g = c; b = x;
+    } else if (hue >= 180 && hue < 240) {
+        r = 0; g = x; b = c;
+    } else if (hue >= 240 && hue < 300) {
+        r = x; g = 0; b = c;
+    } else {
+        r = c; g = 0; b = x;
+    }
+    
+    return Eigen::Vector3f(r + m, g + m, b + m);
+}
+
+// Uncertainty debugging implementation
+void PangolinViewer::debug_uncertainty_projection(cv::Mat& image, 
+                                                  std::shared_ptr<Frame> current_frame) {
+    if (!current_frame) return;
+    
+    // Get features from the current frame
+    const auto& features = current_frame->get_features();
+    const auto& map_points = current_frame->get_map_points();
+    
+    // Ensure features and map_points arrays are aligned
+    size_t min_size = std::min(features.size(), map_points.size());
+    
+    // Process each feature-mappoint pair
+    for (size_t i = 0; i < min_size; ++i) {
+        const auto& feature = features[i];
+        const auto& mp = map_points[i];
+        
+        if (!feature || !feature->is_valid()) continue;
+        if (!mp || mp->is_bad() || !mp->has_uncertainty()) continue;
+        
+        // Use feature's pixel coordinates directly (no reprojection needed)
+        cv::Point2f pixel_center = feature->get_pixel_coord();
+        
+        // Check if pixel is within image bounds
+        if (pixel_center.x < 0 || pixel_center.x >= image.cols || 
+            pixel_center.y < 0 || pixel_center.y >= image.rows) continue;
+        
+        // Get world uncertainty and transform to pixel
+        Eigen::Matrix3f world_uncertainty = mp->get_world_uncertainty();
+        Eigen::Matrix2f pixel_uncertainty = mp->transform_uncertainty_world_to_pixel(world_uncertainty, current_frame);
+        
+        // Draw uncertainty ellipse (color is determined inside based on axis product)
+        draw_uncertainty_ellipse_2d(image, pixel_center, pixel_uncertainty);
+    }
+}
+
+void PangolinViewer::draw_uncertainty_ellipse_2d(cv::Mat& image,
+                                                const cv::Point2f& center,
+                                                const Eigen::Matrix2f& pixel_uncertainty) {
+    // Check if uncertainty matrix is valid
+    if (pixel_uncertainty.determinant() <= 0) return;
+    
+    // Eigenvalue decomposition for ellipse shape
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix2f> solver(pixel_uncertainty);
+    if (solver.info() != Eigen::Success) return;
+    
+    Eigen::Vector2f eigenvalues = solver.eigenvalues();
+    Eigen::Matrix2f eigenvectors = solver.eigenvectors();
+    
+    // Ensure positive eigenvalues
+    for (int i = 0; i < 2; ++i) {
+        if (eigenvalues(i) <= 0) eigenvalues(i) = 0.1f;
+    }
+    
+    // Convert to ellipse parameters (2-sigma ellipse)
+    float scale_factor = 2.0f; // 2-sigma
+    float major_axis = scale_factor * std::sqrt(eigenvalues(1)); // Larger eigenvalue
+    float minor_axis = scale_factor * std::sqrt(eigenvalues(0)); // Smaller eigenvalue
+    
+    // Ensure minimum axis lengths for visibility
+    float min_axis_length = 10.0f;
+    float max_axis_length = 100.0f;
+    major_axis = std::max(major_axis, min_axis_length);
+    minor_axis = std::max(minor_axis, min_axis_length);
+    major_axis = std::min(major_axis, max_axis_length);
+    minor_axis = std::min(minor_axis, max_axis_length);
+    
+    // Calculate axis product for color mapping
+    float axis_product = major_axis * minor_axis;
+    
+    // Color mapping based on axis product:
+    // <= 100 -> Red
+    // >= 1600 -> Blue (40x40 max size)
+    // Between -> Gradient
+    float min_product = min_axis_length*min_axis_length;
+    float max_product = max_axis_length*max_axis_length;
+    
+    float normalized_size;
+    if (axis_product <= min_product) {
+        normalized_size = 0.0f;  // Red
+    } else if (axis_product >= max_product) {
+        normalized_size = 1.0f;  // Blue
+    } else {
+        normalized_size = (axis_product - min_product) / (max_product - min_product);
+    }
+    
+    // BGR color interpolation: Red (0,0,255) -> Blue (255,0,0)
+    cv::Scalar ellipse_color;
+    ellipse_color[0] = normalized_size * 255;           // Blue component
+    ellipse_color[1] = 0;                              // Green component  
+    ellipse_color[2] = (1.0f - normalized_size) * 255; // Red component
+    
+    // Calculate rotation angle (in degrees)
+    Eigen::Vector2f major_eigenvector = eigenvectors.col(1); // Eigenvector of larger eigenvalue
+    float angle = std::atan2(major_eigenvector.y(), major_eigenvector.x()) * 180.0f / M_PI;
+    
+    // Define ellipse parameters for OpenCV
+    cv::Size2f axes(major_axis, minor_axis);
+    
+    // Draw filled ellipse with transparency
+    cv::Mat overlay = image.clone();
+    cv::ellipse(overlay, center, axes, angle, 0, 360, ellipse_color, -1); // Filled ellipse
+    cv::addWeighted(image, 0.9, overlay, 0.1, 0, image); // Blend with transparency
+    
+    // Draw ellipse border
+    cv::ellipse(image, center, axes, angle, 0, 360, ellipse_color, 2); // Border
+    
+    // // Draw center point
+    // cv::circle(image, center, 3, ellipse_color, -1);
+}
+
+cv::Mat PangolinViewer::create_uncertainty_debug_image(const std::vector<std::shared_ptr<Feature>>& features,
+                                                       const std::vector<std::shared_ptr<MapPoint>>& map_points,
+                                                       std::shared_ptr<Frame> current_frame) {
+    if (!current_frame) {
+        return cv::Mat::zeros(480, 752, CV_8UC3);  // Default EuRoC size
+    }
+    
+    // Get the actual camera image from current frame
+    cv::Mat debug_image;
+    cv::Mat frame_image = current_frame->get_left_image(); // Get actual camera image
+    
+    if (!frame_image.empty()) {
+        // Use the real camera image as background
+        if (frame_image.channels() == 1) {
+            cv::cvtColor(frame_image, debug_image, cv::COLOR_GRAY2BGR);
+        } else {
+            debug_image = frame_image.clone();
+        }
+    } else {
+        // Fallback to black background if no image available
+        debug_image = cv::Mat::zeros(480, 752, CV_8UC3);
+    }
+    
+    // Draw uncertainty projections on top of the real image
+    debug_uncertainty_projection(debug_image, current_frame);
+
+
+    return debug_image;
+}
+
+// Multi-view observation visualization implementation
+void PangolinViewer::render_observation_point_clouds(const std::vector<std::shared_ptr<MapPoint>>& map_points) {
+    if (map_points.empty()) return;
+    
+    // Blue color for observation points and connections
+    Eigen::Vector3f observation_color(0.3f, 0.6f, 1.0f);  // Light blue
+    Eigen::Vector3f connection_color(0.0f, 0.5f, 1.0f);   // Deep blue
+    
+    for (const auto& mp : map_points) {
+        if (!mp || mp->is_bad() || mp->get_observation_count() < 2) {
+            continue;  // Skip points with insufficient observations
+        }
+        
+        // // Get the optimized map point position (center)
+        // Eigen::Vector3f center_position = mp->get_position();
+        
+        // // Use cached observation positions (updated after optimization)
+        // if (!mp->has_valid_observation_positions()) {
+        //     continue;  // Skip if no valid cached positions
+        // }
+        
+        const std::vector<Eigen::Vector3f>& observation_positions = mp->get_observation_positions();
+        
+        // if (observation_positions.size() < 2) {
+        //     continue;  // Need at least 2 observations for meaningful visualization
+        // }
+        
+        // // Draw observation points as small spheres
+        // glPointSize(6.0f);
+        // glColor3f(observation_color.x(), observation_color.y(), observation_color.z());
+        
+        // glBegin(GL_POINTS);
+        // for (const auto& obs_pos : observation_positions) {
+        //     glVertex3f(obs_pos.x(), obs_pos.y(), obs_pos.z());
+        // }
+        // glEnd();
+        
+        // // Draw center point (optimized position) in brighter color
+        // glPointSize(8.0f);
+        // glColor3f(1.0f, 1.0f, 0.0f);  // Yellow for center
+        
+        // glBegin(GL_POINTS);
+        // glVertex3f(center_position.x(), center_position.y(), center_position.z());
+        // glEnd();
+        
+        // // Draw connections from center to all observation points
+        // draw_observation_connections(center_position, observation_positions, connection_color);
+        
+
+        
+        // Fit ellipsoid to observation distribution if we have enough points
+        if (observation_positions.size() >= 3 && mp->has_world_uncertainty() && !mp->is_bad()) {  
+            // Use current MapPoint position as ellipsoid center (optimized position)
+            Eigen::Vector3f mappoint_position = mp->get_position();
+            
+            // Use world uncertainty matrix (updated from observation covariance)
+            Eigen::Matrix3f world_uncertainty = mp->get_world_uncertainty();
+            
+            // Draw fitted ellipsoid at current MapPoint position
+            Eigen::Vector3f ellipsoid_color(0.0f, 1.0f, 1.0f);  // Cyan for observation distribution
+            draw_uncertainty_ellipsoid(mappoint_position, world_uncertainty, ellipsoid_color, 0.2f, 1.0f);  // 1-sigma for conservative visualization
+        }
+    }
+    
     glPointSize(1.0f);  // Reset point size
 }
 
-} // namespace lightweight_vio
+void PangolinViewer::draw_observation_connections(const Eigen::Vector3f& center_pos, 
+                                                const std::vector<Eigen::Vector3f>& observation_positions,
+                                                const Eigen::Vector3f& line_color) {
+    if (observation_positions.empty()) return;
+    
+    glLineWidth(1.5f);
+    glColor3f(line_color.x(), line_color.y(), line_color.z());
+    
+    glBegin(GL_LINES);
+    
+    // Draw lines from center to each observation point
+    for (const auto& obs_pos : observation_positions) {
+        glVertex3f(center_pos.x(), center_pos.y(), center_pos.z());
+        glVertex3f(obs_pos.x(), obs_pos.y(), obs_pos.z());
+    }
+    
+    // Optional: Draw connections between observation points (creates a web-like structure)
+    // for (size_t i = 0; i < observation_positions.size(); ++i) {
+    //     for (size_t j = i + 1; j < observation_positions.size(); ++j) {
+    //         glVertex3f(observation_positions[i].x(), observation_positions[i].y(), observation_positions[i].z());
+    //         glVertex3f(observation_positions[j].x(), observation_positions[j].y(), observation_positions[j].z());
+    //     }
+    // }
+    
+    glEnd();
+    glLineWidth(1.0f);  // Reset line width
+}
+
+Eigen::Matrix3f PangolinViewer::compute_observation_covariance(const std::vector<Eigen::Vector3f>& observation_positions,
+                                                              const Eigen::Vector3f& mean_position) {
+    if (observation_positions.size() < 3) {
+        // Return identity matrix for insufficient data
+        return Eigen::Matrix3f::Identity() * 0.01f;  // Small default covariance
+    }
+    
+    // Use provided mean_position (already calculated)
+    Eigen::Vector3f mean_pos = mean_position;
+    
+    // Compute covariance matrix
+    Eigen::Matrix3f covariance = Eigen::Matrix3f::Zero();
+    for (const auto& pos : observation_positions) {
+        Eigen::Vector3f diff = pos - mean_pos;
+        covariance += diff * diff.transpose();
+    }
+    
+    // Normalize by (n-1) for sample covariance
+    covariance /= static_cast<float>(observation_positions.size() - 1);
+    
+    // Add small regularization to ensure positive definiteness
+    covariance += Eigen::Matrix3f::Identity() * 1e-6f;
+    
+    return covariance;
+}
+
+}

@@ -85,6 +85,13 @@ public:
     static long long get_matched_timestamp(size_t index);
 
     /**
+     * @brief Get matched image index at given matched index
+     * @param matched_index Index in the matched array (0-based)
+     * @return Image index in the original image array, or -1 if invalid
+     */
+    static int get_matched_image_index(size_t matched_index);
+
+    /**
      * @brief Print statistics about loaded ground truth data
      */
     static void print_ground_truth_stats();
@@ -146,6 +153,7 @@ private:
     // Pre-matched poses for image timestamps
     static std::vector<Eigen::Matrix4f> s_matched_poses;
     static std::vector<long long> s_image_timestamps;
+    static std::vector<int> s_matched_image_indices;  // Original image indices for matched frames
     static std::vector<double> s_timestamp_errors;  // In seconds
     
     // IMU data

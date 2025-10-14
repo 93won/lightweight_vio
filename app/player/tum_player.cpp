@@ -60,9 +60,9 @@ TUMPlayerResult TUMPlayer::run(const TUMPlayerConfig& config) {
         size_t start_frame_idx = 0;
         size_t end_frame_idx = image_data.size();
         
-        // if (!setup_ground_truth_matching(config.dataset_path, image_data, start_frame_idx, end_frame_idx)) {
-        //     spdlog::warn("[TUMPlayer] Failed to setup ground truth matching, using all frames");
-        // }
+        if (!setup_ground_truth_matching(config.dataset_path, image_data, start_frame_idx, end_frame_idx)) {
+            spdlog::warn("[TUMPlayer] Failed to setup ground truth matching, using all frames");
+        }
         
         // 3. Load IMU data if VIO mode
         if (config.use_vio_mode) {
@@ -125,6 +125,9 @@ TUMPlayerResult TUMPlayer::run(const TUMPlayerConfig& config) {
                 double total_time_ms = frame_duration.count() / 1000.0;
                 result.frame_processing_times.push_back(total_time_ms);
                 
+                // Log frame processing time
+                // spdlog::info("[TUMPlayer] Frame {}: {:.2f} ms", context.current_idx, total_time_ms);
+                
                 // Update viewer
                 if (viewer) {
                     update_viewer(*viewer, estimator, context);
@@ -135,28 +138,23 @@ TUMPlayerResult TUMPlayer::run(const TUMPlayerConfig& config) {
                     spdlog::info("[TUMPlayer] Processed {} / {} frames", 
                                 context.processed_frames, end_frame_idx - start_frame_idx);
                 }
-                
+
                 ++context.current_idx;
                 ++context.processed_frames;
-                
-                // Calculate sleep time based on actual frame intervals (only in auto mode)
-                if (context.auto_play && context.current_idx < end_frame_idx) {
-                    long long current_timestamp = image_data[context.current_idx - 1].timestamp;
-                    long long next_timestamp = image_data[context.current_idx].timestamp;
-                    double frame_interval_ms = (next_timestamp - current_timestamp) / 1e6; // nanoseconds to milliseconds
-                    
-                    double sleep_time_ms = frame_interval_ms - total_time_ms;
-                    if (sleep_time_ms > 0) {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(sleep_time_ms)));
-                    }
-                }
+
+                double frame_interval_ms = 50;
+
+                // spdlog::info("Frame Interval: {:.2f} ms, Processing Time: {:.2f} ms", frame_interval_ms, total_time_ms);
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(frame_interval_ms-total_time_ms)));
             }
         }
         
         // 6. Save results
         if (config.enable_statistics) {
             save_trajectories(estimator, context, config.dataset_path, config.use_vio_mode);
-            result.error_stats = analyze_transform_errors(estimator, context.gt_poses, config.use_vio_mode);
+            result.error_stats = analyze_transform_errors(context.estimated_poses, context.gt_poses, 
+                                                          context.gt_frame_indices, config.use_vio_mode);
             result.velocity_stats = analyze_velocity_statistics(estimator, context.gt_poses);
             save_statistics(result, config.dataset_path, config.use_vio_mode);
         }
@@ -321,27 +319,10 @@ bool TUMPlayer::setup_ground_truth_matching(const std::string& dataset_path,
         return false;
     }
     
-    // Find valid frame range
-    long long first_matched_ts = TUMUtils::get_matched_timestamp(0);
-    long long last_matched_ts = TUMUtils::get_matched_timestamp(matched_count - 1);
-    
-    // Find corresponding indices
-    for (size_t i = 0; i < image_data.size(); ++i) {
-        if (image_data[i].timestamp == first_matched_ts) {
-            start_frame_idx = i;
-            break;
-        }
-    }
-    
-    for (size_t i = image_data.size(); i > 0; --i) {
-        if (image_data[i-1].timestamp == last_matched_ts) {
-            end_frame_idx = i;
-            break;
-        }
-    }
-    
-    spdlog::info("[TUMPlayer] Ground truth matched: {} frames, range {} to {}", 
-                matched_count, start_frame_idx, end_frame_idx);
+    // Don't change start_frame_idx or end_frame_idx - process all frames
+    // GT matching is only used for error analysis
+    spdlog::info("[TUMPlayer] Ground truth matched: {} frames out of {} total images", 
+                matched_count, image_data.size());
     return true;
 }
 
@@ -349,7 +330,7 @@ bool TUMPlayer::load_imu_data(const std::string& dataset_path,
                                const std::vector<ImageData>& image_data,
                                size_t start_frame_idx,
                                size_t end_frame_idx) {
-    if (start_frame_idx < end_frame_idx && TUMUtils::has_ground_truth()) {
+    if (start_frame_idx < end_frame_idx) {
         // Load IMU data in time range with buffer
         long long start_timestamp_ns = image_data[start_frame_idx].timestamp;
         long long end_timestamp_ns = image_data[end_frame_idx - 1].timestamp;
@@ -415,55 +396,101 @@ double TUMPlayer::process_single_frame(Estimator& estimator,
                                         bool use_vio_mode) {
     auto start_time = std::chrono::high_resolution_clock::now();
     
-    // Load stereo images
-    cv::Mat left_image = load_image(dataset_path, image_data[context.current_idx].filename, 0);
-    cv::Mat right_image = load_image(dataset_path, image_data[context.current_idx].filename, 1);
+    // Use current_idx directly to access image_data
+    size_t image_idx = context.current_idx;
+    
+    // Load stereo images with caching
+    auto load_start = std::chrono::high_resolution_clock::now();
+    cv::Mat left_image, right_image;
+    bool cache_hit = load_stereo_images_cached(dataset_path, image_data[image_idx].filename, image_idx, left_image, right_image);
+    auto load_end = std::chrono::high_resolution_clock::now();
+    
+    auto load_duration = std::chrono::duration_cast<std::chrono::microseconds>(load_end - load_start);
+    double load_time_ms = load_duration.count() / 1000.0;
+    
+    // // Log slow image loading
+    // if (load_time_ms > 5.0) {
+    //     spdlog::warn("[TUMPlayer] Slow image loading for frame {}: {:.2f}ms (file: {}, cache_hit: {})", 
+    //                  image_idx, load_time_ms, image_data[image_idx].filename, cache_hit ? "true" : "false");
+    // }
     
     if (left_image.empty()) {
-        spdlog::warn("[TUMPlayer] Skipping frame {} due to empty image", context.current_idx);
+        spdlog::warn("[TUMPlayer] Skipping frame {} due to empty image", image_idx);
         return 0.0;
     }
     
     // Preprocess images
+    auto preprocess_start = std::chrono::high_resolution_clock::now();
     cv::Mat processed_left = preprocess_image(left_image);
     cv::Mat processed_right = right_image.empty() ? cv::Mat() : preprocess_image(right_image);
+    auto preprocess_end = std::chrono::high_resolution_clock::now();
+    
+    auto preprocess_duration = std::chrono::duration_cast<std::chrono::microseconds>(preprocess_end - preprocess_start);
+    double preprocess_time_ms = preprocess_duration.count() / 1000.0;
     
     // Process frame
+    auto estimator_start = std::chrono::high_resolution_clock::now();
     Estimator::EstimationResult result;
     
     if (use_vio_mode && context.processed_frames > 0) {
         // VIO mode with IMU data
         auto imu_data = get_imu_data_between_frames(context.previous_frame_timestamp, 
-                                                   image_data[context.current_idx].timestamp);
+                                                   image_data[image_idx].timestamp);
         
         if (!imu_data.empty()) {
             result = estimator.process_frame(processed_left, processed_right, 
-                                           image_data[context.current_idx].timestamp, imu_data);
+                                           image_data[image_idx].timestamp, imu_data);
         } else {
             // Fallback to VO mode if no IMU data
             result = estimator.process_frame(processed_left, processed_right, 
-                                           image_data[context.current_idx].timestamp);
+                                           image_data[image_idx].timestamp);
         }
     } else {
         // VO mode
         result = estimator.process_frame(processed_left, processed_right, 
-                                       image_data[context.current_idx].timestamp);
+                                       image_data[image_idx].timestamp);
     }
+    auto estimator_end = std::chrono::high_resolution_clock::now();
     
-    // Handle ground truth pose
-    if (TUMUtils::get_matched_count() > context.processed_frames) {
-        auto gt_pose_opt = TUMUtils::get_matched_pose(context.processed_frames);
-        if (gt_pose_opt.has_value()) {
-            context.gt_poses.push_back(gt_pose_opt.value());
+    auto estimator_duration = std::chrono::duration_cast<std::chrono::microseconds>(estimator_end - estimator_start);
+    double estimator_time_ms = estimator_duration.count() / 1000.0;
+    
+    // Store estimated pose for all frames
+    context.estimated_poses.push_back(estimator.get_current_pose());
+    
+    // If this frame has GT, find and store it
+    // Search through matched indices to see if current image_idx matches
+    if (TUMUtils::has_ground_truth()) {
+        size_t matched_count = TUMUtils::get_matched_count();
+        for (size_t matched_idx = 0; matched_idx < matched_count; ++matched_idx) {
+            int matched_image_idx = TUMUtils::get_matched_image_index(matched_idx);
+            if (matched_image_idx == static_cast<int>(image_idx)) {
+                // Found GT for this frame
+                auto gt_pose_opt = TUMUtils::get_matched_pose(matched_idx);
+                if (gt_pose_opt.has_value()) {
+                    // Store the GT pose with the frame index
+                    context.gt_frame_indices.push_back(context.processed_frames);
+                    context.gt_poses.push_back(gt_pose_opt.value());
+                }
+                break;
+            }
         }
     }
     
     // Update frame timestamp
-    context.previous_frame_timestamp = image_data[context.current_idx].timestamp;
+    context.previous_frame_timestamp = image_data[image_idx].timestamp;
     
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-    return duration.count() / 1000.0; // Return milliseconds
+    double total_time_ms = duration.count() / 1000.0;
+    
+    // // Log detailed timing breakdown (only for frames that take longer than 15ms)
+    // if (total_time_ms > 15.0) {
+    //     spdlog::warn("[TUMPlayer] Frame {} breakdown: Total={:.2f}ms, Load={:.2f}ms, Preprocess={:.2f}ms, Estimator={:.2f}ms", 
+    //                  image_idx, total_time_ms, load_time_ms, preprocess_time_ms, estimator_time_ms);
+    // }
+    
+    return total_time_ms; // Return milliseconds
 }
 
 cv::Mat TUMPlayer::preprocess_image(const cv::Mat& input_image) {
@@ -472,11 +499,11 @@ cv::Mat TUMPlayer::preprocess_image(const cv::Mat& input_image) {
     // Global histogram equalization
     cv::equalizeHist(input_image, equalized_image);
     
-    // CLAHE for local contrast enhancement
-    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
-    clahe->apply(equalized_image, processed_image);
+    // // CLAHE for local contrast enhancement
+    // cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
+    // clahe->apply(equalized_image, processed_image);
     
-    return processed_image;
+    return equalized_image;
 }
 
 std::vector<IMUData> TUMPlayer::get_imu_data_between_frames(long long previous_timestamp, 
@@ -512,16 +539,8 @@ void TUMPlayer::update_viewer(PangolinViewer& viewer,
     
     // Update trajectory
     static std::vector<Eigen::Matrix4f> trajectory_poses;
-    static std::vector<Eigen::Matrix4f> gt_trajectory_poses;
-    
     trajectory_poses.push_back(current_pose);
-    
-    if (context.processed_frames < context.gt_poses.size()) {
-        gt_trajectory_poses.push_back(context.gt_poses[context.processed_frames]);
-        viewer.update_trajectory_with_gt(trajectory_poses, gt_trajectory_poses);
-    } else {
-        viewer.update_trajectory(extract_positions_from_poses(trajectory_poses));
-    }
+    viewer.update_trajectory(extract_positions_from_poses(trajectory_poses));
     
     // Update frame and keyframes
     viewer.add_frame(current_frame);
@@ -568,16 +587,8 @@ void TUMPlayer::update_viewer(PangolinViewer& viewer,
     viewer.update_tracking_stats(context.processed_frames + 1, total_features, 
                                map_points_count, map_points_count, success_rate, position_error);
     
-    // Update tracking images
-    cv::Mat tracking_image = current_frame->draw_features();
-    const auto& features = current_frame->get_features();
-    const auto& frame_map_points = current_frame->get_map_points();
-    viewer.update_tracking_image_with_map_points(tracking_image, features, frame_map_points);
-    
-    if (current_frame->is_stereo()) {
-        cv::Mat stereo_image = current_frame->draw_stereo_matches();
-        viewer.update_stereo_image(stereo_image);
-    }
+    // Update tracking view with frame directly
+    viewer.update_tracking_with_frame(current_frame);
     
     viewer.render();
 }
@@ -644,28 +655,43 @@ void TUMPlayer::save_trajectories(const Estimator& estimator,
     }
 }
 
-TUMPlayerResult::ErrorStats TUMPlayer::analyze_transform_errors(const Estimator& estimator,
-                                                                   const std::vector<Eigen::Matrix4f>& gt_poses,
-                                                                   bool use_vio_mode) {
+TUMPlayerResult::ErrorStats TUMPlayer::analyze_transform_errors(
+    const std::vector<Eigen::Matrix4f>& estimated_poses,
+    const std::vector<Eigen::Matrix4f>& gt_poses,
+    const std::vector<size_t>& gt_frame_indices,
+    bool use_vio_mode) {
+    
     TUMPlayerResult::ErrorStats stats;
     
-    if (gt_poses.empty()) {
+    if (gt_poses.empty() || gt_frame_indices.empty()) {
         spdlog::warn("[TUMPlayer] No ground truth data for error analysis");
         return stats;
     }
     
-    const auto& all_frames = estimator.get_all_frames();
+    if (gt_poses.size() != gt_frame_indices.size()) {
+        spdlog::error("[TUMPlayer] Mismatch between GT poses ({}) and frame indices ({})",
+                     gt_poses.size(), gt_frame_indices.size());
+        return stats;
+    }
+    
     std::vector<double> rotation_errors;
     std::vector<double> translation_errors;
     
-    for (size_t i = 1; i < all_frames.size() && i < gt_poses.size(); ++i) {
-        if (!all_frames[i-1] || !all_frames[i]) continue;
+    // Iterate through consecutive GT frames only
+    for (size_t i = 1; i < gt_frame_indices.size(); ++i) {
+        size_t prev_frame_idx = gt_frame_indices[i-1];
+        size_t curr_frame_idx = gt_frame_indices[i];
         
-        // Calculate frame-to-frame transforms
-        Eigen::Matrix4f T_est_prev = all_frames[i-1]->get_Twb();
-        Eigen::Matrix4f T_est_curr = all_frames[i]->get_Twb();
+        if (prev_frame_idx >= estimated_poses.size() || curr_frame_idx >= estimated_poses.size()) {
+            continue;
+        }
+        
+        // Calculate frame-to-frame transforms for estimated poses
+        Eigen::Matrix4f T_est_prev = estimated_poses[prev_frame_idx];
+        Eigen::Matrix4f T_est_curr = estimated_poses[curr_frame_idx];
         Eigen::Matrix4f T_est_rel = T_est_prev.inverse() * T_est_curr;
         
+        // Calculate frame-to-frame transforms for GT poses
         Eigen::Matrix4f T_gt_prev = gt_poses[i-1];
         Eigen::Matrix4f T_gt_curr = gt_poses[i];
         Eigen::Matrix4f T_gt_rel = T_gt_prev.inverse() * T_gt_curr;
@@ -690,7 +716,7 @@ TUMPlayerResult::ErrorStats TUMPlayer::analyze_transform_errors(const Estimator&
         // Calculate statistics
         stats.available = true;
         stats.total_frame_pairs = rotation_errors.size();
-        stats.total_frames = all_frames.size();
+        stats.total_frames = estimated_poses.size();
         stats.gt_poses_count = gt_poses.size();
         
         // Sort for median calculation
@@ -715,9 +741,38 @@ TUMPlayerResult::ErrorStats TUMPlayer::analyze_transform_errors(const Estimator&
         stats.translation_min = *std::min_element(translation_errors.begin(), translation_errors.end());
         stats.translation_max = *std::max_element(translation_errors.begin(), translation_errors.end());
         
+        // Print detailed analysis
+        spdlog::info("[TUMPlayer] Transform Error Analysis:");
+        spdlog::info("  Total Frame Pairs: {} (estimated_poses: {}, gt_poses: {}, gt_frames: {})", 
+                    stats.total_frame_pairs, estimated_poses.size(), gt_poses.size(), gt_frame_indices.size());
+        spdlog::info("  Rotation errors - Mean: {:.4f}°, Median: {:.4f}°, RMSE: {:.4f}°, Range: {:.4f}°-{:.4f}°",
+                    stats.rotation_mean, stats.rotation_median, stats.rotation_rmse, 
+                    stats.rotation_min, stats.rotation_max);
+        spdlog::info("  Translation errors - Mean: {:.6f}m, Median: {:.6f}m, RMSE: {:.6f}m, Range: {:.6f}m-{:.6f}m",
+                    stats.translation_mean, stats.translation_median, stats.translation_rmse,
+                    stats.translation_min, stats.translation_max);
         
-        
-        
+        spdlog::info("══════════════════════════════════════════════════════════════════");
+        spdlog::info("               FRAME-TO-FRAME TRANSFORM ERROR ANALYSIS              ");
+        spdlog::info("══════════════════════════════════════════════════════════════════");
+        spdlog::info(" Total Frame Pairs Analyzed: {} (estimated_poses: {}, gt_poses: {}, gt_frames: {})", 
+                    stats.total_frame_pairs, estimated_poses.size(), gt_poses.size(), gt_frame_indices.size());
+        spdlog::info(" Frame precision: 32 bit floats");
+        spdlog::info("");
+        spdlog::info("                     ROTATION ERROR STATISTICS                    ");
+        spdlog::info(" Mean      : {:>10.4f}°", stats.rotation_mean);
+        spdlog::info(" Median    : {:>10.4f}°", stats.rotation_median);
+        spdlog::info(" Minimum   : {:>10.4f}°", stats.rotation_min);
+        spdlog::info(" Maximum   : {:>10.4f}°", stats.rotation_max);
+        spdlog::info(" RMSE      : {:>10.4f}°", stats.rotation_rmse);
+        spdlog::info("");
+        spdlog::info("                   TRANSLATION ERROR STATISTICS                   ");
+        spdlog::info(" Mean      : {:>10.6f}m", stats.translation_mean);
+        spdlog::info(" Median    : {:>10.6f}m", stats.translation_median);
+        spdlog::info(" Minimum   : {:>10.6f}m", stats.translation_min);
+        spdlog::info(" Maximum   : {:>10.6f}m", stats.translation_max);
+        spdlog::info(" RMSE      : {:>10.6f}m", stats.translation_rmse);
+        spdlog::info("══════════════════════════════════════════════════════════════════");
     }
     
     return stats;
@@ -917,6 +972,44 @@ std::vector<Eigen::Vector3f> TUMPlayer::extract_positions_from_poses(const std::
         positions.push_back(pose.block<3, 1>(0, 3));
     }
     return positions;
+}
+
+bool TUMPlayer::load_stereo_images_cached(const std::string& dataset_path, 
+                                         const std::string& filename, 
+                                         size_t frame_idx,
+                                         cv::Mat& left_image, 
+                                         cv::Mat& right_image) {
+    // Check cache first
+    for (const auto& cached : image_cache_) {
+        if (cached.filename == filename && cached.frame_idx == frame_idx) {
+            left_image = cached.left_image;  // Direct assignment instead of clone()
+            right_image = cached.right_image;
+            return true;
+        }
+    }
+    
+    // Not in cache, load from disk
+    left_image = load_image(dataset_path, filename, 0);
+    right_image = load_image(dataset_path, filename, 1);
+    
+    if (left_image.empty()) {
+        return false;
+    }
+    
+    // Add to cache (implement simple FIFO replacement)
+    CachedImage new_cache_entry;
+    new_cache_entry.left_image = left_image;  // Direct assignment instead of clone()
+    new_cache_entry.right_image = right_image;
+    new_cache_entry.filename = filename;
+    new_cache_entry.frame_idx = frame_idx;
+    
+    // Remove oldest if cache is full
+    if (image_cache_.size() >= MAX_CACHE_SIZE) {
+        image_cache_.erase(image_cache_.begin());
+    }
+    
+    image_cache_.push_back(new_cache_entry);
+    return true;
 }
 
 } // namespace lightweight_vio

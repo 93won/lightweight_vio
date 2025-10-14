@@ -60,8 +60,65 @@ public:
     void set_multi_view_triangulated(bool flag);
     bool is_multi_view_triangulated() const;
     
+    // Marginalization flag
+    void set_marginalized(bool flag);
+    bool is_marginalized() const;
+    
     // Triangulation and refinement
     double compute_reprojection_error() const;
+
+    Eigen::Matrix3f initial_unproject_pixel_uncertainty_to_world(const Eigen::Matrix2f& pixel_uncertainty, std::shared_ptr<Frame> frame);
+
+    void update_world_uncertainty_with_observations();
+
+    // Uncertainty transformation functions
+    Eigen::Matrix3f transform_uncertainty_world_to_camera(const Eigen::Matrix3f& world_uncertainty, 
+                                                           std::shared_ptr<Frame> frame) const;
+    Eigen::Matrix2f transform_uncertainty_world_to_pixel(const Eigen::Matrix3f& world_uncertainty, 
+                                                          std::shared_ptr<Frame> frame) const;
+    Eigen::Matrix2f transform_uncertainty_camera_to_pixel(const Eigen::Matrix3f& camera_uncertainty, 
+                                                           std::shared_ptr<Frame> frame) const;
+    Eigen::Matrix3f transform_uncertainty_pixel_to_camera(const Eigen::Matrix2f& pixel_uncertainty, 
+                                                           std::shared_ptr<Frame> frame) const;
+    Eigen::Matrix3f transform_uncertainty_camera_to_world(const Eigen::Matrix3f& camera_uncertainty, 
+                                                           std::shared_ptr<Frame> frame) const;
+    Eigen::Matrix3f transform_uncertainty_pixel_to_world(const Eigen::Matrix2f& pixel_uncertainty, 
+                                                          std::shared_ptr<Frame> frame) const;
+
+    Eigen::Matrix3f get_uncertainty_world_from_min_reproj_err() const;
+
+    Eigen::Matrix2f compute_uncertainty(std::shared_ptr<Frame> frame) const;
+    
+    // Uncertainty management
+    void set_world_uncertainty(const Eigen::Matrix3f& uncertainty);
+    void set_min_world_uncertainty(const Eigen::Matrix3f& uncertainty);
+    const Eigen::Matrix3f& get_world_uncertainty() const;
+    const Eigen::Matrix3f& get_min_world_uncertainty() const;
+    bool has_uncertainty() const;
+    bool has_world_uncertainty() const;
+    
+    // Multi-view position computation
+    std::vector<Eigen::Vector3f> compute_multi_view_positions() const;
+    void update_uncertainty();  // Initialize uncertainty from observation positions (once only)
+    const std::vector<Eigen::Vector3f>& get_observation_positions() const;  // Get cached positions
+    bool has_valid_observation_positions() const;  // Check if cache is valid
+    
+   
+    std::vector<Eigen::Matrix3f> get_all_world_uncertainties() const
+    {
+        std::lock_guard<std::mutex> lock(m_data_mutex);
+        return m_all_world_uncertainties;
+    }
+    void clear_all_world_uncertainties()
+    {
+        std::lock_guard<std::mutex> lock(m_data_mutex);
+        m_all_world_uncertainties.clear();
+    }
+    // void insert_world_uncertainty(const Eigen::Matrix3f& uncertainty)
+    // {
+    //     std::lock_guard<std::mutex> lock(m_data_mutex);
+    //     m_all_world_uncertainties.push_back(uncertainty);
+    // }
 
 private:
     int m_id;
@@ -69,6 +126,22 @@ private:
     std::vector<Observation> m_observations;
     bool m_is_bad;
     bool m_is_multi_view_triangulated;
+    bool m_is_marginalized;
+    
+    // Uncertainty data
+    Eigen::Matrix3f m_world_uncertainty;
+    Eigen::Matrix3f m_world_uncertainty_min;
+    bool m_has_uncertainty;
+
+    std::vector<Eigen::Matrix3f> m_all_world_uncertainties;
+    
+    // Multi-view observation data (cached for performance)
+    std::vector<Eigen::Vector3f> m_observation_positions;
+    bool m_observation_positions_valid;
+    
+    // Helper functions
+    Eigen::Matrix3f compute_covariance_from_positions(const std::vector<Eigen::Vector3f>& positions, 
+                                                      const Eigen::Vector3f& mean_position) const;
     
     // Thread safety
     mutable std::mutex m_position_mutex; // Mutex for position operations

@@ -109,7 +109,13 @@ struct FrameContext {
     size_t current_idx = 0;
     size_t processed_frames = 0;
     long long previous_frame_timestamp = 0;
-    std::vector<Eigen::Matrix4f> gt_poses;
+    
+    // GT data (only for frames that have GT matches)
+    std::vector<size_t> gt_frame_indices;  // Which frame indices have GT
+    std::vector<Eigen::Matrix4f> gt_poses;  // GT poses for those frames
+    
+    // All estimated poses
+    std::vector<Eigen::Matrix4f> estimated_poses;
     
     // UI control
     bool auto_play = true;
@@ -160,6 +166,21 @@ private:
      * @return Loaded grayscale image
      */
     cv::Mat load_image(const std::string& dataset_path, const std::string& filename, int cam_id = 0);
+    
+    /**
+     * @brief Load stereo images with caching
+     * @param dataset_path Path to dataset
+     * @param filename Image filename
+     * @param frame_idx Frame index for cache key
+     * @param left_image Output left image
+     * @param right_image Output right image
+     * @return True if loaded successfully
+     */
+    bool load_stereo_images_cached(const std::string& dataset_path, 
+                                  const std::string& filename, 
+                                  size_t frame_idx,
+                                  cv::Mat& left_image, 
+                                  cv::Mat& right_image);
     
     /**
      * @brief Setup ground truth matching and frame range
@@ -272,13 +293,15 @@ private:
     
     /**
      * @brief Analyze frame-to-frame transform errors
-     * @param estimator Reference to estimator
-     * @param gt_poses Ground truth poses
+     * @param estimated_poses All estimated poses from trajectory
+     * @param gt_poses Ground truth poses (only for frames with GT)
+     * @param gt_frame_indices Frame indices that have GT poses
      * @param use_vio_mode Whether VIO mode was used
      * @return Error statistics
      */
-    TUMPlayerResult::ErrorStats analyze_transform_errors(const Estimator& estimator,
+    TUMPlayerResult::ErrorStats analyze_transform_errors(const std::vector<Eigen::Matrix4f>& estimated_poses,
                                                           const std::vector<Eigen::Matrix4f>& gt_poses,
+                                                          const std::vector<size_t>& gt_frame_indices,
                                                           bool use_vio_mode);
     
     /**
@@ -319,6 +342,17 @@ private:
 private:
     // Member variables for state management
     bool gravity_transformation_sent_ = false;
+    
+    // Image cache for performance optimization
+    struct CachedImage {
+        cv::Mat left_image;
+        cv::Mat right_image;
+        std::string filename;
+        size_t frame_idx;
+    };
+    
+    mutable std::vector<CachedImage> image_cache_;
+    static constexpr size_t MAX_CACHE_SIZE = 10; // Cache last 10 frames
 };
 
 } // namespace lightweight_vio
