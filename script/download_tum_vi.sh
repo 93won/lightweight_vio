@@ -17,7 +17,7 @@ NC='\033[0m' # No Color
 # Base URL for TUM VI dataset
 BASE_URL="https://vision.in.tum.de/tumvi/exported/euroc/512_16"
 
-# Available datasets
+# Available datasets (only room sequences with ground truth)
 declare -a DATASETS=(
     "room1"
     "room2"
@@ -36,10 +36,10 @@ print_usage() {
     echo ""
     echo "Examples:"
     echo "  $0                              # Interactive mode - shows all datasets"
-    echo "  $0 corridor1                    # Download corridor1 to current directory"
-    echo "  $0 /path/to/datasets            # Download ALL datasets to specified directory"
-    echo "  $0 corridor1 /path/to/datasets  # Download corridor1 to specified directory"
-    echo "  $0 all                          # Download ALL datasets (WARNING: ~150GB+)"
+    echo "  $0 room1                        # Download room1 to current directory"
+    echo "  $0 /path/to/datasets            # Download ALL room datasets to specified directory"
+    echo "  $0 room1 /path/to/datasets      # Download room1 to specified directory"
+    echo "  $0 all                          # Download ALL room datasets (WARNING: ~20GB+)"
     echo ""
 }
 
@@ -49,43 +49,9 @@ show_datasets() {
     echo -e "${YELLOW}================================================${NC}"
     echo ""
     
-    echo "Corridor sequences:"
+    echo "Room sequences (with ground truth):"
     for dataset in "${DATASETS[@]}"; do
-        if [[ $dataset == corridor* ]]; then
-            echo "  - $dataset"
-        fi
-    done
-    
-    echo ""
-    echo "Magistrale sequences:"
-    for dataset in "${DATASETS[@]}"; do
-        if [[ $dataset == magistrale* ]]; then
-            echo "  - $dataset"
-        fi
-    done
-    
-    echo ""
-    echo "Outdoor sequences:"
-    for dataset in "${DATASETS[@]}"; do
-        if [[ $dataset == outdoors* ]]; then
-            echo "  - $dataset"
-        fi
-    done
-    
-    echo ""
-    echo "Room sequences:"
-    for dataset in "${DATASETS[@]}"; do
-        if [[ $dataset == room* ]]; then
-            echo "  - $dataset"
-        fi
-    done
-    
-    echo ""
-    echo "Slides sequences:"
-    for dataset in "${DATASETS[@]}"; do
-        if [[ $dataset == slides* ]]; then
-            echo "  - $dataset"
-        fi
+        echo "  - $dataset"
     done
     echo ""
 }

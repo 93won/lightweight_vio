@@ -29,10 +29,19 @@ This guide provides detailed instructions for running the Lightweight Stereo VIO
 #### Native Build
 ```bash
 # Visual Odometry (VO) mode
-./build/tum_stereo config/tum_vo.yaml /path/to/dataset-corridor1_512_16
+./build/tum_stereo config/tum_vo.yaml /path/to/dataset-room1_512_16
 
 # Visual-Inertial Odometry (VIO) mode
-./build/tum_stereo config/tum_vio.yaml /path/to/dataset-corridor1_512_16
+./build/tum_stereo config/tum_vio.yaml /path/to/dataset-room1_512_16
+```
+
+#### Docker
+```bash
+# Visual Odometry (VO) mode
+./docker.sh run vo /path/to/dataset-room1_512_16
+
+# Visual-Inertial Odometry (VIO) mode
+./docker.sh run vio /path/to/dataset-room1_512_16
 ```
 
 ---
@@ -92,8 +101,8 @@ The system behavior is controlled by YAML configuration files located in the `co
 #### TUM VI Dataset Examples
 
 
-**Corridor sequences:**
+**Room sequences:**
 ```bash
-./build/tum_stereo config/tum_vio.yaml /path/to/dataset-corridor1_512_16
+./build/tum_stereo config/tum_vio.yaml /path/to/dataset-room1_512_16
 ```
 

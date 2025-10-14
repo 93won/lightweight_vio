@@ -1,6 +1,6 @@
 %YAML:1.0
 ---
-# TUM VI Dataset Configuration for Lightweight VIO - Visual Odometry Only
+# TUM VI Dataset Configuration for Lightweight VIO - Visual-Inertial Odometry
 
 # System Mode Configuration
 # Controls whether to run as VO (Visual Odometry) or VIO (Visual-Inertial Odometry)
@@ -13,9 +13,9 @@ viewer:
   enable: 1                      # Enable/disable 3D viewer (0=false, 1=true)
   width: 1920                    # Viewer window width (pixels)
   height: 1080                   # Viewer window height (pixels)
-  
+
 performance:
-  enable_debug_output: 1  # Print debug messages and feature counts
+  enable_debug_output: 0 # Print debug messages and feature counts
 
 # Camera Parameters (TUM VI dataset specific)
 # Image dimensions and processing parameters
@@ -23,7 +23,7 @@ camera:
   model: "fisheye"            # Camera model: "pinhole" or "fisheye"
   image_width: 512            # Image width in pixels (TUM VI standard)
   image_height: 512           # Image height in pixels (TUM VI standard)  
-  border_size: 1              # Border size to exclude from feature detection (pixels)
+  border_size: 0             # Border size to exclude from feature detection (pixels)
   
   # Left camera (cam0) intrinsics
   left_intrinsics: [192.8382607158552, 192.80517563662647, 254.96248601056095, 256.9894801632425]  # [fx, fy, cx, cy]
@@ -48,21 +48,21 @@ camera:
 # Keyframe and Windowing Parameters
 # Controls keyframe selection and sliding window management
 keyframe_management:
-  keyframe_window_size: 8
-  grid_coverage_ratio: 0.6  # Add keyframe when coverage drops to 60% of last keyframe's coverage (more aggressive for VO)
-  time_threshold: 0.03   
-  
+  keyframe_window_size: 5
+  grid_coverage_ratio: 0.7  # Add keyframe when coverage drops to 70% of last keyframe's coverage
+  time_threshold: 0.05
+
 # Feature Detection Parameters
 # Controls how corner features are detected using goodFeaturesToTrack
 feature_detection:
-  max_features: 200           # Maximum number of features to track per frame
-  quality_level: 0.01        # Minimum accepted quality of corners (0.01 = 1% of best corner)
-  min_distance: 25.0          # Minimum distance between features in pixels (prevents clustering)
+  max_features: 200          # Maximum number of features to track per frame
+  quality_level: 0.1        # Minimum accepted quality of corners (0.01 = 1% of best corner)
+  min_distance: 10.0          # Minimum distance between features in pixels (prevents clustering)
   
   # Grid-based feature distribution parameters
-  grid_cols: 16               # Number of grid columns for feature distribution
-  grid_rows: 16               # Number of grid rows for feature distribution  
-  max_features_per_grid: 3   # Maximum features allowed per grid cell
+  grid_cols: 16             # Number of grid columns for feature distribution
+  grid_rows: 16             # Number of grid rows for feature distribution  
+  max_features_per_grid: 4   # Maximum features allowed per grid cell
 
 # Optical Flow Tracking Parameters  
 # Controls Lucas-Kanade optical flow for feature tracking between frames
@@ -90,21 +90,23 @@ stereo_matching:
   error_threshold: 50.0       # Maximum optical flow error for stereo matches (pixels)
   min_disparity: 0.1          # Minimum disparity (pixels) - filters out very far points
   max_disparity: 300.0        # Maximum disparity (pixels) - filters out very close points  
-  max_y_difference: 30.0      # Maximum Y-coordinate difference for stereo pairs (pixels)
-  epipolar_threshold: 1.0     # Maximum distance from epipolar line using estimated F matrix (pixels)
+  max_y_difference: 100.0      # Maximum Y-coordinate difference for stereo pairs (pixels)
+  epipolar_threshold: 1.0     # Maximum distance from epipolar line using estimated F matrix (pixels)ls)
 
 # Global Depth Parameters
 # Controls depth validation throughout the entire VIO system
 depth:
-  min_depth: 0.1              # Minimum depth for valid 3D points (meters) - used in all depth validation
-  max_depth: 50.0             # Maximum depth for valid 3D points (meters) - used in all depth validation
+  min_depth: 0.3              # Minimum depth for valid 3D points (meters) - used in all depth validation
+  max_depth: 100.0             # Maximum depth for valid 3D points (meters) - used in all depth validation
 
 # Optimization Parameters
 # Controls Ceres-based optimization behavior for both PnP and Sliding Window
 optimization:
   # PnP Optimization Parameters
-  pnp_max_iterations: 15               # Maximum optimization iterations for PnP
-  sliding_window_max_iterations: 15  # Maximum optimization iterations for sliding window
+  pnp_max_iterations: 10               # Maximum optimization iterations for PnP
+  # Removed pnp_max_observation_weight - now using logarithmic scaling based on keyframe_window_size
+
+  sliding_window_max_iterations: 10 # Maximum optimization iterations for sliding window
   function_tolerance: 1e-6         # Function tolerance for convergence
   gradient_tolerance: 1e-10        # Gradient tolerance for convergence  
   parameter_tolerance: 1e-8        # Parameter tolerance for convergence
@@ -115,3 +117,14 @@ optimization:
   # Outlier detection (mainly for PnP)
   enable_outlier_detection: true   # Enable outlier detection
   outlier_detection_rounds: 4      # Number of optimization rounds with outlier detection
+  
+  # Information weighting parameters - now using logarithmic scaling (saturation_point=20)
+  # Removed pnp_max_observation_weight and sliding_window_max_observation_weight
+
+# MapPoint Uncertainty Parameters
+# Controls uncertainty propagation for 3D map points
+uncertainty:
+  enable: 0                  # Enable uncertainty propagation for MapPoints
+  max_eigenvalue: 1e-1       # Maximum covariance matrix eigenvalue
+  min_eigenvalue: 1e-5       # Minimum covariance matrix eigenvalue
+
