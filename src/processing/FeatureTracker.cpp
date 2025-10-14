@@ -107,6 +107,9 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
     // Grid-based feature selection during tracking + additional feature extraction
     // ensures total feature count reaches max_features while maintaining good distribution
     
+    // Apply grid-based feature management to limit features per grid cell
+    manage_grid_based_features(current_frame);
+    
     // Single comprehensive log with timing breakdown
     auto total_time = total_duration.count() / 1000.0;
     
@@ -225,6 +228,12 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
     int error_threshold_failed = 0;
     int movement_exceeded = 0;
     int total_attempted = prev_pts.size();
+
+
+    
+    const Config& config = Config::getInstance();
+    int border_size = config.m_border_size;
+
     
     for (size_t i = 0; i < prev_pts.size(); ++i) {
         if (!status[i]) {
@@ -232,7 +241,7 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
             continue;
         }
         
-        if (!is_in_border(cur_pts[i], current_frame->get_image().size())) {
+        if (!is_in_border(cur_pts[i], current_frame->get_image().size(), border_size)) {
             border_failed++;
             continue;
         }
@@ -428,6 +437,7 @@ void FeatureTracker::update_features_with_points(
 bool FeatureTracker::is_in_border(const cv::Point2f& point, const cv::Size& img_size, int border_size) const {
     int img_x = cvRound(point.x);
     int img_y = cvRound(point.y);
+
     return border_size <= img_x && img_x < img_size.width - border_size && 
            border_size <= img_y && img_y < img_size.height - border_size;
 }
@@ -543,7 +553,7 @@ void FeatureTracker::limit_features_per_grid(std::shared_ptr<Frame> frame,
     for (size_t row = 0; row < temp_grid.size(); ++row) {
         for (size_t col = 0; col < temp_grid[row].size(); ++col) {
             auto& cell_features = temp_grid[row][col];
-            
+
             // Skip if this cell has fewer features than the limit
             if (cell_features.size() <= max_features_per_grid) {
                 continue;
@@ -560,8 +570,7 @@ void FeatureTracker::limit_features_per_grid(std::shared_ptr<Frame> frame,
                      });
             
             // Keep only the strongest max_features_per_grid features
-            // Disconnect and remove the rest from their map points
-            std::vector<int> features_to_remove;
+            // Mark the rest as invalid instead of setting to nullptr
             for (size_t i = max_features_per_grid; i < cell_features.size(); ++i) {
                 int feature_idx = cell_features[i];
                 
@@ -570,7 +579,10 @@ void FeatureTracker::limit_features_per_grid(std::shared_ptr<Frame> frame,
                     continue; // Skip invalid indices
                 }
                 
-                features_to_remove.push_back(feature_idx);
+                // Mark feature as invalid instead of setting to nullptr
+                if (features[feature_idx]) {
+                    features[feature_idx]->set_valid(false);
+                }
                 
                 // Disconnect from map point by removing observation and setting to nullptr
                 if (feature_idx < map_points.size()) {
@@ -581,13 +593,6 @@ void FeatureTracker::limit_features_per_grid(std::shared_ptr<Frame> frame,
                         // Set map point to nullptr in frame
                         map_points[feature_idx] = nullptr;
                     }
-                }
-            }
-            
-            // Mark features for removal by setting them to nullptr
-            for (int idx : features_to_remove) {
-                if (idx >= 0 && idx < features.size()) {
-                    features[idx] = nullptr;
                 }
             }
             
@@ -607,7 +612,7 @@ void FeatureTracker::limit_features_per_grid(std::shared_ptr<Frame> frame,
         size_t max_size = std::min(features.size(), map_points.size());
         
         for (size_t i = 0; i < features.size(); ++i) {
-            if (features[i] != nullptr) {
+            if (features[i] && features[i]->is_valid()) {
                 valid_features++;
                 if (i < map_points.size() && map_points[i] && !map_points[i]->is_bad()) {
                     connected_features++;
@@ -696,7 +701,7 @@ cv::Point2f FeatureTracker::project_map_point_to_current_frame(std::shared_ptr<M
     Eigen::Matrix4f T_wb = current_frame->get_Twb();
     
     // Get T_CB (body to camera) from frame
-    Eigen::Matrix4d T_CB_double = current_frame->get_T_CB();
+    Eigen::Matrix4d T_CB_double = current_frame->get_Tcb();
     Eigen::Matrix4f T_CB = T_CB_double.cast<float>();
     
     // Calculate T_cw = T_cb * T_bw = T_cb * T_wb.inverse()

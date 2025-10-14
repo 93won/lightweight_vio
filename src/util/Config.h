@@ -48,12 +48,17 @@ namespace lightweight_vio
         cv::Mat right_camera_matrix() const { return m_right_camera_matrix.clone(); }
         cv::Mat left_dist_coeffs() const { return m_left_dist_coeffs.clone(); }
         cv::Mat right_dist_coeffs() const { return m_right_dist_coeffs.clone(); }
-        CameraModel get_camera_model() const { return m_camera_model; }
         cv::Mat left_to_right_transform() const { return m_T_left_right.clone(); }
         cv::Mat left_T_BC() const { return m_T_left_BC.clone(); }
         cv::Mat right_T_BC() const { return m_T_right_BC.clone(); }
+        
+        // Camera model accessor
+        CameraModel get_camera_model() const { return m_camera_model; }
 
         // Public member variables for simple access
+
+        // Camera Model Parameters
+        CameraModel m_camera_model = CameraModel::PINHOLE;
 
         // Feature Detection Parameters
         int m_max_features = 150;
@@ -158,6 +163,12 @@ namespace lightweight_vio
         double m_accel_noise_density = 2.0000e-3;      // m/s²/√Hz (accel white noise)
         double m_accel_random_walk = 3.0000e-3;        // m/s³/√Hz (accel bias diffusion)
 
+        // MapPoint Uncertainty Parameters
+        bool m_uncertainty_enable = true;              // Enable uncertainty propagation for MapPoints
+        float m_min_reprojection_error = 0.5f;         // Minimum reprojection error threshold for uncertainty calculation (pixels)
+        float m_uncertainty_max_eigenvalue = 1.0f;     // Maximum eigenvalue limit for covariance scaling
+        float m_uncertainty_min_eigenvalue = 0.0001f;  // Minimum eigenvalue limit for covariance scaling
+
     private:
         Config() = default;
 
@@ -169,9 +180,6 @@ namespace lightweight_vio
         cv::Mat m_T_left_right;
         cv::Mat m_T_left_BC;
         cv::Mat m_T_right_BC;
-        
-        // Camera model type
-        CameraModel m_camera_model = CameraModel::PINHOLE;
     };
 
 } // namespace lightweight_vio

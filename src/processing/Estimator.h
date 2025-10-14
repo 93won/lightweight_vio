@@ -97,17 +97,6 @@ public:
                                  long long timestamp, const std::vector<IMUData>& imu_data_from_last_frame);
 
     /**
-     * @brief Process a new RGB-D frame
-     * @param rgb_image RGB image
-     * @param depth_image Depth image  
-     * @param timestamp Frame timestamp in nanoseconds
-     * @param depth_scale_factor Scale factor for depth values
-     * @return Estimation result
-     */
-    EstimationResult process_frame(const cv::Mat& rgb_image, const cv::Mat& depth_image, 
-                                 long long timestamp, double depth_scale_factor);
-
-    /**
      * @brief Reset the estimator state
      */
     void reset();
@@ -256,16 +245,6 @@ private:
      * @return New frame
      */
     std::shared_ptr<Frame> create_frame(const cv::Mat& left_image, const cv::Mat& right_image, long long timestamp);
-    
-    /**
-     * @brief Initialize a new RGB-D frame
-     * @param rgb_image RGB image
-     * @param depth_image Depth image
-     * @param timestamp Frame timestamp
-     * @param depth_scale_factor Scale factor for depth values
-     * @return New frame
-     */
-    std::shared_ptr<Frame> create_frame(const cv::Mat& rgb_image, const cv::Mat& depth_image, long long timestamp, double depth_scale_factor);
     
     /**
      * @brief Predict current frame pose using motion model

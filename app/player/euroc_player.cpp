@@ -43,7 +43,7 @@ EurocPlayerResult EurocPlayer::run(const EurocPlayerConfig& config) {
     try {
         // 1. Load configuration
         Config::getInstance().load(config.config_path);
-        spdlog::info("[EurocPlayer] Successfully loaded configuration from: {}", config.config_path);
+        // spdlog::info("[EurocPlayer] Successfully loaded configuration from: {}", config.config_path);
         
         // Override viewer settings with config values (to respect caller's settings)
         Config::getInstance().m_viewer_enable = config.enable_viewer;
@@ -82,8 +82,8 @@ EurocPlayerResult EurocPlayer::run(const EurocPlayerConfig& config) {
         context.step_mode = config.step_mode;
         context.auto_play = !config.step_mode;  // auto_play is opposite of step_mode
         
-        spdlog::info("[EurocPlayer] Processing frames {} to {} ({} mode)", 
-                    start_frame_idx, end_frame_idx, config.use_vio_mode ? "VIO" : "VO");
+        // spdlog::info("[EurocPlayer] Processing frames {} to {} ({} mode)", 
+        //             start_frame_idx, end_frame_idx, config.use_vio_mode ? "VIO" : "VO");
         
         context.current_idx = start_frame_idx;
         while (context.current_idx < end_frame_idx) {
@@ -131,10 +131,10 @@ EurocPlayerResult EurocPlayer::run(const EurocPlayerConfig& config) {
                 }
                 
                 // Progress logging
-                if (context.processed_frames % 100 == 0) {
-                    spdlog::info("[EurocPlayer] Processed {} / {} frames", 
-                                context.processed_frames, end_frame_idx - start_frame_idx);
-                }
+                // if (context.processed_frames % 100 == 0) {
+                //     spdlog::info("[EurocPlayer] Processed {} / {} frames", 
+                //                 context.processed_frames, end_frame_idx - start_frame_idx);
+                // }
                 
                 ++context.current_idx;
                 ++context.processed_frames;
@@ -145,7 +145,7 @@ EurocPlayerResult EurocPlayer::run(const EurocPlayerConfig& config) {
                     long long next_timestamp = image_data[context.current_idx].timestamp;
                     double frame_interval_ms = (next_timestamp - current_timestamp) / 1e6; // nanoseconds to milliseconds
                     
-                    double sleep_time_ms = frame_interval_ms - total_time_ms;
+                    double sleep_time_ms = 50 - total_time_ms;
                     if (sleep_time_ms > 0) {
                         std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(sleep_time_ms)));
                     }
@@ -170,38 +170,38 @@ EurocPlayerResult EurocPlayer::run(const EurocPlayerConfig& config) {
                 result.frame_processing_times.end(), 0.0) / result.frame_processing_times.size();
         }
         
-        spdlog::info("[EurocPlayer] Successfully processed {} frames", result.processed_frames);
+        // spdlog::info("[EurocPlayer] Successfully processed {} frames", result.processed_frames);
         
         // Display final statistics summary
         if (config.enable_console_statistics && result.success) {
-            spdlog::info("════════════════════════════════════════════════════════════════════");
-            spdlog::info("                          STATISTICS ({})                          ", config.use_vio_mode ? "VIO" : "VO");
-            spdlog::info("════════════════════════════════════════════════════════════════════");
-            spdlog::info("");
-            spdlog::info("                          TIMING ANALYSIS                           ");
-            spdlog::info("════════════════════════════════════════════════════════════════════");
-            spdlog::info(" Total Frames Processed: {}", result.processed_frames);
-            spdlog::info(" Average Processing Time: {:.2f}ms", result.average_processing_time_ms);
-            double fps = 1000.0 / result.average_processing_time_ms;
-            spdlog::info(" Average Frame Rate: {:.1f}fps", fps);
-            spdlog::info("");
+            // spdlog::info("════════════════════════════════════════════════════════════════════");
+            // spdlog::info("                          STATISTICS ({})                          ", config.use_vio_mode ? "VIO" : "VO");
+            // spdlog::info("════════════════════════════════════════════════════════════════════");
+            // spdlog::info("");
+            // spdlog::info("                          TIMING ANALYSIS                           ");
+            // spdlog::info("════════════════════════════════════════════════════════════════════");
+            // spdlog::info(" Total Frames Processed: {}", result.processed_frames);
+            // spdlog::info(" Average Processing Time: {:.2f}ms", result.average_processing_time_ms);
+            // double fps = 1000.0 / result.average_processing_time_ms;
+            // spdlog::info(" Average Frame Rate: {:.1f}fps", fps);
+            // spdlog::info("");
             
-            if (result.velocity_stats.available) {
-                spdlog::info("                          VELOCITY ANALYSIS                         ");
-                spdlog::info("════════════════════════════════════════════════════════════════════");
-                spdlog::info("                        LINEAR VELOCITY (m/s)                       ");
-                spdlog::info(" Mean      : {:>10.4f}m/s", result.velocity_stats.linear_vel_mean);
-                spdlog::info(" Median    : {:>10.4f}m/s", result.velocity_stats.linear_vel_median);
-                spdlog::info(" Minimum   : {:>10.4f}m/s", result.velocity_stats.linear_vel_min);
-                spdlog::info(" Maximum   : {:>10.4f}m/s", result.velocity_stats.linear_vel_max);
-                spdlog::info("");
-                spdlog::info("                       ANGULAR VELOCITY (rad/s)                     ");
-                spdlog::info(" Mean      : {:>10.4f}rad/s", result.velocity_stats.angular_vel_mean);
-                spdlog::info(" Median    : {:>10.4f}rad/s", result.velocity_stats.angular_vel_median);
-                spdlog::info(" Minimum   : {:>10.4f}rad/s", result.velocity_stats.angular_vel_min);
-                spdlog::info(" Maximum   : {:>10.4f}rad/s", result.velocity_stats.angular_vel_max);
-                spdlog::info("");
-            }
+            // if (result.velocity_stats.available) {
+            //     spdlog::info("                          VELOCITY ANALYSIS                         ");
+            //     spdlog::info("════════════════════════════════════════════════════════════════════");
+            //     spdlog::info("                        LINEAR VELOCITY (m/s)                       ");
+            //     spdlog::info(" Mean      : {:>10.4f}m/s", result.velocity_stats.linear_vel_mean);
+            //     spdlog::info(" Median    : {:>10.4f}m/s", result.velocity_stats.linear_vel_median);
+            //     spdlog::info(" Minimum   : {:>10.4f}m/s", result.velocity_stats.linear_vel_min);
+            //     spdlog::info(" Maximum   : {:>10.4f}m/s", result.velocity_stats.linear_vel_max);
+            //     spdlog::info("");
+            //     spdlog::info("                       ANGULAR VELOCITY (rad/s)                     ");
+            //     spdlog::info(" Mean      : {:>10.4f}rad/s", result.velocity_stats.angular_vel_mean);
+            //     spdlog::info(" Median    : {:>10.4f}rad/s", result.velocity_stats.angular_vel_median);
+            //     spdlog::info(" Minimum   : {:>10.4f}rad/s", result.velocity_stats.angular_vel_min);
+            //     spdlog::info(" Maximum   : {:>10.4f}rad/s", result.velocity_stats.angular_vel_max);
+            //     spdlog::info("");
+            // }
             
             if (result.error_stats.available) {
                 spdlog::info("               FRAME-TO-FRAME TRANSFORM ERROR ANALYSIS              ");
@@ -272,7 +272,7 @@ std::vector<ImageData> EurocPlayer::load_image_timestamps(const std::string& dat
         }
     }
     
-    spdlog::info("[EurocPlayer] Loaded {} image timestamps", image_data.size());
+    // spdlog::info("[EurocPlayer] Loaded {} image timestamps", image_data.size());
     return image_data;
 }
 
@@ -340,8 +340,8 @@ bool EurocPlayer::setup_ground_truth_matching(const std::string& dataset_path,
         }
     }
     
-    spdlog::info("[EurocPlayer] Ground truth matched: {} frames, range {} to {}", 
-                matched_count, start_frame_idx, end_frame_idx);
+    // spdlog::info("[EurocPlayer] Ground truth matched: {} frames, range {} to {}", 
+    //             matched_count, start_frame_idx, end_frame_idx);
     return true;
 }
 
@@ -403,7 +403,7 @@ void EurocPlayer::initialize_estimator(Estimator& estimator, const std::vector<I
         auto first_gt_pose = EurocUtils::get_matched_pose(0);
         if (first_gt_pose.has_value()) {
             estimator.set_initial_gt_pose(first_gt_pose.value());
-            spdlog::info("[EurocPlayer] Set initial ground truth pose");
+            // spdlog::info("[EurocPlayer] Set initial ground truth pose");
         }
     }
 }
@@ -512,16 +512,8 @@ void EurocPlayer::update_viewer(PangolinViewer& viewer,
     
     // Update trajectory
     static std::vector<Eigen::Matrix4f> trajectory_poses;
-    static std::vector<Eigen::Matrix4f> gt_trajectory_poses;
-    
     trajectory_poses.push_back(current_pose);
-    
-    if (context.processed_frames < context.gt_poses.size()) {
-        gt_trajectory_poses.push_back(context.gt_poses[context.processed_frames]);
-        viewer.update_trajectory_with_gt(trajectory_poses, gt_trajectory_poses);
-    } else {
-        viewer.update_trajectory(extract_positions_from_poses(trajectory_poses));
-    }
+    viewer.update_trajectory(extract_positions_from_poses(trajectory_poses));
     
     // Update frame and keyframes
     viewer.add_frame(current_frame);
@@ -568,16 +560,22 @@ void EurocPlayer::update_viewer(PangolinViewer& viewer,
     viewer.update_tracking_stats(context.processed_frames + 1, total_features, 
                                map_points_count, map_points_count, success_rate, position_error);
     
-    // Update tracking images
-    cv::Mat tracking_image = current_frame->draw_features();
+    // Update tracking images with direct OpenGL feature rendering (more efficient)
+    const cv::Mat& raw_image = current_frame->get_left_image();
     const auto& features = current_frame->get_features();
     const auto& frame_map_points = current_frame->get_map_points();
-    viewer.update_tracking_image_with_map_points(tracking_image, features, frame_map_points);
+    // viewer.update_tracking_image_direct(raw_image, features, frame_map_points);
     
-    if (current_frame->is_stereo()) {
-        cv::Mat stereo_image = current_frame->draw_stereo_matches();
-        viewer.update_stereo_image(stereo_image);
-    }
+    // // Create uncertainty debug image
+    // cv::Mat uncertainty_debug_image = viewer.create_uncertainty_debug_image(features, frame_map_points, current_frame);
+    // viewer.update_uncertainty_debug_image(uncertainty_debug_image);
+
+        viewer.update_tracking_stats(context.processed_frames + 1, total_features, 
+                               map_points_count, map_points_count, success_rate, position_error);
+    
+    // Update tracking view with frame directly
+    viewer.update_tracking_with_frame(current_frame);
+    
     
     viewer.render();
 }
@@ -593,7 +591,7 @@ void EurocPlayer::save_trajectories(const Estimator& estimator,
     std::ofstream est_out(est_file);
     if (est_out.is_open()) {
         const auto& all_frames = estimator.get_all_frames();
-        spdlog::info("[EurocPlayer] Saving {} frames to estimated trajectory", all_frames.size());
+        // spdlog::info("[EurocPlayer] Saving {} frames to estimated trajectory", all_frames.size());
         
         for (size_t i = 0; i < all_frames.size(); ++i) {
             const auto& frame = all_frames[i];
@@ -615,7 +613,7 @@ void EurocPlayer::save_trajectories(const Estimator& estimator,
             }
         }
         est_out.close();
-        spdlog::info("[EurocPlayer] Saved estimated trajectory to: {}", est_file);
+        // spdlog::info("[EurocPlayer] Saved estimated trajectory to: {}", est_file);
     }
     
     // Save ground truth trajectory
@@ -639,7 +637,7 @@ void EurocPlayer::save_trajectories(const Estimator& estimator,
                        << quat.x() << " " << quat.y() << " " << quat.z() << " " << quat.w() << std::endl;
             }
             gt_out.close();
-            spdlog::info("[EurocPlayer] Saved ground truth trajectory to: {}", gt_file);
+            // spdlog::info("[EurocPlayer] Saved ground truth trajectory to: {}", gt_file);
         }
     }
 }
@@ -787,28 +785,28 @@ EurocPlayerResult::VelocityStats EurocPlayer::analyze_velocity_statistics(const 
         stats.angular_vel_min = *std::min_element(angular_velocities.begin(), angular_velocities.end());
         stats.angular_vel_max = *std::max_element(angular_velocities.begin(), angular_velocities.end());
         
-        spdlog::info("[EurocPlayer] Velocity analysis:");
-        spdlog::info("  Linear vel - Mean: {:.4f}m/s, Median: {:.4f}m/s, Range: {:.4f}-{:.4f}m/s", 
-                    stats.linear_vel_mean, stats.linear_vel_median, stats.linear_vel_min, stats.linear_vel_max);
-        spdlog::info("  Angular vel - Mean: {:.4f}rad/s, Median: {:.4f}rad/s, Range: {:.4f}-{:.4f}rad/s",
-                    stats.angular_vel_mean, stats.angular_vel_median, stats.angular_vel_min, stats.angular_vel_max);
+        // spdlog::info("[EurocPlayer] Velocity analysis:");
+        // spdlog::info("  Linear vel - Mean: {:.4f}m/s, Median: {:.4f}m/s, Range: {:.4f}-{:.4f}m/s", 
+        //             stats.linear_vel_mean, stats.linear_vel_median, stats.linear_vel_min, stats.linear_vel_max);
+        // spdlog::info("  Angular vel - Mean: {:.4f}rad/s, Median: {:.4f}rad/s, Range: {:.4f}-{:.4f}rad/s",
+        //             stats.angular_vel_mean, stats.angular_vel_median, stats.angular_vel_min, stats.angular_vel_max);
                     
-        // Velocity Statistics output
-        spdlog::info("══════════════════════════════════════════════════════════════════");
-        spdlog::info("                          VELOCITY ANALYSIS                         ");
-        spdlog::info("══════════════════════════════════════════════════════════════════");
-        spdlog::info("                        LINEAR VELOCITY (m/s)                       ");
-        spdlog::info(" Mean      : {:>10.4f}m/s", stats.linear_vel_mean);
-        spdlog::info(" Median    : {:>10.4f}m/s", stats.linear_vel_median);
-        spdlog::info(" Minimum   : {:>10.4f}m/s", stats.linear_vel_min);
-        spdlog::info(" Maximum   : {:>10.4f}m/s", stats.linear_vel_max);
-        spdlog::info("");
-        spdlog::info("                       ANGULAR VELOCITY (rad/s)                     ");
-        spdlog::info(" Mean      : {:>10.4f}rad/s", stats.angular_vel_mean);
-        spdlog::info(" Median    : {:>10.4f}rad/s", stats.angular_vel_median);
-        spdlog::info(" Minimum   : {:>10.4f}rad/s", stats.angular_vel_min);
-        spdlog::info(" Maximum   : {:>10.4f}rad/s", stats.angular_vel_max);
-        spdlog::info("══════════════════════════════════════════════════════════════════");
+        // // Velocity Statistics output
+        // spdlog::info("══════════════════════════════════════════════════════════════════");
+        // spdlog::info("                          VELOCITY ANALYSIS                         ");
+        // spdlog::info("══════════════════════════════════════════════════════════════════");
+        // spdlog::info("                        LINEAR VELOCITY (m/s)                       ");
+        // spdlog::info(" Mean      : {:>10.4f}m/s", stats.linear_vel_mean);
+        // spdlog::info(" Median    : {:>10.4f}m/s", stats.linear_vel_median);
+        // spdlog::info(" Minimum   : {:>10.4f}m/s", stats.linear_vel_min);
+        // spdlog::info(" Maximum   : {:>10.4f}m/s", stats.linear_vel_max);
+        // spdlog::info("");
+        // spdlog::info("                       ANGULAR VELOCITY (rad/s)                     ");
+        // spdlog::info(" Mean      : {:>10.4f}rad/s", stats.angular_vel_mean);
+        // spdlog::info(" Median    : {:>10.4f}rad/s", stats.angular_vel_median);
+        // spdlog::info(" Minimum   : {:>10.4f}rad/s", stats.angular_vel_min);
+        // spdlog::info(" Maximum   : {:>10.4f}rad/s", stats.angular_vel_max);
+        // spdlog::info("══════════════════════════════════════════════════════════════════");
     }
     
     return stats;

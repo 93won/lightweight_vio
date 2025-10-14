@@ -31,8 +31,6 @@ std::shared_ptr<Frame> Frame::m_last_keyframe = nullptr;
 Frame::Frame(long long timestamp, int frame_id)
     : m_timestamp(timestamp)
     , m_frame_id(frame_id)
-    , m_depth_scale_factor(1.0)
-    , m_is_rgbd(false)
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
@@ -65,9 +63,6 @@ Frame::Frame(long long timestamp, int frame_id)
         // Initialize with identity transform (will be updated by tracking)
         m_T_relative_from_ref = Eigen::Matrix4f::Identity();
     }
-    
-    // Calculate undistorted border limits
-    calculate_border();
 }
 
 Frame::Frame(long long timestamp, int frame_id, 
@@ -75,8 +70,6 @@ Frame::Frame(long long timestamp, int frame_id,
              const std::vector<double>& distortion_coeffs)
     : m_timestamp(timestamp)
     , m_frame_id(frame_id)
-    , m_depth_scale_factor(1.0)
-    , m_is_rgbd(false)
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
@@ -106,9 +99,6 @@ Frame::Frame(long long timestamp, int frame_id,
         m_reference_keyframe = m_last_keyframe;
         m_T_relative_from_ref = Eigen::Matrix4f::Identity();
     }
-    
-    // Calculate undistorted border limits
-    calculate_border();
 }
 
 Frame::Frame(long long timestamp, int frame_id,
@@ -119,8 +109,6 @@ Frame::Frame(long long timestamp, int frame_id,
     , m_frame_id(frame_id)
     , m_left_image(left_image.clone())
     , m_right_image(right_image.clone())
-    , m_depth_scale_factor(1.0)
-    , m_is_rgbd(false)
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
@@ -151,8 +139,8 @@ Frame::Frame(long long timestamp, int frame_id,
         m_T_relative_from_ref = Eigen::Matrix4f::Identity();
     }
     
-    // Calculate undistorted border limits
-    calculate_border();
+    // Compute undistorted image boundaries
+    undistort_corner_points();
 }
 
 Frame::Frame(long long timestamp, int frame_id,
@@ -161,8 +149,6 @@ Frame::Frame(long long timestamp, int frame_id,
     , m_frame_id(frame_id)
     , m_left_image(left_image.clone())
     , m_right_image(right_image.clone())
-    , m_depth_scale_factor(1.0)
-    , m_is_rgbd(false)
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
@@ -219,164 +205,8 @@ Frame::Frame(long long timestamp, int frame_id,
         m_T_relative_from_ref = Eigen::Matrix4f::Identity();
     }
     
-    // Calculate undistorted border limits
-    calculate_border();
-}
-
-// RGB-D constructor - uses Config for camera parameters
-Frame::Frame(long long timestamp, int frame_id,
-             const cv::Mat& rgb_image, const cv::Mat& depth_image, 
-             double depth_scale_factor)
-    : m_timestamp(timestamp)
-    , m_frame_id(frame_id)
-    , m_left_image(rgb_image.clone())  // Use RGB as left image
-    , m_depth_image(depth_image.clone())
-    , m_depth_scale_factor(depth_scale_factor)
-    , m_is_rgbd(true)
-    , m_rotation(Eigen::Matrix3f::Identity())
-    , m_translation(Eigen::Vector3f::Zero())
-    , m_is_keyframe(false)
-    , m_world_pose(Sophus::SE3f())
-    , m_velocity(Eigen::Vector3f::Zero())
-    , m_accel_bias(Eigen::Vector3f::Zero())
-    , m_gyro_bias(Eigen::Vector3f::Zero())
-    , m_dt_from_last_keyframe(0.0)
-    , m_T_relative_from_ref(Eigen::Matrix4f::Identity())
-{
-    // Check input images
-    if (rgb_image.empty()) {
-        spdlog::error("[Frame] RGB-D constructor FAILED: RGB image is empty!");
-        throw std::invalid_argument("RGB image is empty");
-    }
-    if (depth_image.empty()) {
-        spdlog::error("[Frame] RGB-D constructor FAILED: Depth image is empty!");
-        throw std::invalid_argument("Depth image is empty");
-    }
-    
-    // Store original RGB image for point cloud generation and debugging
-    m_rgb_image = rgb_image.clone();
-    
-    // Convert RGB to grayscale for feature tracking
-    if (rgb_image.channels() == 3) {
-        cv::cvtColor(m_left_image, m_left_image, cv::COLOR_BGR2GRAY);
-    } else {
-        // Already grayscale, but still store the original
-        m_rgb_image = rgb_image.clone();
-    }
-    
-    // Get camera parameters from Config
-    const Config& config = Config::getInstance();
-    cv::Mat left_K = config.left_camera_matrix();
-    
-    if (!left_K.empty()) {
-        m_fx = left_K.at<double>(0, 0);
-        m_fy = left_K.at<double>(1, 1);
-        m_cx = left_K.at<double>(0, 2);
-        m_cy = left_K.at<double>(1, 2);
-    } else {
-        // Fallback to default values if config not available
-        m_fx = 520.9; m_fy = 521.0;  // TUM RGB-D typical values
-        m_cx = 325.1; m_cy = 249.7;
-    }
-    
-    // Get distortion coefficients
-    cv::Mat left_D = config.left_dist_coeffs();
-    if (!left_D.empty()) {
-        m_distortion_coeffs.clear();
-        for (int i = 0; i < left_D.rows; ++i) {
-            m_distortion_coeffs.push_back(left_D.at<double>(i, 0));
-        }
-    } else {
-        m_distortion_coeffs = {0.0, 0.0, 0.0, 0.0, 0.0}; // No distortion for RGB-D
-    }
-    
-    // Get T_BC (camera to body) from config and convert to T_CB (body to camera)
-    cv::Mat T_bc_cv = config.left_T_BC();  
-    if (!T_bc_cv.empty()) {
-        Eigen::Matrix4d T_bc;
-        for (int i = 0; i < 4; ++i) {
-            for (int j = 0; j < 4; ++j) {
-                T_bc(i, j) = T_bc_cv.at<double>(i, j);
-            }
-        }
-        m_T_CB = T_bc.inverse();
-    } else {
-        m_T_CB = Eigen::Matrix4d::Identity();
-    }
-    
-    // Set reference keyframe to last keyframe if available
-    if (m_last_keyframe) {
-        m_reference_keyframe = m_last_keyframe;
-        m_T_relative_from_ref = Eigen::Matrix4f::Identity();
-    }
-    
-    // Calculate undistorted border limits
-    calculate_border();
-    
-}
-
-// RGB-D constructor with manual camera parameters
-Frame::Frame(long long timestamp, int frame_id,
-             const cv::Mat& gray_image, const cv::Mat& rgb_image, const cv::Mat& depth_image,
-             double fx, double fy, double cx, double cy, 
-             const std::vector<double>& distortion_coeffs,
-             double depth_scale_factor)
-    : m_timestamp(timestamp)
-    , m_frame_id(frame_id)
-    , m_left_image(gray_image.clone())
-    , m_rgb_image(rgb_image.clone())
-    , m_depth_image(depth_image.clone())
-    , m_depth_scale_factor(depth_scale_factor)
-    , m_is_rgbd(true)
-    , m_fx(fx), m_fy(fy), m_cx(cx), m_cy(cy)
-    , m_distortion_coeffs(distortion_coeffs)
-    , m_rotation(Eigen::Matrix3f::Identity())
-    , m_translation(Eigen::Vector3f::Zero())
-    , m_is_keyframe(false)
-    , m_world_pose(Sophus::SE3f())
-    , m_velocity(Eigen::Vector3f::Zero())
-    , m_accel_bias(Eigen::Vector3f::Zero())
-    , m_gyro_bias(Eigen::Vector3f::Zero())
-    , m_dt_from_last_keyframe(0.0)
-    , m_T_relative_from_ref(Eigen::Matrix4f::Identity())
-{
-    // Check input images
-    if (gray_image.empty()) {
-        spdlog::error("[Frame] RGB-D constructor FAILED: Gray image is empty!");
-        throw std::invalid_argument("Gray image is empty");
-    }
-    if (rgb_image.empty()) {
-        spdlog::error("[Frame] RGB-D constructor FAILED: RGB image is empty!");
-        throw std::invalid_argument("RGB image is empty");
-    }
-    if (depth_image.empty()) {
-        spdlog::error("[Frame] RGB-D constructor FAILED: Depth image is empty!");
-        throw std::invalid_argument("Depth image is empty");
-    }
-    
-    // Get T_BC (camera to body) from config and convert to T_CB (body to camera)
-    const Config& config = Config::getInstance();
-    cv::Mat T_bc_cv = config.left_T_BC();  
-    if (!T_bc_cv.empty()) {
-        Eigen::Matrix4d T_bc;
-        for (int i = 0; i < 4; ++i) {
-            for (int j = 0; j < 4; ++j) {
-                T_bc(i, j) = T_bc_cv.at<double>(i, j);
-            }
-        }
-        m_T_CB = T_bc.inverse();
-    } else {
-        m_T_CB = Eigen::Matrix4d::Identity();
-    }
-    
-    // Set reference keyframe to last keyframe if available
-    if (m_last_keyframe) {
-        m_reference_keyframe = m_last_keyframe;
-        m_T_relative_from_ref = Eigen::Matrix4f::Identity();
-    }
-    
-    // Calculate undistorted border limits
-    calculate_border();
+    // Compute undistorted image boundaries
+    undistort_corner_points();
 }
 
 void Frame::set_pose(const Eigen::Matrix3f& rotation, const Eigen::Vector3f& translation) {
@@ -548,17 +378,13 @@ cv::Mat Frame::draw_features() const {
             
             // Check if feature has associated map point
             auto map_point = get_map_point(i);
-            cv::Scalar point_color;
             
             if (map_point && !map_point->is_bad()) {
-                // Feature with MapPoint
-                point_color = cv::Scalar(0, 0, 255);
-            } else {
-                // Feature without MapPoint
-                point_color = cv::Scalar(255, 0, 0);
+                // Only draw features with valid MapPoints in green
+                cv::Scalar point_color = cv::Scalar(0, 255, 0); // Green in BGR format
+                cv::circle(display_image, pt, 4, point_color, 2);
             }
-            
-            cv::circle(display_image, pt, 4, point_color, 2);
+            // Features without MapPoints are not drawn (clean visualization)
         }
     }
 
@@ -732,15 +558,68 @@ void Frame::update_feature_index() {
     }
 }
 
-bool Frame::is_in_border(const cv::Point2f& point) const {
-    // First undistort the input point to get its undistorted coordinates
+bool Frame::is_in_border(const cv::Point2f& point, int border_size) const {
+    // Undistort the point first to get its undistorted coordinates
     cv::Point2f undistorted_point = undistort_point(point);
-    
+
+
     // Check against undistorted boundaries
-    return (m_undist_x_min <= undistorted_point.x && 
-            undistorted_point.x <= m_undist_x_max && 
-            m_undist_y_min <= undistorted_point.y && 
-            undistorted_point.y <= m_undist_y_max);
+    return (m_undist_x_min + border_size <= undistorted_point.x && 
+            undistorted_point.x <= m_undist_x_max - border_size && 
+            m_undist_y_min + border_size <= undistorted_point.y && 
+            undistorted_point.y <= m_undist_y_max - border_size);
+}
+
+void Frame::undistort_corner_points() {
+    if (m_left_image.empty()) {
+        // If no image is available, use default boundaries
+        m_undist_x_min = 0.0;
+        m_undist_x_max = 640.0;
+        m_undist_y_min = 0.0;
+        m_undist_y_max = 480.0;
+        return;
+    }
+    
+    int width = m_left_image.cols;
+    int height = m_left_image.rows;
+    
+    const Config& config = Config::getInstance();
+    CameraModel camera_model = config.get_camera_model();
+    int border_size = config.m_border_size;
+    
+    if (camera_model == CameraModel::PINHOLE) {
+        // For pinhole camera, undistorted boundaries are same as image boundaries (minus border)
+        m_undist_x_min = static_cast<double>(border_size);
+        m_undist_x_max = static_cast<double>(width - border_size);
+        m_undist_y_min = static_cast<double>(border_size);
+        m_undist_y_max = static_cast<double>(height - border_size);
+    } else {
+        // For fisheye camera, undistort the 4 corner points (with border considered)
+        std::vector<cv::Point2f> corner_points = {
+            cv::Point2f(static_cast<float>(border_size), static_cast<float>(border_size)),                                              // Top-left
+            cv::Point2f(static_cast<float>(width - border_size), static_cast<float>(border_size)),                                      // Top-right
+            cv::Point2f(static_cast<float>(border_size), static_cast<float>(height - border_size)),                                     // Bottom-left
+            cv::Point2f(static_cast<float>(width - border_size), static_cast<float>(height - border_size))                              // Bottom-right
+        };
+        
+        std::vector<cv::Point2f> undistorted_corners(4);
+        for (size_t i = 0; i < corner_points.size(); ++i) {
+            undistorted_corners[i] = undistort_point(corner_points[i]);
+        }
+        
+        // Find min/max from undistorted corners
+        m_undist_x_min = undistorted_corners[0].x;
+        m_undist_x_max = undistorted_corners[0].x;
+        m_undist_y_min = undistorted_corners[0].y;
+        m_undist_y_max = undistorted_corners[0].y;
+        
+        for (const auto& corner : undistorted_corners) {
+            if (corner.x < m_undist_x_min) m_undist_x_min = corner.x;
+            if (corner.x > m_undist_x_max) m_undist_x_max = corner.x;
+            if (corner.y < m_undist_y_min) m_undist_y_min = corner.y;
+            if (corner.y > m_undist_y_max) m_undist_y_max = corner.y;
+        }
+    }
 }
 
 void Frame::compute_stereo_matches() {
@@ -918,13 +797,8 @@ void Frame::undistort_features() {
     cv::Mat right_K = config.right_camera_matrix();
     cv::Mat right_D = config.right_dist_coeffs();
     
-    // Debug: Check if camera calibration is loaded
-    if (left_K.empty()) {
-        std::cerr << "Camera calibration not available for undistortion - left_K is empty" << std::endl;
-        return;
-    }
-    if (left_D.empty()) {
-        std::cerr << "Camera calibration not available for undistortion - left_D is empty" << std::endl;
+    if (left_K.empty() || left_D.empty()) {
+        std::cerr << "Camera calibration not available for undistortion" << std::endl;
         return;
     }
     
@@ -966,11 +840,6 @@ void Frame::undistort_features() {
             Eigen::Vector2f normalized(undistorted_pts[0].x, undistorted_pts[0].y);
             feature->set_normalized_coord(normalized);
             
-            // For RGB-D cameras, skip stereo matching
-            if (m_is_rgbd) {
-                continue;  // RGB-D doesn't have stereo matches
-            }
-            
             // For stereo matches, we don't need rectification anymore
             // The triangulation will handle the geometric relationship directly
             if (feature->has_stereo_match()) {
@@ -978,13 +847,6 @@ void Frame::undistort_features() {
                 
                 // Check if stereo match is valid
                 if (right_pixel.x >= 0 && right_pixel.y >= 0) {
-                    // Check if right camera parameters are available
-                    if (right_K.empty() || right_D.empty()) {
-                        // No right camera calibration available
-                        feature->set_undistorted_stereo_match(cv::Point2f(-1, -1), Eigen::Vector2f(-1,-1), -1.0f);
-                        continue;
-                    }
-                    
                     // For right camera, undistort to normalized coordinates
                     std::vector<cv::Point2f> right_distorted = {right_pixel};
                     std::vector<cv::Point2f> right_undistorted;
@@ -1213,7 +1075,7 @@ void Frame::triangulate_stereo_points() {
             double max_error_pixels = max_error * std::min(K_left_eigen(0,0), K_left_eigen(1,1));
             
             // Use normalized coordinate reprojection threshold
-            double max_reproj_error = sqrt(5.991) / std::min(K_left_eigen(0,0), K_left_eigen(1,1));
+            double max_reproj_error = sqrt(1.0) / std::min(K_left_eigen(0,0), K_left_eigen(1,1));
             
             if (max_error > max_reproj_error) {
                 reprojection_rejected++;
@@ -1345,83 +1207,80 @@ void Frame::set_distortion_coeffs(const std::vector<double>& distortion_coeffs) 
 
 cv::Point2f Frame::undistort_point(const cv::Point2f& distorted_point) const {
     if (m_distortion_coeffs.empty() || 
-        (m_distortion_coeffs.size() >= 5 && 
+        (m_distortion_coeffs.size() >= 4 && 
          std::abs(m_distortion_coeffs[0]) < 1e-6 && 
          std::abs(m_distortion_coeffs[1]) < 1e-6)) {
         return distorted_point; // No significant distortion correction needed
     }
 
-    // Convert to normalized coordinates
-    double x = (distorted_point.x - m_cx) / m_fx;
-    double y = (distorted_point.y - m_cy) / m_fy;
-
-    // Iterative undistortion (Newton-Raphson method)
-    if (m_distortion_coeffs.size() >= 5) {
-        double k1 = m_distortion_coeffs[0];
-        double k2 = m_distortion_coeffs[1];
-        double p1 = m_distortion_coeffs[2];
-        double p2 = m_distortion_coeffs[3];
-        double k3 = m_distortion_coeffs[4];
-
-        // Initial guess
-        double x_u = x;
-        double y_u = y;
-
-        // Iterative correction (typically 5 iterations are enough)
-        for (int iter = 0; iter < 5; ++iter) {
-            double r2 = x_u*x_u + y_u*y_u;
-            double r4 = r2*r2;
-            double r6 = r4*r2;
-
-            // Radial distortion
-            double radial_factor = 1.0 + k1*r2 + k2*r4 + k3*r6;
-            
-            // Tangential distortion
-            double dx = 2.0*p1*x_u*y_u + p2*(r2 + 2.0*x_u*x_u);
-            double dy = p1*(r2 + 2.0*y_u*y_u) + 2.0*p2*x_u*y_u;
-
-            // Distorted coordinates
-            double x_d = x_u * radial_factor + dx;
-            double y_d = y_u * radial_factor + dy;
-
-            // Correction
-            x_u = x_u - (x_d - x);
-            y_u = y_u - (y_d - y);
-        }
-
-        x = x_u;
-        y = y_u;
-    }
-
-    // Convert back to pixel coordinates
-    return cv::Point2f(x * m_fx + m_cx, y * m_fy + m_cy);
-}
-
-cv::Mat Frame::get_undistorted_rgb_image() const {
-    if (!m_is_rgbd || m_rgb_image.empty()) {
-        return cv::Mat();
-    }
-    
+    // Check camera model from Config
     const Config& config = Config::getInstance();
-    cv::Mat camera_matrix = config.left_camera_matrix();
-    cv::Mat dist_coeffs = config.left_dist_coeffs();
-    
-    if (camera_matrix.empty() || dist_coeffs.empty()) {
-        // No distortion correction needed, return original
-        return m_rgb_image.clone();
-    }
-    
-    cv::Mat undistorted_rgb;
     
     if (config.get_camera_model() == CameraModel::FISHEYE) {
-        // Use fisheye undistortion
-        cv::fisheye::undistortImage(m_rgb_image, undistorted_rgb, camera_matrix, dist_coeffs);
-    } else {
-        // Use standard pinhole undistortion
-        cv::undistort(m_rgb_image, undistorted_rgb, camera_matrix, dist_coeffs);
+        // Fisheye undistortion using OpenCV
+        std::vector<cv::Point2f> distorted_points = {distorted_point};
+        std::vector<cv::Point2f> undistorted_points;
+        
+        // Create camera matrix
+        cv::Mat K = (cv::Mat_<double>(3, 3) << m_fx, 0, m_cx,
+                                                0, m_fy, m_cy,
+                                                0, 0, 1);
+        
+        // Create distortion coefficients (fisheye uses 4 coefficients: k1, k2, k3, k4)
+        cv::Mat D = cv::Mat(m_distortion_coeffs).clone();
+        
+        // Undistort using fisheye model
+        cv::fisheye::undistortPoints(distorted_points, undistorted_points, K, D, cv::noArray(), K);
+        
+        return undistorted_points[0];
     }
-    
-    return undistorted_rgb;
+    else {
+        // Pinhole model undistortion (existing code)
+        // Convert to normalized coordinates
+        double x = (distorted_point.x - m_cx) / m_fx;
+        double y = (distorted_point.y - m_cy) / m_fy;
+
+        // Iterative undistortion (Newton-Raphson method)
+        if (m_distortion_coeffs.size() >= 5) {
+            double k1 = m_distortion_coeffs[0];
+            double k2 = m_distortion_coeffs[1];
+            double p1 = m_distortion_coeffs[2];
+            double p2 = m_distortion_coeffs[3];
+            double k3 = m_distortion_coeffs[4];
+
+            // Initial guess
+            double x_u = x;
+            double y_u = y;
+
+            // Iterative correction (typically 5 iterations are enough)
+            for (int iter = 0; iter < 5; ++iter) {
+                double r2 = x_u*x_u + y_u*y_u;
+                double r4 = r2*r2;
+                double r6 = r4*r2;
+
+                // Radial distortion
+                double radial_factor = 1.0 + k1*r2 + k2*r4 + k3*r6;
+                
+                // Tangential distortion
+                double dx = 2.0*p1*x_u*y_u + p2*(r2 + 2.0*x_u*x_u);
+                double dy = p1*(r2 + 2.0*y_u*y_u) + 2.0*p2*x_u*y_u;
+
+                // Distorted coordinates
+                double x_d = x_u * radial_factor + dx;
+                double y_d = y_u * radial_factor + dy;
+
+                // Correction
+                x_u = x_u - (x_d - x);
+                y_u = y_u - (y_d - y);
+            }
+
+            x = x_u;
+            y = y_u;
+        }
+
+        // Convert back to pixel coordinates
+        return cv::Point2f(x * m_fx + m_cx, y * m_fy + m_cy);
+    }
 }
 
 void Frame::extract_stereo_features(int max_features) {
@@ -1434,54 +1293,23 @@ void Frame::extract_stereo_features(int max_features) {
 }
 
 void Frame::compute_stereo_depth() {
-    if (m_is_rgbd) {
-        // RGB-D case: undistort features first, then get depth directly from depth image
-        undistort_features();
-        
-        m_depths.assign(m_features.size(), -1.0);
-        
-        for (size_t i = 0; i < m_features.size(); ++i) {
-            auto feature = m_features[i];
-            if (feature && feature->is_valid()) {
-                cv::Point2f pixel = feature->get_undistorted_coord();
-                double depth = get_rgbd_depth(pixel);
-                m_depths[i] = depth;
-                
-                // Set 3D point for the feature if depth is valid
-                if (depth > 0.0) {
-                    // Use undistorted normalized coordinates for accurate 3D reconstruction
-                    Eigen::Vector2f normalized = feature->get_normalized_coord();
-                    
-                    // Convert normalized coordinates to 3D point using depth
-                    float x = normalized[0] * depth;
-                    float y = normalized[1] * depth;
-                    float z = depth;
-                    
-                    Eigen::Vector3f point3d(x, y, z);
-                    feature->set_3d_point(point3d);
-                }
-            }
-        }
-    } else {
-        // Stereo case: traditional stereo matching and triangulation
-        // First compute stereo matches
-        compute_stereo_matches();
-        
-        // Then undistort features
-        undistort_features();
-        
-        // Finally triangulate to get 3D points and extract depth
-        triangulate_stereo_points();
-        
-        // Update depth array from triangulated 3D points
-        m_depths.assign(m_features.size(), -1.0);
-        
-        for (size_t i = 0; i < m_features.size(); ++i) {
-            auto feature = m_features[i];
-            if (feature && feature->is_valid() && feature->has_3d_point()) {
-                Eigen::Vector3f point3d = feature->get_3d_point();
-                m_depths[i] = point3d[2]; // Z coordinate is depth in camera frame
-            }
+    // First compute stereo matches
+    compute_stereo_matches();
+    
+    // Then undistort features
+    undistort_features();
+    
+    // Finally triangulate to get 3D points and extract depth
+    triangulate_stereo_points();
+    
+    // Update depth array from triangulated 3D points
+    m_depths.assign(m_features.size(), -1.0);
+    
+    for (size_t i = 0; i < m_features.size(); ++i) {
+        auto feature = m_features[i];
+        if (feature && feature->is_valid() && feature->has_3d_point()) {
+            Eigen::Vector3f point3d = feature->get_3d_point();
+            m_depths[i] = point3d[2]; // Z coordinate is depth in camera frame
         }
     }
 }
@@ -1493,35 +1321,17 @@ double Frame::get_depth(int feature_index) const {
     return -1.0;
 }
 
+void Frame::set_depth(int feature_index, double depth) {
+    if (feature_index >= 0 && feature_index < static_cast<int>(m_depths.size())) {
+        m_depths[feature_index] = depth;
+    }
+}
+
 bool Frame::has_depth(int feature_index) const {
     if (feature_index >= 0 && feature_index < static_cast<int>(m_depths.size())) {
         return m_depths[feature_index] > 0.0;
     }
     return false;
-}
-
-double Frame::get_rgbd_depth(const cv::Point2f& pixel) const {
-    if (!m_is_rgbd || m_depth_image.empty()) {
-        return -1.0;
-    }
-    
-    // Check if pixel is within image bounds
-    int x = static_cast<int>(std::round(pixel.x));
-    int y = static_cast<int>(std::round(pixel.y));
-    
-    if (x < 0 || y < 0 || x >= m_depth_image.cols || y >= m_depth_image.rows) {
-        return -1.0;
-    }
-    
-    // Get depth value from depth image
-    uint16_t depth_value = m_depth_image.at<uint16_t>(y, x);
-    
-    if (depth_value == 0) {
-        return -1.0;  // Invalid depth
-    }
-    
-    // Convert to meters using scale factor
-    return static_cast<double>(depth_value) / m_depth_scale_factor;
 }
 
 bool Frame::has_valid_stereo_depth(const cv::Point2f& pixel_coord) const {
@@ -1698,160 +1508,6 @@ void Frame::initialize_velocity_from_preintegration() {
         if (i < velocity_sources.size() - 1) sources_str += "+";
     }
     
-}
-
-void Frame::calculate_border() {
-    // RGB-D cameras typically have minimal distortion, use simple image boundaries
-    if (m_is_rgbd) {
-        m_undist_x_min = 0;
-        m_undist_x_max = m_left_image.cols - 1;
-        m_undist_y_min = 0; 
-        m_undist_y_max = m_left_image.rows - 1;
-        return;
-    }
-    
-    // Get image dimensions for stereo cameras
-    int img_width = m_left_image.cols;
-    int img_height = m_left_image.rows;
-    
-    // Define the four corner points of the image
-    std::vector<cv::Point2f> corner_points = {
-        cv::Point2f(0, 0),                           // Top-left
-        cv::Point2f(img_width - 1, 0),               // Top-right  
-        cv::Point2f(0, img_height - 1),              // Bottom-left
-        cv::Point2f(img_width - 1, img_height - 1)   // Bottom-right
-    };
-    
-    undistort_corner_points(corner_points);
-
-    // spdlog::info("[BORDER] Frame {}: Undistorted borders - X:[{:.1f}, {:.1f}], Y:[{:.1f}, {:.1f}]", 
-    //             m_frame_id, m_undist_x_min, m_undist_x_max, m_undist_y_min, m_undist_y_max);
-}
-
-void Frame::undistort_corner_points(const std::vector<cv::Point2f>& corner_points) {
-    const Config& config = Config::getInstance();
-    cv::Mat left_K = config.left_camera_matrix();
-    cv::Mat left_D = config.left_dist_coeffs();
-    
-    if (left_K.empty() || left_D.empty()) {
-        std::cerr << "Camera calibration not available for border calculation" << std::endl;
-        // Fallback to simple pixel boundaries
-        m_undist_x_min = 0;
-        m_undist_x_max = m_left_image.cols - 1;
-        m_undist_y_min = 0; 
-        m_undist_y_max = m_left_image.rows - 1;
-        return;
-    }
-    
-    // Undistort corner points to normalized coordinates
-    std::vector<cv::Point2f> undistorted_corners;
-    
-    if (config.get_camera_model() == CameraModel::FISHEYE) {
-        // Use fisheye undistortion
-        cv::fisheye::undistortPoints(corner_points, undistorted_corners, left_K, left_D);
-    } else {
-        // Use standard pinhole undistortion (default)
-        cv::undistortPoints(corner_points, undistorted_corners, left_K, left_D);
-    }
-    
-    // Convert back to pixel coordinates to get undistorted boundary
-    std::vector<cv::Point2f> undistorted_pixels;
-    for (const auto& norm_pt : undistorted_corners) {
-        cv::Point2f pixel_pt;
-        pixel_pt.x = norm_pt.x * m_fx + m_cx;
-        pixel_pt.y = norm_pt.y * m_fy + m_cy;
-        undistorted_pixels.push_back(pixel_pt);
-    }
-    
-    // Find min/max bounds from all undistorted corner points
-    m_undist_x_min = undistorted_pixels[0].x;
-    m_undist_x_max = undistorted_pixels[0].x;
-    m_undist_y_min = undistorted_pixels[0].y;
-    m_undist_y_max = undistorted_pixels[0].y;
-    
-    for (const auto& pt : undistorted_pixels) {
-        m_undist_x_min = std::min(m_undist_x_min, static_cast<double>(pt.x));
-        m_undist_x_max = std::max(m_undist_x_max, static_cast<double>(pt.x));
-        m_undist_y_min = std::min(m_undist_y_min, static_cast<double>(pt.y));
-        m_undist_y_max = std::max(m_undist_y_max, static_cast<double>(pt.y));
-    }
-    
-    // Debug output for border calculation
-    const Config& config_debug = Config::getInstance();
-    if (config_debug.m_enable_debug_output) {
-        spdlog::info("[BORDER] Frame {}: Undistorted borders - X:[{:.1f}, {:.1f}], Y:[{:.1f}, {:.1f}]", 
-                    m_frame_id, m_undist_x_min, m_undist_x_max, m_undist_y_min, m_undist_y_max);
-        
-        // Show original vs undistorted corner coordinates
-        for (size_t i = 0; i < corner_points.size(); ++i) {
-            spdlog::debug("[BORDER] Corner {}: ({:.1f},{:.1f}) -> normalized:({:.3f},{:.3f}) -> undist_pixel:({:.1f},{:.1f})", 
-                         i, corner_points[i].x, corner_points[i].y,
-                         undistorted_corners[i].x, undistorted_corners[i].y,
-                         undistorted_pixels[i].x, undistorted_pixels[i].y);
-        }
-    }
-}
-
-std::vector<Frame::ColorPoint> Frame::generate_dense_color_cloud(int downsample_factor) const {
-    std::vector<ColorPoint> color_cloud;
-    
-    if (!m_is_rgbd || m_depth_image.empty() || m_rgb_image.empty()) {
-        spdlog::warn("[Frame] Cannot generate dense color cloud: not RGB-D or missing images");
-        return color_cloud;
-    }
-    
-    // Get camera intrinsics
-    double fx, fy, cx, cy;
-    get_camera_intrinsics(fx, fy, cx, cy);
-    
-    const int height = m_depth_image.rows;
-    const int width = m_depth_image.cols;
-    
-    // Reserve space for efficiency (rough estimate)
-    color_cloud.reserve(width * height / (downsample_factor * downsample_factor) / 4);
-    
-    for (int v = 0; v < height; v += downsample_factor) {
-        for (int u = 0; u < width; u += downsample_factor) {
-            // Get depth value
-            float depth_raw = 0.0f;
-            if (m_depth_image.type() == CV_16UC1) {
-                depth_raw = static_cast<float>(m_depth_image.at<uint16_t>(v, u));
-            } else if (m_depth_image.type() == CV_32FC1) {
-                depth_raw = m_depth_image.at<float>(v, u);
-            } else {
-                continue; // Unsupported depth format
-            }
-            
-            // Convert to meters using depth scale factor
-            float depth_m = depth_raw / static_cast<float>(m_depth_scale_factor);
-            
-            // Filter out invalid depths
-            if (depth_m <= 0.0f || depth_m < 0.1f || depth_m > 10.0f) {
-                continue;
-            }
-            
-            // Convert pixel to 3D point in camera frame
-            float x_cam = (static_cast<float>(u) - static_cast<float>(cx)) * depth_m / static_cast<float>(fx);
-            float y_cam = (static_cast<float>(v) - static_cast<float>(cy)) * depth_m / static_cast<float>(fy);
-            float z_cam = depth_m;
-            
-            // Get RGB color
-            cv::Vec3b bgr_color = m_rgb_image.at<cv::Vec3b>(v, u);
-            
-            // Create color point
-            ColorPoint point;
-            point.position = Eigen::Vector3f(x_cam, y_cam, z_cam);
-            point.color = Eigen::Vector3i(
-                static_cast<int>(bgr_color[2]), // R
-                static_cast<int>(bgr_color[1]), // G  
-                static_cast<int>(bgr_color[0])  // B
-            );
-            
-            color_cloud.push_back(point);
-        }
-    }
-    
-    return color_cloud;
 }
 
 } // namespace lightweight_vio

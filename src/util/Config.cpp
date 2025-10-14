@@ -165,25 +165,21 @@ bool Config::load(const std::string& config_file) {
     // Camera Parameters
     cv::FileNode camera = fs["camera"];
     if (!camera.empty()) {
+        // Load camera model (pinhole or fisheye)
+        if (!camera["model"].empty()) {
+            std::string model_str = (std::string)camera["model"];
+            if (model_str == "fisheye") {
+                m_camera_model = CameraModel::FISHEYE;
+            } else {
+                m_camera_model = CameraModel::PINHOLE;
+            }
+        }
+        
         m_image_width = (int)camera["image_width"];
         m_image_height = (int)camera["image_height"];
         m_border_size = (int)camera["border_size"];
         
-        // Load camera model
-        cv::FileNode camera_model_node = camera["model"];
-        if (!camera_model_node.empty()) {
-            std::string model_str = (std::string)camera_model_node;
-            if (model_str == "fisheye") {
-                m_camera_model = CameraModel::FISHEYE;
-                std::cout << "[Config] Camera model: FISHEYE" << std::endl;
-            } else {
-                m_camera_model = CameraModel::PINHOLE; // default
-                std::cout << "[Config] Camera model: PINHOLE" << std::endl;
-            }
-        } else {
-            m_camera_model = CameraModel::PINHOLE; // default
-            std::cout << "[Config] Camera model: PINHOLE (default)" << std::endl;
-        }
+        spdlog::info("[CONFIG] Loaded border_size from YAML: {}", m_border_size);
         
         // Load camera intrinsics
         cv::FileNode left_intrinsics = camera["left_intrinsics"];
@@ -205,75 +201,52 @@ bool Config::load(const std::string& config_file) {
                 0, 0, 1);
         }
         
-        // Handle distortion coefficients - support both 4 and 5 parameters
-        if (!left_distortion.empty() && (left_distortion.size() == 4 || left_distortion.size() == 5)) {
-            if (left_distortion.size() == 4) {
-                m_left_dist_coeffs = (cv::Mat_<double>(1, 4) << 
-                    (double)left_distortion[0], (double)left_distortion[1],
-                    (double)left_distortion[2], (double)left_distortion[3]);
-            } else {
-                // 5 parameters: [k1, k2, p1, p2, k3]
-                m_left_dist_coeffs = (cv::Mat_<double>(1, 5) << 
-                    (double)left_distortion[0], (double)left_distortion[1],
-                    (double)left_distortion[2], (double)left_distortion[3],
-                    (double)left_distortion[4]);
-            }
+        if (!left_distortion.empty() && left_distortion.size() == 4) {
+            m_left_dist_coeffs = (cv::Mat_<double>(1, 4) << 
+                (double)left_distortion[0], (double)left_distortion[1],
+                (double)left_distortion[2], (double)left_distortion[3]);
         }
         
-        if (!right_distortion.empty() && (right_distortion.size() == 4 || right_distortion.size() == 5)) {
-            if (right_distortion.size() == 4) {
-                m_right_dist_coeffs = (cv::Mat_<double>(1, 4) << 
-                    (double)right_distortion[0], (double)right_distortion[1],
-                    (double)right_distortion[2], (double)right_distortion[3]);
-            } else {
-                // 5 parameters: [k1, k2, p1, p2, k3]
-                m_right_dist_coeffs = (cv::Mat_<double>(1, 5) << 
-                    (double)right_distortion[0], (double)right_distortion[1],
-                    (double)right_distortion[2], (double)right_distortion[3],
-                    (double)right_distortion[4]);
-            }
+        if (!right_distortion.empty() && right_distortion.size() == 4) {
+            m_right_dist_coeffs = (cv::Mat_<double>(1, 4) << 
+                (double)right_distortion[0], (double)right_distortion[1],
+                (double)right_distortion[2], (double)right_distortion[3]);
         }
         
         // Load extrinsics (T_BC - camera to body transform)
         cv::FileNode left_T_BC = camera["left_T_BC"];
         cv::FileNode right_T_BC = camera["right_T_BC"];
         
-        // Load left camera extrinsics (always required)
-        if (!left_T_BC.empty() && left_T_BC.size() == 16) {
+        if (!left_T_BC.empty() && !right_T_BC.empty() && 
+            left_T_BC.size() == 16 && right_T_BC.size() == 16) {
+            
             cv::Mat T_BC_left = (cv::Mat_<double>(4, 4) << 
                 (double)left_T_BC[0], (double)left_T_BC[1], (double)left_T_BC[2], (double)left_T_BC[3],
                 (double)left_T_BC[4], (double)left_T_BC[5], (double)left_T_BC[6], (double)left_T_BC[7],
                 (double)left_T_BC[8], (double)left_T_BC[9], (double)left_T_BC[10], (double)left_T_BC[11],
                 (double)left_T_BC[12], (double)left_T_BC[13], (double)left_T_BC[14], (double)left_T_BC[15]);
-            
-            // Store left camera T_BC matrix (camera to body transform)
-            m_T_left_BC = T_BC_left.clone();
-            
-            if (m_enable_debug_output) {
-                spdlog::info("[CONFIG] Loaded left_T_BC matrix:");
-                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", T_BC_left.at<double>(0,0), T_BC_left.at<double>(0,1), T_BC_left.at<double>(0,2), T_BC_left.at<double>(0,3));
-                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", T_BC_left.at<double>(1,0), T_BC_left.at<double>(1,1), T_BC_left.at<double>(1,2), T_BC_left.at<double>(1,3));
-                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", T_BC_left.at<double>(2,0), T_BC_left.at<double>(2,1), T_BC_left.at<double>(2,2), T_BC_left.at<double>(2,3));
-                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", T_BC_left.at<double>(3,0), T_BC_left.at<double>(3,1), T_BC_left.at<double>(3,2), T_BC_left.at<double>(3,3));
-            }
-        }
-        
-        // Load right camera extrinsics (optional, for stereo systems)
-        if (!right_T_BC.empty() && right_T_BC.size() == 16) {
+                
             cv::Mat T_BC_right = (cv::Mat_<double>(4, 4) << 
                 (double)right_T_BC[0], (double)right_T_BC[1], (double)right_T_BC[2], (double)right_T_BC[3],
                 (double)right_T_BC[4], (double)right_T_BC[5], (double)right_T_BC[6], (double)right_T_BC[7],
                 (double)right_T_BC[8], (double)right_T_BC[9], (double)right_T_BC[10], (double)right_T_BC[11],
                 (double)right_T_BC[12], (double)right_T_BC[13], (double)right_T_BC[14], (double)right_T_BC[15]);
             
-            // Store right camera T_BC matrix
+            // Store individual T_BC matrices (camera to body transforms)
+            m_T_left_BC = T_BC_left.clone();
             m_T_right_BC = T_BC_right.clone();
             
             // Compute stereo baseline transform: T_left_right = T_BC_right.inv() * T_BC_left
             // This gives left-to-right camera transformation for stereo triangulation
-            if (!m_T_left_BC.empty()) {
-                m_T_left_right = T_BC_right.inv() * m_T_left_BC;
-            }
+            m_T_left_right = T_BC_right.inv() * T_BC_left;
+        }
+        
+        // Debug output for camera parameters
+        if (m_enable_debug_output) {
+            spdlog::info("[CONFIG] Camera parameters loaded:");
+            spdlog::info("  - Camera model: {}", (m_camera_model == CameraModel::FISHEYE) ? "fisheye" : "pinhole");
+            spdlog::info("  - Image size: {}x{}", m_image_width, m_image_height);
+            spdlog::info("  - Border size: {}", m_border_size);
         }
     }
     
@@ -330,6 +303,23 @@ bool Config::load(const std::string& config_file) {
             spdlog::info("  - Gyro random walk: {:.6e} rad/s²/√Hz", m_gyro_random_walk);
             spdlog::info("  - Accel noise density: {:.6e} m/s²/√Hz", m_accel_noise_density);
             spdlog::info("  - Accel random walk: {:.6e} m/s³/√Hz", m_accel_random_walk);
+        }
+    }
+    
+    // MapPoint Uncertainty Parameters
+    cv::FileNode uncertainty = fs["uncertainty"];
+    if (!uncertainty.empty()) {
+        m_uncertainty_enable = (int)uncertainty["enable"] != 0;
+        m_min_reprojection_error = (float)uncertainty["min_reprojection_error"];
+        m_uncertainty_max_eigenvalue = (float)uncertainty["max_eigenvalue"];
+        m_uncertainty_min_eigenvalue = (float)uncertainty["min_eigenvalue"];
+        
+        if (m_enable_debug_output) {
+            spdlog::info("[CONFIG] Uncertainty parameters loaded:");
+            spdlog::info("  - Uncertainty enable: {}", m_uncertainty_enable);
+            spdlog::info("  - Min reprojection error: {:.2f} pixels", m_min_reprojection_error);
+            spdlog::info("  - Max eigenvalue: {:.2f}", m_uncertainty_max_eigenvalue);
+            spdlog::info("  - Min eigenvalue: {:.2f}", m_uncertainty_min_eigenvalue);
         }
     }
     

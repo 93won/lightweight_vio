@@ -41,14 +41,15 @@ int main(int argc, char* argv[]) {
     config.dataset_path = argv[2];
     config.enable_statistics = true;          // File statistics
     config.enable_console_statistics = true;  // Console statistics
-    config.step_mode = true;  // Enable step mode like euroc_player
-    
     // Load config to get all settings from YAML
     Config::getInstance().load(argv[1]);
     config.use_vio_mode = (Config::getInstance().m_system_mode == "VIO");
     config.enable_viewer = Config::getInstance().m_viewer_enable;
     config.viewer_width = Config::getInstance().m_viewer_width;
     config.viewer_height = Config::getInstance().m_viewer_height;
+    
+    // Only enable step mode if viewer is enabled
+    config.step_mode = config.enable_viewer;  // Step mode requires viewer interaction
     
     // Debug output to verify settings
     spdlog::info("[Main] System settings from YAML:");

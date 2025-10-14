@@ -70,6 +70,9 @@ namespace lightweight_vio
         int num_valid_observations = 0;
         int num_excluded_outliers = 0;
 
+        m_pnp_info_x_sqrt.clear();
+        m_pnp_info_y_sqrt.clear();
+
         // Add mono PnP observations from frame's map points
         // Protect MapPoint access with mutex
         {
@@ -113,7 +116,7 @@ namespace lightweight_vio
 
                 // Add mono PnP observation with adaptive weighting based on config mode
                 int num_observations = mp->get_observation_count();
-                auto obs_info = add_observation(problem, pose_params.data(), world_point, observation, camera_params, frame, 1.0);
+                auto obs_info = add_observation(problem, pose_params.data(), world_point, observation, camera_params, mp, frame, 1.0);
 
                 // Debug: Check if projection makes sense for first few features
                 if (num_valid_observations < 3) {
@@ -130,6 +133,17 @@ namespace lightweight_vio
                 }
             }
         } // Release mutex here
+
+
+        // spdlog::info("Min Max Mean of PnP info sqrt x : {}, {}, {}", 
+        //              *std::min_element(m_pnp_info_x_sqrt.begin(), m_pnp_info_x_sqrt.end()),
+        //              *std::max_element(m_pnp_info_x_sqrt.begin(), m_pnp_info_x_sqrt.end()),
+        //              std::accumulate(m_pnp_info_x_sqrt.begin(), m_pnp_info_x_sqrt.end(), 0.0) / m_pnp_info_x_sqrt.size());
+
+        // spdlog::info("Min Max Mean of PnP info sqrt y : {}, {}, {}", 
+        //              *std::min_element(m_pnp_info_y_sqrt.begin(), m_pnp_info_y_sqrt.end()),
+        //              *std::max_element(m_pnp_info_y_sqrt.begin(), m_pnp_info_y_sqrt.end()),
+        //              std::accumulate(m_pnp_info_y_sqrt.begin(), m_pnp_info_y_sqrt.end(), 0.0) / m_pnp_info_y_sqrt.size());
 
         // Check if we have enough observations
         if (num_valid_observations < 5)
@@ -409,7 +423,7 @@ namespace lightweight_vio
         //         Eigen::Vector3d t_bw = -Rbw * t_wb;
                 
         //         // Get T_cb (body-to-camera transform) from frame directly - CONSISTENT WITH add_observation
-        //         const Eigen::Matrix4d& T_cb = frame->get_T_CB();
+        //         const Eigen::Matrix4d& T_cb = frame->get_Tcb();
                 
         //         // Transform to camera coordinates: Pc = T_cb * (Rbw * Pw + t_bw)
         //         Eigen::Vector3d point_body = Rbw * world_pos + t_bw;
@@ -517,62 +531,7 @@ namespace lightweight_vio
         return precision * Eigen::Matrix2d::Identity();
     }
 
-    Eigen::Matrix2d PnPOptimizer::create_information_matrix_with_num_observations(double pixel_noise, int num_observations) const
-    {
-        // Base precision from pixel noise
-        double base_precision = 1.0 / (pixel_noise * pixel_noise);
-        
-        // Use keyframe window size from config as saturation point
-        const Config& config = Config::getInstance();
-        double saturation_point = static_cast<double>(config.m_keyframe_window_size);
-        
-        // Logarithmic scaling with saturation at window size
-        // Weight = log(1 + num_observations) / log(1 + saturation_point)
-        // Automatically saturates at 1.0 when num_observations = saturation_point
-        double observation_weight = std::log(1.0 + static_cast<double>(num_observations)) / std::log(1.0 + saturation_point);
-        
-        // Clamp to ensure never exceeds 1.0 (though mathematically it shouldn't with proper saturation_point)
 
-        observation_weight = std::min(observation_weight, 1.0);
-        
-        // Apply minimum weight to prevent zero information
-        observation_weight = std::max(observation_weight, 0.1);
-
-        
-        // Final precision = base_precision * observation_weight
-        double final_precision = base_precision * observation_weight;
-
-        return final_precision * Eigen::Matrix2d::Identity();
-    }
-
-    Eigen::Matrix2d PnPOptimizer::create_information_matrix_with_reprojection_error(double pixel_noise, float reprojection_error) const
-    {
-        if(reprojection_error < 0)
-        {
-            return 0.3 * Eigen::Matrix2d::Identity();
-        }
-        // Base precision from pixel noise
-        double base_precision = 1.0 / (pixel_noise * pixel_noise);
-
-        // Convert reprojection error to chi-square statistic
-        double chi_square = (reprojection_error * reprojection_error) / (pixel_noise * pixel_noise);
-
-        // CORRECT interpretation: For 2-DOF Chi-square distribution
-        // P(inlier) = exp(-χ²/2) - gives high probability for small errors
-        double prob_inlier = std::exp(-chi_square / 2.0);
-
-        // Use inlier probability as weight
-        double reproj_weight = prob_inlier;
-
-
-
-        // Apply minimum weight
-        reproj_weight = std::max(reproj_weight, 0.3);
-
-        double final_precision = base_precision * reproj_weight;
-
-        return final_precision * Eigen::Matrix2d::Identity();
-    }
     // Adaptive version with config-based mode selection
     ObservationInfo PnPOptimizer::add_observation(
         ceres::Problem &problem,
@@ -580,17 +539,29 @@ namespace lightweight_vio
         const Eigen::Vector3d &world_point,
         const Eigen::Vector2d &observation,
         const factor::CameraParameters &camera_params,
+        std::shared_ptr<MapPoint> mappoint,
         std::shared_ptr<Frame> frame,
         const double pixel_noise_std)
     {
         // Get config instance to check information matrix mode
         const Config& config = Config::getInstance();
         
-        Eigen::Matrix2d information = create_information_matrix(pixel_noise_std);
-        
+        // Create information matrix based on config mode
+        Eigen::Matrix2d information;
+        if (config.m_uncertainty_enable) {
+            // Use adaptive information matrix based on MapPoint uncertainty
+            information = create_information_from_uncertainty_propagation(mappoint, frame);
+        } else 
+        {
+            // Use standard information matrix
+            information = create_information_matrix(pixel_noise_std);
+        }
+
+        m_pnp_info_x_sqrt.push_back(sqrt(information(0, 0)));
+        m_pnp_info_y_sqrt.push_back(sqrt(information(1, 1)));
 
         // Get T_cb (body-to-camera transform) from frame directly
-        const Eigen::Matrix4d& T_cb = frame->get_T_CB();
+        const Eigen::Matrix4d& T_cb = frame->get_Tcb();
         
         // Create mono PnP cost function with selected information matrix and T_cb
         auto cost_function = new factor::PnPFactor(observation, world_point, camera_params, T_cb, information);
@@ -720,7 +691,7 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
     // Stage 2: Apply different marginalization strategy for precise optimization
     // Fix fewer keyframes in second stage for more degrees of freedom
     int stage2_fixed_keyframes = 1;  // More flexible approach for second stage
-    apply_marginalization_strategy(problem, keyframes, map_points, pose_params_vec, point_params_vec, stage2_fixed_keyframes, true);
+    apply_marginalization_strategy(problem, keyframes, map_points, pose_params_vec, point_params_vec, stage2_fixed_keyframes, true, true);
     // spdlog::debug("[SlidingWindowOptimizer] Stage 2: Reset constraints and fixed {} keyframes for precise optimization", stage2_fixed_keyframes);
     
     // Get cost before Stage 2 (after Stage 1 completion)
@@ -762,6 +733,20 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
         // Update keyframes and map points with optimized values
         update_optimized_values(keyframes, map_points, pose_params_vec, point_params_vec);
         
+        // Update observation point clouds after optimization
+        auto uncertainty_start = std::chrono::high_resolution_clock::now();
+        for (auto& mp : map_points) {
+            if (mp && !mp->is_bad()) {
+                // Update cached observation positions with optimized poses
+                mp->update_uncertainty();
+            }
+        }
+        auto uncertainty_end = std::chrono::high_resolution_clock::now();
+        auto uncertainty_duration = std::chrono::duration_cast<std::chrono::microseconds>(uncertainty_end - uncertainty_start);
+        double uncertainty_time_ms = uncertainty_duration.count() / 1000.0;
+        // spdlog::info("[SlidingWindowOptimizer] Uncertainty update took {:.2f} ms for {} map points", 
+        //              uncertainty_time_ms, map_points.size());
+        
         // Update IMU states if IMU optimization is enabled
         if (m_imu_enabled && num_imu_factors > 0) {
             update_imu_optimized_values(keyframes, velocity_params_vec, 
@@ -801,7 +786,8 @@ std::vector<std::shared_ptr<MapPoint>> SlidingWindowOptimizer::collect_window_ma
             }
         }
     }
-    
+
+
     // Convert set to vector
     std::vector<std::shared_ptr<MapPoint>> result(unique_map_points.begin(), unique_map_points.end());
     
@@ -818,19 +804,34 @@ BAObservationInfo SlidingWindowOptimizer::add_observation(
     const Eigen::Vector2d& observation,
     const factor::CameraParameters& camera_params,
     std::shared_ptr<Frame> frame,
+    std::shared_ptr<MapPoint> mappoint,
     int kf_index,
     int mp_index,
     double pixel_noise_std) {
     
     // Get T_CB transformation from frame
-    Eigen::Matrix4d T_CB = frame->get_T_CB();
+    Eigen::Matrix4d T_CB = frame->get_Tcb();
     
-    // Create information matrix
-    Eigen::Matrix2d information = create_information_matrix(pixel_noise_std);
+    // Get config instance to check information matrix mode
+    const Config& config = Config::getInstance();
     
+    // Create information matrix based on config mode
+    Eigen::Matrix2d information;
+    if (config.m_uncertainty_enable) {
+        // Use adaptive information matrix based on MapPoint uncertainty
+        information = create_information_from_uncertainty_propagation(mappoint, frame);
+    } 
+    else 
+    {
+        // Use standard information matrix
+        information = create_information_matrix(pixel_noise_std);
+    }
+
+    m_sba_info_x_sqrt.push_back(sqrt(information(0, 0)));
+    m_sba_info_y_sqrt.push_back(sqrt(information(1, 1)));
+
     // Create BA factor
-    auto* cost_function = new factor::BAFactor(
-        observation, camera_params, T_CB, information);
+    auto* cost_function = new factor::BAFactor(observation, camera_params, T_CB, information);
     
     // Create robust loss function
     ceres::LossFunction* loss_function = create_robust_loss(m_huber_delta);
@@ -839,7 +840,7 @@ BAObservationInfo SlidingWindowOptimizer::add_observation(
     ceres::ResidualBlockId residual_id = problem.AddResidualBlock(
         cost_function, loss_function, pose_params, point_params);
     
-    return BAObservationInfo(residual_id, cost_function, kf_index, mp_index);
+    return BAObservationInfo(residual_id, cost_function, kf_index, mp_index, information);
 }
 
 
@@ -929,6 +930,13 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
         K.at<double>(0, 2),  // cx
         K.at<double>(1, 2)   // cy
     );
+
+    m_sba_info_x_sqrt.clear();
+    m_sba_info_y_sqrt.clear();
+    
+    // Error statistics collection
+    std::vector<double> reprojection_errors;
+    std::vector<double> predicted_errors;
     
     // Add observations for each keyframe with mutex protection
     {
@@ -973,15 +981,76 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
                     observation,
                     camera_params,
                     keyframe,
+                    map_point,
                     static_cast<int>(kf_idx),
                     mp_idx,
                     m_pixel_noise_std);
-                
+
+                Eigen::Vector3f world_pos = map_point->get_position();
+                Eigen::Matrix4f T_cw = keyframe->get_Twc().inverse();
+                Eigen::Vector3f cam_pos = T_cw.block<3,3>(0,0) * world_pos + T_cw.block<3,1>(0,3);
+
+                if (cam_pos.z() > 0) {
+                    double fx = camera_params.fx;
+                    double fy = camera_params.fy;
+                    double cx = camera_params.cx;
+                    double cy = camera_params.cy;
+
+                    double u_proj = fx * cam_pos.x() / cam_pos.z() + cx;
+                    double v_proj = fy * cam_pos.y() / cam_pos.z() + cy;
+
+                    double reproj_error = std::sqrt(std::pow(u_proj - observation.x(), 2) + std::pow(v_proj - observation.y(), 2));
+
+                    Eigen::Matrix2d cov = obs_info.information_matrix.inverse();
+                    double sigma_u = std::sqrt(cov(0,0));
+                    double sigma_v = std::sqrt(cov(1,1));
+                    double predicted_error = std::sqrt(sigma_u*sigma_u + sigma_v*sigma_v);
+
+                    // Collect statistics
+                    reprojection_errors.push_back(reproj_error);
+                    predicted_errors.push_back(predicted_error);
+                } 
+
                 observations.push_back(obs_info);
             }
         }
     }
     
+    // // Print error statistics
+    // if (!reprojection_errors.empty() && !predicted_errors.empty()) {
+    //     // Calculate statistics for reprojection errors
+    //     std::sort(reprojection_errors.begin(), reprojection_errors.end());
+    //     double reproj_min = reprojection_errors.front();
+    //     double reproj_max = reprojection_errors.back();
+    //     double reproj_mean = std::accumulate(reprojection_errors.begin(), reprojection_errors.end(), 0.0) / reprojection_errors.size();
+    //     double reproj_median = reprojection_errors[reprojection_errors.size() / 2];
+        
+    //     // Calculate statistics for predicted errors
+    //     std::sort(predicted_errors.begin(), predicted_errors.end());
+    //     double pred_min = predicted_errors.front();
+    //     double pred_max = predicted_errors.back();
+    //     double pred_mean = std::accumulate(predicted_errors.begin(), predicted_errors.end(), 0.0) / predicted_errors.size();
+    //     double pred_median = predicted_errors[predicted_errors.size() / 2];
+        
+    //     spdlog::info("[SlidingWindow] Error Statistics ({} observations):", reprojection_errors.size());
+    //     spdlog::info("  Reprojection - Min: {:.3f}, Max: {:.3f}, Mean: {:.3f}, Median: {:.3f}", 
+    //                  reproj_min, reproj_max, reproj_mean, reproj_median);
+    //     spdlog::info("  Predicted    - Min: {:.3f}, Max: {:.3f}, Mean: {:.3f}, Median: {:.3f}", 
+    //                  pred_min, pred_max, pred_mean, pred_median);
+    //     spdlog::info("  Mean Ratio (Reproj/Pred): {:.3f}", reproj_mean / pred_mean);
+    // }
+
+
+    // spdlog::info("Min Max Mean of sqrt information x : {}, {}, {}", 
+    //               *std::min_element(m_sba_info_x_sqrt.begin(), m_sba_info_x_sqrt.end()),
+    //               *std::max_element(m_sba_info_x_sqrt.begin(), m_sba_info_x_sqrt.end()),
+    //               std::accumulate(m_sba_info_x_sqrt.begin(), m_sba_info_x_sqrt.end(), 0.0) / m_sba_info_x_sqrt.size());
+
+    // spdlog::info("Min Max Mean of sqrt information y : {}, {}, {}", 
+    //               *std::min_element(m_sba_info_y_sqrt.begin(), m_sba_info_y_sqrt.end()),
+    //               *std::max_element(m_sba_info_y_sqrt.begin(), m_sba_info_y_sqrt.end()),
+    //               std::accumulate(m_sba_info_y_sqrt.begin(), m_sba_info_y_sqrt.end(), 0.0) / m_sba_info_y_sqrt.size());
+
     // spdlog::info("[SlidingWindowOptimizer] Setup problem: {} keyframes, {} map points, {} observations",
     //             keyframes.size(), map_points.size(), observations.size());
     
@@ -989,14 +1058,16 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
 }
 
 void SlidingWindowOptimizer::apply_marginalization_strategy(
-    ceres::Problem& problem,
-    const std::vector<std::shared_ptr<Frame>>& keyframes,
-    const std::vector<std::shared_ptr<MapPoint>>& map_points,
-    const std::vector<std::vector<double>>& pose_params_vec,
-    const std::vector<std::vector<double>>& point_params_vec,
+    ceres::Problem &problem,
+    const std::vector<std::shared_ptr<Frame>> &keyframes,
+    const std::vector<std::shared_ptr<MapPoint>> &map_points,
+    const std::vector<std::vector<double>> &pose_params_vec,
+    const std::vector<std::vector<double>> &point_params_vec,
     int num_fixed_keyframes,
-    bool reset_constraints) {
-    
+    bool reset_constraints,
+    bool marginalize_points)
+{
+
     if (keyframes.empty()) return;
     
     // Reset existing constraints if requested
@@ -1023,23 +1094,32 @@ void SlidingWindowOptimizer::apply_marginalization_strategy(
     }
     
     
-    // Optional: Fix map points with insufficient observations
+    // Optional: Fix map points with insufficient observations or high precision
     int fixed_points = 0;
+    int fixed_by_low_obs = 0;
+    int fixed_by_low_eigenvalue = 0;
+    int marginalized_points = 0;
     for (size_t mp_idx = 0; mp_idx < map_points.size(); ++mp_idx) {
         const auto& map_point = map_points[mp_idx];
         int obs_count = map_point->get_observation_count();
         
+        bool should_fix = false;
+        bool fixed_by_eigenvalue = false;
+
         // Fix map points with too few observations
-        if (obs_count < 3) {
+        if (obs_count < 3)
+        {
+            should_fix = true;
+        }
+
+
+        if (should_fix) {
             problem.SetParameterBlockConstant(const_cast<double*>(point_params_vec[mp_idx].data()));
             fixed_points++;
-        }
+            
+        } 
     }
-    
-    // if (fixed_points > 0) {
-    //     spdlog::debug("[SlidingWindowOptimizer] Fixed {} / {} map points with insufficient observations",
-    //                  fixed_points, map_points.size());
-    // }
+
 }
 
 int SlidingWindowOptimizer::detect_ba_outliers(
@@ -1163,6 +1243,10 @@ void SlidingWindowOptimizer::update_optimized_values(
     // Update map point positions with mutex protection
     {
         std::lock_guard<std::mutex> lock(s_mappoint_mutex);
+        
+        auto uncertainty_start = std::chrono::high_resolution_clock::now();
+        int uncertainty_updates = 0;
+        
         for (size_t mp_idx = 0; mp_idx < map_points.size(); ++mp_idx) {
             const auto& map_point = map_points[mp_idx];
             if (!map_point || map_point->is_bad()) continue;
@@ -1180,16 +1264,66 @@ void SlidingWindowOptimizer::update_optimized_values(
             // Check if position actually changed
             Eigen::Vector3f pos_diff = new_position - original_pos;
             double position_change = pos_diff.norm();
-            
+
             map_point->set_position(new_position);
             updated_map_points++;
-            
-            // // Log significant position changes
-            // if (position_change > 0.1) {
-            //     spdlog::debug("[UPDATE] MapPoint {} position changed by {:.4f}m", 
-            //                  map_point->get_id(), position_change);
-            // }
+
+            auto observations = map_point->get_observations();
+
+            for (auto &obs : observations)
+            {
+                auto frame = obs.frame.lock();
+                if (!frame)
+                    continue;
+
+                int feature_idx = obs.feature_index;
+
+                // Get the feature and update its depth
+                auto &features = frame->get_features();
+
+                auto feature = features[feature_idx];
+
+                // Get world position and transform to camera coordinates
+                Eigen::Vector3f world_pos = map_point->get_position();
+                auto P_cam = frame->get_Twc().inverse() * world_pos.homogeneous();
+
+                // // Update depth in the observation
+                // float learning_rate = 0.1f;
+                // float new_depth = learning_rate * P_cam.z() + (1.0f - learning_rate) * feature->get_depth();
+
+                float new_depth = P_cam.z();
+
+                // Check if depth is within valid range using config
+                const auto &config = Config::getInstance();
+                if (new_depth <= config.m_min_depth || new_depth >= config.m_max_depth)
+                {
+
+                    feature->set_depth(-1.0f);
+                    continue; // Skip invalid depth values
+                }
+
+
+                // spdlog::info("Depth update for MapPoint {} in Frame {}: {:.8f} -> {:.8f}", 
+                //             map_point->get_id(), frame->get_frame_id(), feature->get_depth(), new_depth);
+
+                feature->set_depth(new_depth);
+
+
+                frame->set_depth(feature_idx, new_depth);
+                uncertainty_updates++;
+            }
+
+            // map_point->update_uncertainty();
         }
+
+        // if (Config::getInstance().m_uncertainty_enable && uncertainty_updates > 0) {
+        //     auto uncertainty_end = std::chrono::high_resolution_clock::now();
+        //     auto uncertainty_duration = std::chrono::duration_cast<std::chrono::microseconds>(uncertainty_end - uncertainty_start);
+        //     double avg_time_per_update = static_cast<double>(uncertainty_duration.count()) / uncertainty_updates;
+
+        //     spdlog::info("[UNCERTAINTY_TIMING] Updated {} MapPoints uncertainty in {:.3f}ms (avg: {:.3f}μs per point)",
+        //                 uncertainty_updates, uncertainty_duration.count() / 1000.0, avg_time_per_update);
+        // }
     }
     
     // spdlog::info("[UPDATE] Updated {} keyframes and {} map points", 
@@ -1232,27 +1366,16 @@ Eigen::Matrix2d SlidingWindowOptimizer::create_information_matrix(double pixel_n
     return information_matrix;
 }
 
-Eigen::Matrix2d SlidingWindowOptimizer::create_information_matrix_with_num_observations(double pixel_noise, int num_observations) const {
-    // Base precision from pixel noise
-    double base_precision = 1.0 / (pixel_noise * pixel_noise);
-    
-    // Use keyframe window size from config as saturation point
-    const Config& config = Config::getInstance();
-    double saturation_point = static_cast<double>(config.m_keyframe_window_size);
-    
-    // Logarithmic scaling with saturation at window size
-    // Weight = log(1 + num_observations) / log(1 + saturation_point)
-    // Automatically saturates at 1.0 when num_observations = saturation_point
-    double observation_weight = std::log(1.0 + static_cast<double>(num_observations)) / std::log(1.0 + saturation_point);
-    
-    // Apply weighting to precision
-    double weighted_precision = observation_weight * base_precision;
-    
-    Eigen::Matrix2d information_matrix;
-    information_matrix << weighted_precision, 0.0,
-                         0.0, weighted_precision;
-    
-    return information_matrix;
+Eigen::Matrix2d SlidingWindowOptimizer::create_information_from_uncertainty_propagation(
+    std::shared_ptr<MapPoint> mappoint,
+    std::shared_ptr<Frame> frame) const
+{
+
+    // Get world uncertainty from MapPoint (3x3 covariance matrix)
+    Eigen::Matrix3d world_uncertainty = mappoint->get_world_uncertainty().cast<double>();
+    Eigen::Matrix2d information_matrix = mappoint->transform_uncertainty_world_to_pixel(world_uncertainty.cast<float>(), frame).cast<double>().inverse();
+
+    return information_matrix + Eigen::Matrix2d::Identity(); // Add small value to diagonal for numerical stability
 }
 
 // ===============================================================================
@@ -2302,6 +2425,17 @@ void SlidingWindowOptimizer::update_imu_optimized_values(
     
 }
 
+Eigen::Matrix2d PnPOptimizer::create_information_from_uncertainty_propagation(
+    std::shared_ptr<MapPoint> mappoint,
+    std::shared_ptr<Frame> frame) const
+{
 
+    // Get world uncertainty from MapPoint (3x3 covariance matrix)
+    Eigen::Matrix3d world_uncertainty = mappoint->get_world_uncertainty().cast<double>();
+
+    Eigen::Matrix2d information_matrix = mappoint->transform_uncertainty_world_to_pixel(world_uncertainty.cast<float>(), frame).cast<double>().inverse();
+
+    return information_matrix + Eigen::Matrix2d::Identity(); // Add small value to diagonal for numerical stability
+}
 
 } // namespace lightweight_vio

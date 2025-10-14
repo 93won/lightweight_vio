@@ -13,17 +13,10 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include "player/euroc_player.h"
 #include <util/Config.h>
-#include <glog/logging.h>
 
 using namespace lightweight_vio;
 
 int main(int argc, char* argv[]) {
-    // Suppress Google logging (Ceres) error messages
-    google::InitGoogleLogging(argv[0]);
-    FLAGS_logtostderr = false;
-    FLAGS_minloglevel = 3;  // Only fatal messages (0=INFO, 1=WARNING, 2=ERROR, 3=FATAL)
-    FLAGS_stderrthreshold = 3;
-    
     // Initialize spdlog for immediate colored output
     spdlog::set_level(spdlog::level::debug);
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");
@@ -50,13 +43,13 @@ int main(int argc, char* argv[]) {
     config.viewer_width = Config::getInstance().m_viewer_width;
     config.viewer_height = Config::getInstance().m_viewer_height;
     
-    // Debug output to verify settings
-    spdlog::info("[Main] System settings from YAML:");
-    spdlog::info("  system_mode: {}", Config::getInstance().m_system_mode);
-    spdlog::info("  use_vio_mode: {}", config.use_vio_mode);
-    spdlog::info("  enable_viewer: {}", config.enable_viewer);
-    spdlog::info("  viewer_width: {}", config.viewer_width);
-    spdlog::info("  viewer_height: {}", config.viewer_height);
+    // // Debug output to verify settings
+    // spdlog::info("[Main] System settings from YAML:");
+    // spdlog::info("  system_mode: {}", Config::getInstance().m_system_mode);
+    // spdlog::info("  use_vio_mode: {}", config.use_vio_mode);
+    // spdlog::info("  enable_viewer: {}", config.enable_viewer);
+    // spdlog::info("  viewer_width: {}", config.viewer_width);
+    // spdlog::info("  viewer_height: {}", config.viewer_height);
     
     // Create and run EuRoC player
     EurocPlayer player;

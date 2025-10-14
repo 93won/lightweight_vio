@@ -23,7 +23,7 @@ camera:
   model: "fisheye"            # Camera model: "pinhole" or "fisheye"
   image_width: 512            # Image width in pixels (TUM VI standard)
   image_height: 512           # Image height in pixels (TUM VI standard)  
-  border_size: 1              # Border size to exclude from feature detection (pixels)
+  border_size: 0             # Border size to exclude from feature detection (pixels)
   
   # Left camera (cam0) intrinsics
   left_intrinsics: [192.8382607158552, 192.80517563662647, 254.96248601056095, 256.9894801632425]  # [fx, fy, cx, cy]
@@ -56,12 +56,12 @@ keyframe_management:
 # Controls how corner features are detected using goodFeaturesToTrack
 feature_detection:
   max_features: 200          # Maximum number of features to track per frame
-  quality_level: 0.01        # Minimum accepted quality of corners (0.01 = 1% of best corner)
-  min_distance: 30.0          # Minimum distance between features in pixels (prevents clustering)
+  quality_level: 0.1        # Minimum accepted quality of corners (0.01 = 1% of best corner)
+  min_distance: 10.0          # Minimum distance between features in pixels (prevents clustering)
   
   # Grid-based feature distribution parameters
-  grid_cols: 16               # Number of grid columns for feature distribution
-  grid_rows: 16               # Number of grid rows for feature distribution  
+  grid_cols: 16             # Number of grid columns for feature distribution
+  grid_rows: 16             # Number of grid rows for feature distribution  
   max_features_per_grid: 4   # Maximum features allowed per grid cell
 
 # Optical Flow Tracking Parameters  
@@ -90,13 +90,13 @@ stereo_matching:
   error_threshold: 50.0       # Maximum optical flow error for stereo matches (pixels)
   min_disparity: 0.1          # Minimum disparity (pixels) - filters out very far points
   max_disparity: 300.0        # Maximum disparity (pixels) - filters out very close points  
-  max_y_difference: 30.0      # Maximum Y-coordinate difference for stereo pairs (pixels)
+  max_y_difference: 100.0      # Maximum Y-coordinate difference for stereo pairs (pixels)
   epipolar_threshold: 1.0     # Maximum distance from epipolar line using estimated F matrix (pixels)ls)
 
 # Global Depth Parameters
 # Controls depth validation throughout the entire VIO system
 depth:
-  min_depth: 0.1              # Minimum depth for valid 3D points (meters) - used in all depth validation
+  min_depth: 0.3              # Minimum depth for valid 3D points (meters) - used in all depth validation
   max_depth: 100.0             # Maximum depth for valid 3D points (meters) - used in all depth validation
 
 # Optimization Parameters
@@ -135,3 +135,13 @@ imu_noise:
   gyroscope_random_walk: 0.000022       # [ rad / s^2 / sqrt(Hz) ] ( gyro bias diffusion )
   accelerometer_noise_density: 0.0028  # [ m / s^2 / sqrt(Hz) ]   ( accel "white noise" )
   accelerometer_random_walk: 0.00086    # [ m / s^3 / sqrt(Hz) ]   ( accel bias diffusion )
+
+
+
+# MapPoint Uncertainty Parameters
+# Controls uncertainty propagation for 3D map points
+uncertainty:
+  enable: 0                  # Enable uncertainty propagation for MapPoints
+  max_eigenvalue: 1e-1       # Maximum covariance matrix eigenvalue
+  min_eigenvalue: 1e-5       # Minimum covariance matrix eigenvalue
+

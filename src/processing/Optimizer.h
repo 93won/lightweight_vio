@@ -124,8 +124,8 @@ private:
      * @param world_point 3D world point
      * @param observation 2D image observation
      * @param camera_params Camera intrinsics
+     * @param mappoint MapPoint for adaptive uncertainty weighting (optional)
      * @param frame Frame containing the observation
-     * @param feature Feature containing condition number and other information
      * @param pixel_noise_std Standard deviation of pixel noise
      * @return Observation info with residual block ID and cost function
      */
@@ -135,8 +135,9 @@ private:
         const Eigen::Vector3d& world_point,
         const Eigen::Vector2d& observation,
         const factor::CameraParameters& camera_params,
-        std::shared_ptr<Frame> frame,
-        const double pixel_noise_std
+        std::shared_ptr<MapPoint> mappoint = nullptr,
+        std::shared_ptr<Frame> frame = nullptr,
+        const double pixel_noise_std = 1.0
         );
     
     /**
@@ -187,25 +188,26 @@ private:
     Eigen::Matrix2d create_information_matrix(double pixel_noise = 1.0) const;
     
     /**
-     * @brief Create information matrix with observation-based weighting
-     * @param pixel_noise Standard deviation of pixel noise
-     * @param num_observations Number of observations for the map point (max 3.0)
-     * @return 2x2 information matrix
+     * @brief Create adaptive information matrix based on MapPoint uncertainty when enabled
+     * @param mappoint MapPoint with world uncertainty information
+     * @param frame Frame for coordinate transformations
+     * @param camera_params Camera intrinsics for projection
+     * @param pixel_noise_std Standard deviation of pixel noise
+     * @return 2x2 information matrix (inverse of covariance)
      */
-    Eigen::Matrix2d create_information_matrix_with_num_observations(double pixel_noise, int num_observations) const;
+    Eigen::Matrix2d create_information_from_uncertainty_propagation(std::shared_ptr<MapPoint> mappoint,
+                                                       std::shared_ptr<Frame> frame) const;
 
-    /**
-     * @brief Create information matrix with reprojection error-based weighting
-     * @param pixel_noise Standard deviation of pixel noise
-     * @param reprojection_error Triangulation reprojection error
-     * @return 2x2 information matrix
-     */
-    Eigen::Matrix2d create_information_matrix_with_reprojection_error(double pixel_noise, float reprojection_error) const;
+
 
 private:
     // Global mutexes for thread-safe access to MapPoints and Frames
     static std::mutex s_mappoint_mutex;
     static std::mutex s_keyframe_mutex;
+
+
+    // Debugging
+    std::vector<double> m_pnp_info_x_sqrt, m_pnp_info_y_sqrt;
 };
 
 /**
@@ -234,11 +236,14 @@ struct BAObservationInfo {
     factor::BAFactor* cost_function;
     int keyframe_index;  // Index in sliding window
     int mappoint_index;  // Index in map points vector
-    
-    BAObservationInfo(ceres::ResidualBlockId id, factor::BAFactor* func, 
-                     int kf_idx, int mp_idx)
-        : residual_id(id), cost_function(func), 
-          keyframe_index(kf_idx), mappoint_index(mp_idx) {}
+
+    Eigen::Matrix2d information_matrix; // Information matrix for this observation
+
+    BAObservationInfo(ceres::ResidualBlockId id, factor::BAFactor* func,
+                     int kf_idx, int mp_idx, const Eigen::Matrix2d& info_matrix)
+        : residual_id(id), cost_function(func),
+          keyframe_index(kf_idx), mappoint_index(mp_idx),
+          information_matrix(info_matrix) {}
 };
 
 /**
@@ -311,6 +316,7 @@ private:
         const Eigen::Vector2d& observation,
         const factor::CameraParameters& camera_params,
         std::shared_ptr<Frame> frame,
+        std::shared_ptr<MapPoint> mappoint,
         int kf_index,
         int mp_index,
         double pixel_noise_std = 1.0);
@@ -350,7 +356,8 @@ private:
         const std::vector<std::vector<double>>& pose_params_vec,
         const std::vector<std::vector<double>>& point_params_vec,
         int num_fixed_keyframes = 1,
-        bool reset_constraints = false);
+        bool reset_constraints = false,
+        bool marginalize_points = false);
     
     /**
      * @brief Detect outliers using chi-square test for bundle adjustment
@@ -407,6 +414,17 @@ private:
      * @return 2x2 information matrix
      */
     Eigen::Matrix2d create_information_matrix_with_num_observations(double pixel_noise, int num_observations) const;
+    
+    /**
+     * @brief Create adaptive information matrix based on MapPoint uncertainty when enabled
+     * @param mappoint MapPoint with world uncertainty information
+     * @param frame Frame for coordinate transformations
+     * @param camera_params Camera intrinsics for projection
+     * @param pixel_noise_std Standard deviation of pixel noise
+     * @return 2x2 information matrix (inverse of covariance)
+     */
+    Eigen::Matrix2d create_information_from_uncertainty_propagation(std::shared_ptr<MapPoint> mappoint,
+                                                       std::shared_ptr<Frame> frame) const;
     
     /**
      * @brief Add inertial factors to sliding window optimization using existing InertialGravityFactor
@@ -474,6 +492,11 @@ private:
     // Global mutexes for thread-safe access to MapPoints and Frames
     static std::mutex s_mappoint_mutex;
     static std::mutex s_keyframe_mutex;
+
+
+    // Debugging
+    std::vector<double> m_sba_info_x_sqrt, m_sba_info_y_sqrt;
+
 };
 
 /**

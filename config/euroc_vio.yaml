@@ -10,7 +10,7 @@ system_mode:
 # Viewer Configuration
 # Controls 3D visualization using Pangolin
 viewer:
-  enable: 1                      # Enable/disable 3D viewer (0=false, 1=true)
+  enable: 1                     # Enable/disable 3D viewer (0=false, 1=true)
   width: 1920                    # Viewer window width (pixels)
   height: 1080                   # Viewer window height (pixels)
 
@@ -56,8 +56,8 @@ keyframe_management:
 # Controls how corner features are detected using goodFeaturesToTrack
 feature_detection:
   max_features: 200           # Maximum number of features to track per frame
-  quality_level: 0.01        # Minimum accepted quality of corners (0.01 = 1% of best corner)
-  min_distance: 30.0          # Minimum distance between features in pixels (prevents clustering)
+  quality_level: 0.1        # Minimum accepted quality of corners (0.01 = 1% of best corner)
+  min_distance: 20.0          # Minimum distance between features in pixels (prevents clustering)
   
   # Grid-based feature distribution parameters
   grid_cols: 20               # Number of grid columns for feature distribution
@@ -139,6 +139,14 @@ imu_noise:
   gyroscope_random_walk: 1.9393e-05       # [ rad / s^2 / sqrt(Hz) ] ( gyro bias diffusion )
   accelerometer_noise_density: 2.0000e-3  # [ m / s^2 / sqrt(Hz) ]   ( accel "white noise" )
   accelerometer_random_walk: 3.0000e-3    # [ m / s^3 / sqrt(Hz) ]   ( accel bias diffusion )
+
+# MapPoint Uncertainty Parameters
+# Controls uncertainty propagation for 3D map points
+uncertainty:
+  enable: 1                  # Enable uncertainty propagation for MapPoints
+  max_eigenvalue: 1e-1       # Maximum covariance matrix eigenvalue
+  min_eigenvalue: 1e-5       # Minimum covariance matrix eigenvalue
+
 
 
 
