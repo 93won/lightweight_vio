@@ -104,12 +104,6 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
         new_map_points_from_extraction += new_successful_matches;
     }
     
-    // Grid-based feature selection during tracking + additional feature extraction
-    // ensures total feature count reaches max_features while maintaining good distribution
-    
-    // Apply grid-based feature management to limit features per grid cell
-    manage_grid_based_features(current_frame);
-    
     // Single comprehensive log with timing breakdown
     auto total_time = total_duration.count() / 1000.0;
     
@@ -440,26 +434,6 @@ bool FeatureTracker::is_in_border(const cv::Point2f& point, const cv::Size& img_
 
     return border_size <= img_x && img_x < img_size.width - border_size && 
            border_size <= img_y && img_y < img_size.height - border_size;
-}
-
-void FeatureTracker::manage_grid_based_features(std::shared_ptr<Frame> frame) {
-    // Skip grid management for very first frame or frames with no features
-    if (!frame || frame->get_feature_count() == 0) {
-        return;
-    }
-    
-    // Initialize temporary 2D grid to store feature indices
-    const int grid_rows = m_config.m_grid_rows;
-    const int grid_cols = m_config.m_grid_cols;
-    
-    std::vector<std::vector<std::vector<int>>> temp_grid(grid_rows, 
-                                                        std::vector<std::vector<int>>(grid_cols));
-    
-    // Assign features to grid cells
-    assign_features_to_grid(frame, temp_grid);
-    
-    // Limit features per grid based on max_features_per_grid
-    limit_features_per_grid(frame, temp_grid);
 }
 
 void FeatureTracker::assign_features_to_grid(std::shared_ptr<Frame> frame, 

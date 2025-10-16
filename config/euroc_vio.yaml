@@ -56,8 +56,8 @@ keyframe_management:
 # Controls how corner features are detected using goodFeaturesToTrack
 feature_detection:
   max_features: 200           # Maximum number of features to track per frame
-  quality_level: 0.1        # Minimum accepted quality of corners (0.01 = 1% of best corner)
-  min_distance: 20.0          # Minimum distance between features in pixels (prevents clustering)
+  quality_level: 0.01        # Minimum accepted quality of corners (0.01 = 1% of best corner)
+  min_distance: 30.0          # Minimum distance between features in pixels (prevents clustering)
   
   # Grid-based feature distribution parameters
   grid_cols: 20               # Number of grid columns for feature distribution
