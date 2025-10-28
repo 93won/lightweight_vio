@@ -175,70 +175,134 @@ bool Config::load(const std::string& config_file) {
             }
         }
         
+        // Read camera type from YAML and set enum
+        if (camera["type"].isString()) {
+            std::string type_str = (std::string)camera["type"];
+            if (type_str == "rgbd") {
+                m_camera_type = CameraType::RGBD;
+                spdlog::info("[CONFIG] Camera type set to RGBD");
+            } else if (type_str == "stereo") {
+                m_camera_type = CameraType::STEREO;
+                spdlog::info("[CONFIG] Camera type set to STEREO");
+            } else if (type_str == "monocular") {
+                m_camera_type = CameraType::MONOCULAR;
+                spdlog::info("[CONFIG] Camera type set to MONOCULAR");
+            }
+        }
+        
         m_image_width = (int)camera["image_width"];
         m_image_height = (int)camera["image_height"];
         m_border_size = (int)camera["border_size"];
         
         spdlog::info("[CONFIG] Loaded border_size from YAML: {}", m_border_size);
         
-        // Load camera intrinsics
-        cv::FileNode left_intrinsics = camera["left_intrinsics"];
-        cv::FileNode right_intrinsics = camera["right_intrinsics"];
-        cv::FileNode left_distortion = camera["left_distortion"];
-        cv::FileNode right_distortion = camera["right_distortion"];
-        
-        if (!left_intrinsics.empty() && left_intrinsics.size() == 4) {
-            m_left_camera_matrix = (cv::Mat_<double>(3, 3) << 
-                (double)left_intrinsics[0], 0, (double)left_intrinsics[2],
-                0, (double)left_intrinsics[1], (double)left_intrinsics[3],
-                0, 0, 1);
-        }
-        
-        if (!right_intrinsics.empty() && right_intrinsics.size() == 4) {
-            m_right_camera_matrix = (cv::Mat_<double>(3, 3) << 
-                (double)right_intrinsics[0], 0, (double)right_intrinsics[2],
-                0, (double)right_intrinsics[1], (double)right_intrinsics[3],
-                0, 0, 1);
-        }
-        
-        if (!left_distortion.empty() && left_distortion.size() == 4) {
-            m_left_dist_coeffs = (cv::Mat_<double>(1, 4) << 
-                (double)left_distortion[0], (double)left_distortion[1],
-                (double)left_distortion[2], (double)left_distortion[3]);
-        }
-        
-        if (!right_distortion.empty() && right_distortion.size() == 4) {
-            m_right_dist_coeffs = (cv::Mat_<double>(1, 4) << 
-                (double)right_distortion[0], (double)right_distortion[1],
-                (double)right_distortion[2], (double)right_distortion[3]);
+        // Load camera intrinsics based on camera type
+        if (m_camera_type == CameraType::RGBD) {
+            // For RGBD, use rgb_intrinsics and rgb_distortion
+            cv::FileNode rgb_intrinsics = camera["rgb_intrinsics"];
+            cv::FileNode rgb_distortion = camera["rgb_distortion"];
+            
+            if (!rgb_intrinsics.empty() && rgb_intrinsics.size() == 4) {
+                m_left_camera_matrix = (cv::Mat_<double>(3, 3) << 
+                    (double)rgb_intrinsics[0], 0, (double)rgb_intrinsics[2],
+                    0, (double)rgb_intrinsics[1], (double)rgb_intrinsics[3],
+                    0, 0, 1);
+                spdlog::info("[CONFIG] Loaded RGBD camera intrinsics: fx={}, fy={}, cx={}, cy={}",
+                            (double)rgb_intrinsics[0], (double)rgb_intrinsics[1],
+                            (double)rgb_intrinsics[2], (double)rgb_intrinsics[3]);
+            }
+            
+            if (!rgb_distortion.empty() && rgb_distortion.size() == 4) {
+                m_left_dist_coeffs = (cv::Mat_<double>(1, 4) << 
+                    (double)rgb_distortion[0], (double)rgb_distortion[1],
+                    (double)rgb_distortion[2], (double)rgb_distortion[3]);
+                spdlog::info("[CONFIG] Loaded RGBD distortion coeffs: k1={}, k2={}, p1={}, p2={}",
+                            (double)rgb_distortion[0], (double)rgb_distortion[1],
+                            (double)rgb_distortion[2], (double)rgb_distortion[3]);
+            }
+        } else {
+            // For stereo, use left_intrinsics and right_intrinsics
+            cv::FileNode left_intrinsics = camera["left_intrinsics"];
+            cv::FileNode right_intrinsics = camera["right_intrinsics"];
+            cv::FileNode left_distortion = camera["left_distortion"];
+            cv::FileNode right_distortion = camera["right_distortion"];
+            
+            if (!left_intrinsics.empty() && left_intrinsics.size() == 4) {
+                m_left_camera_matrix = (cv::Mat_<double>(3, 3) << 
+                    (double)left_intrinsics[0], 0, (double)left_intrinsics[2],
+                    0, (double)left_intrinsics[1], (double)left_intrinsics[3],
+                    0, 0, 1);
+            }
+            
+            if (!right_intrinsics.empty() && right_intrinsics.size() == 4) {
+                m_right_camera_matrix = (cv::Mat_<double>(3, 3) << 
+                    (double)right_intrinsics[0], 0, (double)right_intrinsics[2],
+                    0, (double)right_intrinsics[1], (double)right_intrinsics[3],
+                    0, 0, 1);
+            }
+            
+            if (!left_distortion.empty() && left_distortion.size() == 4) {
+                m_left_dist_coeffs = (cv::Mat_<double>(1, 4) << 
+                    (double)left_distortion[0], (double)left_distortion[1],
+                    (double)left_distortion[2], (double)left_distortion[3]);
+            }
+            
+            if (!right_distortion.empty() && right_distortion.size() == 4) {
+                m_right_dist_coeffs = (cv::Mat_<double>(1, 4) << 
+                    (double)right_distortion[0], (double)right_distortion[1],
+                    (double)right_distortion[2], (double)right_distortion[3]);
+            }
         }
         
         // Load extrinsics (T_BC - camera to body transform)
-        cv::FileNode left_T_BC = camera["left_T_BC"];
+        cv::FileNode left_T_BC = m_camera_type == CameraType::RGBD ? camera["rgb_T_BC"] : camera["left_T_BC"];
         cv::FileNode right_T_BC = camera["right_T_BC"];
         
-        if (!left_T_BC.empty() && !right_T_BC.empty() && 
-            left_T_BC.size() == 16 && right_T_BC.size() == 16) {
-            
-            cv::Mat T_BC_left = (cv::Mat_<double>(4, 4) << 
-                (double)left_T_BC[0], (double)left_T_BC[1], (double)left_T_BC[2], (double)left_T_BC[3],
-                (double)left_T_BC[4], (double)left_T_BC[5], (double)left_T_BC[6], (double)left_T_BC[7],
-                (double)left_T_BC[8], (double)left_T_BC[9], (double)left_T_BC[10], (double)left_T_BC[11],
-                (double)left_T_BC[12], (double)left_T_BC[13], (double)left_T_BC[14], (double)left_T_BC[15]);
+        // For RGBD, only left_T_BC (rgb_T_BC) is needed
+        if (m_camera_type == CameraType::RGBD) {
+            if (!left_T_BC.empty() && left_T_BC.size() == 16) {
+                m_T_left_BC = (cv::Mat_<double>(4, 4) << 
+                    (double)left_T_BC[0], (double)left_T_BC[1], (double)left_T_BC[2], (double)left_T_BC[3],
+                    (double)left_T_BC[4], (double)left_T_BC[5], (double)left_T_BC[6], (double)left_T_BC[7],
+                    (double)left_T_BC[8], (double)left_T_BC[9], (double)left_T_BC[10], (double)left_T_BC[11],
+                    (double)left_T_BC[12], (double)left_T_BC[13], (double)left_T_BC[14], (double)left_T_BC[15]);
                 
-            cv::Mat T_BC_right = (cv::Mat_<double>(4, 4) << 
-                (double)right_T_BC[0], (double)right_T_BC[1], (double)right_T_BC[2], (double)right_T_BC[3],
-                (double)right_T_BC[4], (double)right_T_BC[5], (double)right_T_BC[6], (double)right_T_BC[7],
-                (double)right_T_BC[8], (double)right_T_BC[9], (double)right_T_BC[10], (double)right_T_BC[11],
-                (double)right_T_BC[12], (double)right_T_BC[13], (double)right_T_BC[14], (double)right_T_BC[15]);
-            
-            // Store individual T_BC matrices (camera to body transforms)
-            m_T_left_BC = T_BC_left.clone();
-            m_T_right_BC = T_BC_right.clone();
-            
-            // Compute stereo baseline transform: T_left_right = T_BC_right.inv() * T_BC_left
-            // This gives left-to-right camera transformation for stereo triangulation
-            m_T_left_right = T_BC_right.inv() * T_BC_left;
+                spdlog::info("[CONFIG] Loaded RGBD camera extrinsics (rgb_T_BC)");
+                spdlog::info("[CONFIG] rgb_T_BC matrix:");
+                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", 
+                    (double)left_T_BC[0], (double)left_T_BC[1], (double)left_T_BC[2], (double)left_T_BC[3]);
+                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", 
+                    (double)left_T_BC[4], (double)left_T_BC[5], (double)left_T_BC[6], (double)left_T_BC[7]);
+                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", 
+                    (double)left_T_BC[8], (double)left_T_BC[9], (double)left_T_BC[10], (double)left_T_BC[11]);
+                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", 
+                    (double)left_T_BC[12], (double)left_T_BC[13], (double)left_T_BC[14], (double)left_T_BC[15]);
+            }
+        } else {
+            // For stereo, both left and right T_BC are needed
+            if (!left_T_BC.empty() && !right_T_BC.empty() && 
+                left_T_BC.size() == 16 && right_T_BC.size() == 16) {
+                
+                cv::Mat T_BC_left = (cv::Mat_<double>(4, 4) << 
+                    (double)left_T_BC[0], (double)left_T_BC[1], (double)left_T_BC[2], (double)left_T_BC[3],
+                    (double)left_T_BC[4], (double)left_T_BC[5], (double)left_T_BC[6], (double)left_T_BC[7],
+                    (double)left_T_BC[8], (double)left_T_BC[9], (double)left_T_BC[10], (double)left_T_BC[11],
+                    (double)left_T_BC[12], (double)left_T_BC[13], (double)left_T_BC[14], (double)left_T_BC[15]);
+                    
+                cv::Mat T_BC_right = (cv::Mat_<double>(4, 4) << 
+                    (double)right_T_BC[0], (double)right_T_BC[1], (double)right_T_BC[2], (double)right_T_BC[3],
+                    (double)right_T_BC[4], (double)right_T_BC[5], (double)right_T_BC[6], (double)right_T_BC[7],
+                    (double)right_T_BC[8], (double)right_T_BC[9], (double)right_T_BC[10], (double)right_T_BC[11],
+                    (double)right_T_BC[12], (double)right_T_BC[13], (double)right_T_BC[14], (double)right_T_BC[15]);
+                
+                // Store individual T_BC matrices (camera to body transforms)
+                m_T_left_BC = T_BC_left.clone();
+                m_T_right_BC = T_BC_right.clone();
+                
+                // Compute stereo baseline transform: T_left_right = T_BC_right.inv() * T_BC_left
+                // This gives left-to-right camera transformation for stereo triangulation
+                m_T_left_right = T_BC_right.inv() * T_BC_left;
+            }
         }
         
         // Debug output for camera parameters
@@ -320,6 +384,57 @@ bool Config::load(const std::string& config_file) {
             spdlog::info("  - Min reprojection error: {:.2f} pixels", m_min_reprojection_error);
             spdlog::info("  - Max eigenvalue: {:.2f}", m_uncertainty_max_eigenvalue);
             spdlog::info("  - Min eigenvalue: {:.2f}", m_uncertainty_min_eigenvalue);
+        }
+    }
+    
+    // ⭐ RGBD Parameters (only loaded if camera type is RGBD)
+    cv::FileNode rgbd = fs["rgbd"];
+    if (!rgbd.empty()) {
+        m_rgbd_depth_scale = (float)(double)rgbd["depth_scale"];
+        m_rgbd_min_depth = (float)(double)rgbd["min_depth"];
+        m_rgbd_max_depth = (float)(double)rgbd["max_depth"];
+        
+        // Uncertainty model
+        if (!rgbd["uncertainty_a"].empty()) {
+            m_rgbd_uncertainty_a = (float)(double)rgbd["uncertainty_a"];
+        }
+        if (!rgbd["uncertainty_b"].empty()) {
+            m_rgbd_uncertainty_b = (float)(double)rgbd["uncertainty_b"];
+        }
+        if (!rgbd["uncertainty_c"].empty()) {
+            m_rgbd_uncertainty_c = (float)(double)rgbd["uncertainty_c"];
+        }
+        
+        // Feature selection
+        if (!rgbd["enable_depth_quality_check"].empty()) {
+            m_rgbd_enable_depth_quality_check = (bool)(int)rgbd["enable_depth_quality_check"];
+        }
+        if (!rgbd["min_depth_gradient_threshold"].empty()) {
+            m_rgbd_min_depth_gradient_threshold = (float)(double)rgbd["min_depth_gradient_threshold"];
+        }
+        if (!rgbd["depth_consistency_window"].empty()) {
+            m_rgbd_depth_consistency_window = (int)rgbd["depth_consistency_window"];
+        }
+        
+        // Dense point cloud visualization
+        if (!rgbd["enable_dense_cloud"].empty()) {
+            m_rgbd_enable_dense_cloud = (bool)(int)rgbd["enable_dense_cloud"];
+        }
+        if (!rgbd["dense_cloud_stride"].empty()) {
+            m_rgbd_dense_cloud_stride = (int)rgbd["dense_cloud_stride"];
+        }
+        if (!rgbd["dense_cloud_color_mode"].empty()) {
+            m_rgbd_dense_cloud_color_mode = (int)rgbd["dense_cloud_color_mode"];
+        }
+        
+        if (m_enable_debug_output) {
+            spdlog::info("[CONFIG] RGBD parameters loaded:");
+            spdlog::info("  - Depth scale: {:.1f}", m_rgbd_depth_scale);
+            spdlog::info("  - Depth range: [{:.2f}, {:.2f}] m", m_rgbd_min_depth, m_rgbd_max_depth);
+            spdlog::info("  - Dense cloud: {} (stride={}, color_mode={})", 
+                        m_rgbd_enable_dense_cloud, m_rgbd_dense_cloud_stride, m_rgbd_dense_cloud_color_mode);
+            spdlog::info("  - Uncertainty model: a={:.6f}, b={:.6f}, c={:.6f}", 
+                        m_rgbd_uncertainty_a, m_rgbd_uncertainty_b, m_rgbd_uncertainty_c);
         }
     }
     

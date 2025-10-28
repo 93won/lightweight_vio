@@ -48,6 +48,7 @@ namespace lightweight_vio
         // Convert frame pose to SE3 tangent space
         Eigen::Vector6d pose_params = frame_to_se3_tangent(frame);
 
+
         // Add parameter block first
         problem.AddParameterBlock(pose_params.data(), 6);
 
@@ -58,6 +59,9 @@ namespace lightweight_vio
         // Get camera parameters from frame
         double fx, fy, cx, cy;
         frame->get_camera_intrinsics(fx, fy, cx, cy);
+        
+
+        
         factor::CameraParameters camera_params(fx, fy, cx, cy);
         
         // // DEBUG: Print camera intrinsics
@@ -99,6 +103,7 @@ namespace lightweight_vio
                 // Get 3D world point
                 Eigen::Vector3d world_point = mp->get_position().cast<double>();
 
+
                 // Get 2D observation from feature
                 if (i >= frame->get_features().size())
                 {
@@ -113,6 +118,17 @@ namespace lightweight_vio
                 double undist_u = undistorted_pixel.x;
                 double undist_v = undistorted_pixel.y;
                 Eigen::Vector2d observation(undist_u, undist_v);
+
+
+                // Let's check reprojection error first
+                Eigen::Matrix4d Tcw = frame->get_Twc().cast<double>().inverse();
+                Eigen::Vector3d cam_point = Tcw.block<3,3>(0,0) * world_point + Tcw.block<3,1>(0,3);
+                Eigen::Vector2d projected_pixel;
+                projected_pixel.x() = (fx * cam_point.x() / cam_point.z()) + cx;
+                projected_pixel.y() = (fy * cam_point.y() / cam_point.z()) + cy;
+
+          
+                
 
                 // Add mono PnP observation with adaptive weighting based on config mode
                 int num_observations = mp->get_observation_count();
@@ -133,6 +149,8 @@ namespace lightweight_vio
                 }
             }
         } // Release mutex here
+
+
 
 
         // spdlog::info("Min Max Mean of PnP info sqrt x : {}, {}, {}", 
@@ -156,8 +174,10 @@ namespace lightweight_vio
         // Get global config
         const auto& config = Config::getInstance();
 
+
         // Setup solver options
         ceres::Solver::Options options = setup_solver_options(config.m_pose_max_iterations);
+
 
         // Perform outlier detection rounds if enabled
         if (config.m_enable_outlier_detection)
@@ -245,8 +265,10 @@ namespace lightweight_vio
             result.final_cost = summary.final_cost;
             result.num_iterations = summary.iterations.size();
             
+          
             // Detailed Ceres summary logging removed
         }
+
 
         // Count final inliers/outliers and disconnect outlier map points based on config
         if (config.m_enable_outlier_detection) {
@@ -293,6 +315,7 @@ namespace lightweight_vio
 
         // Update result
         result.optimized_pose = se3_tangent_to_matrix(pose_params);
+
 
 
         // Update frame pose if optimization was successful
@@ -563,6 +586,7 @@ namespace lightweight_vio
         // Get T_cb (body-to-camera transform) from frame directly
         const Eigen::Matrix4d& T_cb = frame->get_Tcb();
         
+
         // Create mono PnP cost function with selected information matrix and T_cb
         auto cost_function = new factor::PnPFactor(observation, world_point, camera_params, T_cb, information);
 
@@ -859,6 +883,7 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
         mappoint_to_index[map_points[i]] = static_cast<int>(i);
     }
     
+
     // Initialize pose parameters from keyframes with keyframe mutex protection
     {
         std::lock_guard<std::mutex> lock(s_keyframe_mutex);
@@ -903,7 +928,7 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
             problem.SetParameterization(pose_params_vec[kf_idx].data(), pose_parameterization);
         }
     }
-    
+
     // Initialize map point parameters
     for (size_t mp_idx = 0; mp_idx < map_points.size(); ++mp_idx) {
         const auto& map_point = map_points[mp_idx];
@@ -920,6 +945,7 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
         auto* point_parameterization = new factor::MapPointParameterization();
         problem.SetParameterization(point_params_vec[mp_idx].data(), point_parameterization);
     }
+
     
     // Get camera parameters
     const Config& config = Config::getInstance();
@@ -930,6 +956,7 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
         K.at<double>(0, 2),  // cx
         K.at<double>(1, 2)   // cy
     );
+
 
     m_sba_info_x_sqrt.clear();
     m_sba_info_y_sqrt.clear();
@@ -2036,17 +2063,14 @@ void InertialOptimizer::setup_params(
         velocity_params_vec[i][1] = static_cast<double>(current_velocity.y()); 
         velocity_params_vec[i][2] = static_cast<double>(current_velocity.z());
         
-        // Log initial parameter setup
-        spdlog::debug("[SETUP_PARAMS] Frame[{}]: pos=({:.4f},{:.4f},{:.4f}), vel=({:.4f},{:.4f},{:.4f})",
-                     i, translation.x(), translation.y(), translation.z(),
-                     current_velocity.x(), current_velocity.y(), current_velocity.z());
+        
     }
     
     // Initialize biases to zero
     gyro_bias_params[0] = 0.0; gyro_bias_params[1] = 0.0; gyro_bias_params[2] = 0.0;
     accel_bias_params[0] = 0.0; accel_bias_params[1] = 0.0; accel_bias_params[2] = 0.0;
 
-    spdlog::info("🎯 [SETUP_PARAMS] Initialized {} frames with current velocities and zero biases", frames.size());
+  
 }
 
 

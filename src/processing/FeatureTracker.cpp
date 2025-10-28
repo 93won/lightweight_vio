@@ -35,6 +35,8 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
         return;
     }
 
+    
+
     int tracked_features = 0;
     int new_map_points_from_tracking = 0;
     int new_extracted_features = 0;
@@ -106,7 +108,8 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
     
     // Single comprehensive log with timing breakdown
     auto total_time = total_duration.count() / 1000.0;
-    
+
+  
    
     
     // Timing output removed for cleaner logs
@@ -123,7 +126,37 @@ std::pair<int, int> FeatureTracker::extract_new_features(std::shared_ptr<Frame> 
     std::vector<cv::Point2f> corners;
     
     // Use the mask created by set_mask function
-    cv::Mat mask_to_use = m_mask.empty() ? cv::Mat() : m_mask;
+    cv::Mat mask_to_use = m_mask.empty() ? cv::Mat() : m_mask.clone();
+    
+    // For RGBD frames, add depth validity mask
+    if (frame->get_frame_type() == FrameType::RGBD) {
+        const cv::Mat& depth_map = frame->get_depth_map();
+        if (!depth_map.empty()) {
+            // Create depth validity mask (255 where depth is valid, 0 where invalid)
+            cv::Mat depth_mask = cv::Mat::zeros(depth_map.size(), CV_8UC1);
+            
+            const auto& config = Config::getInstance();
+            for (int y = 0; y < depth_map.rows; ++y) {
+                for (int x = 0; x < depth_map.cols; ++x) {
+                    float depth = depth_map.at<float>(y, x);
+                    // Check if depth is valid (non-zero and within range)
+                    if (depth > config.m_rgbd_min_depth && depth < config.m_rgbd_max_depth) {
+                        depth_mask.at<uchar>(y, x) = 255;
+                    }
+                }
+            }
+            
+            // Combine with existing mask using AND operation
+            if (mask_to_use.empty()) {
+                mask_to_use = depth_mask;
+            } else {
+                cv::bitwise_and(mask_to_use, depth_mask, mask_to_use);
+            }
+            
+            spdlog::debug("[FEATURE_TRACKER] RGBD depth mask applied: {} valid pixels", 
+                         cv::countNonZero(depth_mask));
+        }
+    }
 
     int features_needed = Config::getInstance().m_max_features - frame->get_feature_count();
     int new_map_points_created = 0;
@@ -834,6 +867,67 @@ void FeatureTracker::apply_fundamental_matrix_filter(std::shared_ptr<Frame> curr
     //     spdlog::info("Fundamental matrix RANSAC: {}/{} features marked as outliers (threshold: {:.1f}px)", 
     //                  outlier_count, status.size(), m_config.m_F_threshold);
     // }
+}
+
+// ⭐ ========================================================================
+// RGBD-specific 3D computation
+// ========================================================================
+
+int FeatureTracker::compute_rgbd_3d(std::shared_ptr<Frame> frame) {
+    if (!frame) {
+        spdlog::warn("Frame is null in compute_rgbd_3d");
+        return 0;
+    }
+    
+    if (!frame->is_rgbd()) {
+        spdlog::warn("Frame {} is not RGBD type", frame->get_frame_id());
+        return 0;
+    }
+    
+    // Get camera intrinsics
+    double fx, fy, cx, cy;
+    frame->get_camera_intrinsics(fx, fy, cx, cy);
+    
+    int valid_3d_count = 0;
+    auto& features = frame->get_features_mutable();
+    
+    for (auto& feature : features) {
+        if (!feature) continue;
+        
+        // Get 2D pixel coordinates using getter
+        float u = feature->get_u();
+        float v = feature->get_v();
+        
+        // Get depth from depth map (with interpolation)
+        float depth = frame->get_interpolated_depth(u, v);
+        
+        // Check if depth is valid
+        if (depth <= 0.0f) {
+            continue; // Skip invalid depth, feature->has_3d_point() will return false
+        }
+        
+        // ⭐ Back-projection: pixel + depth → 3D point
+        // X = (u - cx) * depth / fx
+        // Y = (v - cy) * depth / fy
+        // Z = depth
+        float X = (u - cx) * depth / fx;
+        float Y = (v - cy) * depth / fy;
+        float Z = depth;
+        
+        // Set 3D coordinates using setter
+        feature->set_3d_point(Eigen::Vector3f(X, Y, Z));
+        
+        // Compute uncertainty (optional, for later use)
+        float uncertainty = frame->compute_depth_uncertainty(depth);
+        // Can store uncertainty in feature if needed
+        
+        valid_3d_count++;
+    }
+    
+        spdlog::info("Frame {}: Computed 3D for {}/{} RGBD features", 
+                     frame->get_frame_id(), valid_3d_count, features.size());
+    
+    return valid_3d_count;
 }
 
 } // namespace lightweight_vio

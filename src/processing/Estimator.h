@@ -97,6 +97,15 @@ public:
                                  long long timestamp, const std::vector<IMUData>& imu_data_from_last_frame);
 
     /**
+     * @brief Process a new RGBD frame (VO mode only)
+     * @param rgb_image RGB image
+     * @param depth_map Depth map (CV_16UC1 or CV_32FC1)
+     * @param timestamp Frame timestamp in nanoseconds
+     * @return Estimation result
+     */
+    EstimationResult process_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, long long timestamp);
+
+    /**
      * @brief Reset the estimator state
      */
     void reset();
@@ -245,6 +254,15 @@ private:
      * @return New frame
      */
     std::shared_ptr<Frame> create_frame(const cv::Mat& left_image, const cv::Mat& right_image, long long timestamp);
+    
+    /**
+     * @brief Initialize a new RGBD frame
+     * @param rgb_image RGB image
+     * @param depth_map Depth map
+     * @param timestamp Frame timestamp
+     * @return New frame
+     */
+    std::shared_ptr<Frame> create_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, long long timestamp);
     
     /**
      * @brief Predict current frame pose using motion model

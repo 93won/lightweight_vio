@@ -113,6 +113,14 @@ public:
     Eigen::Matrix3f compute_observation_covariance(const std::vector<Eigen::Vector3f>& observation_positions,
                                                   const Eigen::Vector3f& center_position);
     
+    // ⭐ RGBD Dense Point Cloud Visualization
+    void update_dense_point_cloud(std::shared_ptr<Frame> frame);
+    void draw_dense_point_cloud();
+    
+    // ⭐ RGBD Depth Image Visualization
+    void update_depth_image(std::shared_ptr<Frame> frame);
+    cv::Mat create_depth_heatmap(const cv::Mat& depth_map, float min_depth, float max_depth);
+    
     // Uncertainty debugging - 2D projection visualization
     void debug_uncertainty_projection(cv::Mat& image, 
                                      std::shared_ptr<Frame> current_frame);
@@ -145,6 +153,7 @@ private:
     pangolin::View d_panel;
     pangolin::View d_img_left;
     pangolin::View d_img_right;
+    pangolin::View d_img_depth;  // ⭐ Depth image view (RGBD only)
     
     // Data storage
     std::vector<Eigen::Vector3f> m_points;
@@ -174,14 +183,20 @@ private:
     // Current frame for direct access (simplest approach)
     std::shared_ptr<Frame> m_current_frame;
     
+    // ⭐ Dense point cloud data (RGBD only)
+    std::vector<Eigen::Vector3f> m_dense_point_cloud;
+    std::vector<Eigen::Vector3f> m_dense_point_colors;
+    
     // Thread safety
     mutable std::mutex m_data_mutex;
     
     // Image data
     pangolin::GlTexture m_tracking_image;
     pangolin::GlTexture m_uncertainty_debug_image;
+    pangolin::GlTexture m_depth_image;  // ⭐ Depth heatmap image (RGBD only)
     bool m_has_tracking_image;
     bool m_has_uncertainty_debug_image;
+    bool m_has_depth_image;  // ⭐ Flag for depth image
     
     // Control variables (simplified - no UI toggles)
     bool m_show_points;
@@ -215,6 +230,7 @@ private:
     pangolin::Var<bool> m_finish_button;
     pangolin::Var<bool> m_show_uncertainty_ellipsoids;  // New UI control
     pangolin::Var<bool> m_show_observation_point_clouds;  // Multi-view observation visualization
+    pangolin::Var<bool> m_show_dense_point_cloud;  // ⭐ RGBD dense cloud visualization
     mutable bool m_step_forward_pressed;
     mutable bool m_finish_pressed;
     
@@ -239,6 +255,7 @@ private:
     // Layout positions
     float m_tracking_image_bottom;
     float m_uncertainty_debug_image_bottom;
+    float m_depth_image_bottom;  // ⭐ Depth heatmap image position
     
     // Thread safety
     mutable std::mutex m_render_mutex;

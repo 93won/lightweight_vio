@@ -43,6 +43,7 @@ PangolinViewer::PangolinViewer()
     , m_relative_pose_from_last_keyframe(Eigen::Matrix4f::Identity())
     , m_has_tracking_image(false)
     , m_has_uncertainty_debug_image(false)
+    , m_has_depth_image(false)
     , m_space_pressed(false)
     , m_next_pressed(false)
     , m_initialized(false)
@@ -50,6 +51,7 @@ PangolinViewer::PangolinViewer()
     , m_window_height(960)
     , m_tracking_image_bottom(0.35f)
     , m_uncertainty_debug_image_bottom(0.0f)
+    , m_depth_image_bottom(0.0f)
     , m_panels_created(false)
     , m_show_points(true)
     , m_show_trajectory(true)
@@ -76,6 +78,7 @@ PangolinViewer::PangolinViewer()
     , m_finish_button("ui.9. Finish & Exit", false, false)
     , m_show_uncertainty_ellipsoids("ui.10. Show Uncertainty Ellipsoids", true, true)
     , m_show_observation_point_clouds("ui.11. Show Observation Point Clouds", true, true)
+    , m_show_dense_point_cloud("ui.12. Show Dense Point Cloud (RGBD)", true, true)
     , m_step_forward_pressed(false)
     , m_finish_pressed(false)
     , m_previous_follow_frame_state(true)  // Initialize to true since follow frame starts enabled
@@ -137,24 +140,28 @@ void PangolinViewer::setup_panels() {
         image_height = 480.0f;
     }
 
-    // 2. Feature tracking image (top position)
+    // 2. Feature tracking image (bottom position - always at bottom)
     float tracking_aspect = image_width / image_height;  // 752/480 = 1.567
     float display_width = static_cast<float>(m_window_width) * 0.25f;  // UI panel width (25% of window width)
     float tracking_height = display_width / tracking_aspect;
     float tracking_normalized_height = tracking_height / static_cast<float>(m_window_height);
     
-    // 3. Uncertainty debugging image (bottom position)
-    float uncertainty_aspect = image_width / image_height;  // Same aspect ratio as feature tracking
-    float uncertainty_height = display_width / uncertainty_aspect;
-    float uncertainty_normalized_height = uncertainty_height / static_cast<float>(m_window_height);
+    // 3. Depth heatmap image (above tracking image)
+    float depth_aspect = image_width / image_height;  // Same aspect ratio
+    float depth_height = display_width / depth_aspect;
+    float depth_normalized_height = depth_height / static_cast<float>(m_window_height);
     
-    // Layout from TOP to BOTTOM: UI panel -> tracking image (at bottom)
-    // Only tracking image is enabled, placed at the very bottom
-    m_tracking_image_bottom = 0.0f;  // Tracking image at the very bottom
+    // Layout from TOP to BOTTOM: UI panel -> depth image -> tracking image
+    // Tracking image at the very bottom (always)
+    m_tracking_image_bottom = 0.0f;
     float tracking_image_top = m_tracking_image_bottom + tracking_normalized_height;
     
-    // UI panel takes the rest of the space above tracking image
-    float ui_panel_bottom = tracking_image_top;
+    // Depth image above tracking image
+    m_depth_image_bottom = tracking_image_top;
+    float depth_image_top = m_depth_image_bottom + depth_normalized_height;
+    
+    // UI panel takes the rest of the space above depth image
+    float ui_panel_bottom = depth_image_top;
     float ui_panel_top = 1.0f;
     
     // Uncertainty image disabled
@@ -172,17 +179,17 @@ void PangolinViewer::setup_panels() {
             .SetBounds(0.0, 1.0, pangolin::Attach::Frac(ui_panel_ratio), pangolin::Attach::Frac(1.0f))
             .SetHandler(new pangolin::Handler3D(s_cam));
 
-        // 1. UI panel - above tracking image
+        // 1. UI panel - above depth image
         d_panel = pangolin::CreatePanel("ui")
             .SetBounds(ui_panel_bottom, ui_panel_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio));
         
-        // 2. Feature tracking image at the bottom
+        // 2. Depth heatmap image in the middle
+        d_img_right = pangolin::CreateDisplay()
+            .SetBounds(m_depth_image_bottom, depth_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -depth_aspect);
+            
+        // 3. Feature tracking image at the bottom (always)
         d_img_left = pangolin::CreateDisplay()
             .SetBounds(m_tracking_image_bottom, tracking_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -tracking_aspect);
-            
-        // 3. Uncertainty debugging image - DISABLED
-        // d_img_right = pangolin::CreateDisplay()
-        //     .SetBounds(m_uncertainty_debug_image_bottom, uncertainty_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -uncertainty_aspect);
         
         m_panels_created = true;
     } else {
@@ -194,15 +201,20 @@ void PangolinViewer::setup_panels() {
         float new_tracking_height = new_display_width / tracking_aspect;
         float new_tracking_normalized_height = new_tracking_height / static_cast<float>(m_window_height);
         
-        float new_uncertainty_height = new_display_width / uncertainty_aspect;
-        float new_uncertainty_normalized_height = new_uncertainty_height / static_cast<float>(m_window_height);
+        float new_depth_height = new_display_width / depth_aspect;
+        float new_depth_normalized_height = new_depth_height / static_cast<float>(m_window_height);
         
-        // Layout from TOP to BOTTOM: UI panel -> tracking image (at bottom)
-        m_tracking_image_bottom = 0.0f;  // Tracking image at the very bottom
+        // Layout from TOP to BOTTOM: UI panel -> depth image -> tracking image
+        // Tracking at bottom
+        m_tracking_image_bottom = 0.0f;
         float new_tracking_image_top = m_tracking_image_bottom + new_tracking_normalized_height;
         
-        // UI panel takes the rest of the space above tracking image
-        float new_ui_panel_bottom = new_tracking_image_top;
+        // Depth above tracking
+        m_depth_image_bottom = new_tracking_image_top;
+        float new_depth_image_top = m_depth_image_bottom + new_depth_normalized_height;
+        
+        // UI panel takes the rest of the space above depth image
+        float new_ui_panel_bottom = new_depth_image_top;
         float new_ui_panel_top = 1.0f;
         
         // Uncertainty image disabled
@@ -212,9 +224,11 @@ void PangolinViewer::setup_panels() {
         d_cam.SetBounds(0.0, 1.0, pangolin::Attach::Frac(ui_panel_ratio), pangolin::Attach::Frac(1.0f));
         d_panel.SetBounds(new_ui_panel_bottom, new_ui_panel_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio));
         
-        // Update tracking image bounds
+        // Update depth image bounds (middle)
+        d_img_right.SetBounds(m_depth_image_bottom, new_depth_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -depth_aspect);
+        
+        // Update tracking image bounds (bottom)
         d_img_left.SetBounds(m_tracking_image_bottom, new_tracking_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -tracking_aspect);
-        // d_img_right.SetBounds(m_uncertainty_debug_image_bottom, new_uncertainty_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -uncertainty_aspect);
      
     }
 }
@@ -292,6 +306,11 @@ void PangolinViewer::render() {
         }
     }
 
+    // ⭐ Draw dense point cloud if enabled (RGBD only)
+    if (m_show_dense_point_cloud) {
+        draw_dense_point_cloud();
+    }
+
     if (m_show_estimated_trajectory && m_show_trajectory && !m_trajectory.empty()) {
         draw_trajectory();
     }
@@ -308,19 +327,19 @@ void PangolinViewer::render() {
         }
     }
 
-    // Render tracking image at the bottom
+    // Render tracking image at the bottom (always)
     if (m_has_tracking_image) {
         d_img_left.Activate();
         glColor3f(1.0, 1.0, 1.0);
         m_tracking_image.RenderToViewport();
     }
 
-    // Uncertainty debug image - DISABLED
-    // if (m_has_uncertainty_debug_image) {
-    //     d_img_right.Activate();
-    //     glColor3f(1.0, 1.0, 1.0);
-    //     m_uncertainty_debug_image.RenderToViewport();
-    // }
+    // ⭐ Render depth heatmap image in the middle
+    if (m_has_depth_image) {
+        d_img_right.Activate();
+        glColor3f(1.0, 1.0, 1.0);
+        m_depth_image.RenderToViewport();
+    }
 
     // Pangolin automatically renders the UI panel with tracking variables
     // No custom drawing needed - the pangolin::Var variables are displayed automatically
@@ -921,8 +940,10 @@ void PangolinViewer::update_tracking_with_frame(std::shared_ptr<Frame> frame) {
 
     m_current_frame = frame;
     
-    // Get raw image from frame
-    const cv::Mat& raw_image = frame->get_image();
+    // ⭐ For RGBD: use RGB image if available, otherwise use grayscale
+    const cv::Mat& raw_image = frame->is_rgbd() && !frame->get_rgb_image().empty() 
+                               ? frame->get_rgb_image() 
+                               : frame->get_image();
     
     // Get features and map points from frame
     const auto& features = frame->get_features();
@@ -1687,6 +1708,176 @@ Eigen::Matrix3f PangolinViewer::compute_observation_covariance(const std::vector
     covariance += Eigen::Matrix3f::Identity() * 1e-6f;
     
     return covariance;
+}
+
+// ⭐ RGBD Dense Point Cloud Visualization
+void PangolinViewer::update_dense_point_cloud(std::shared_ptr<Frame> frame) {
+    if (!frame || !frame->is_rgbd()) {
+        return;
+    }
+    
+    const Config& config = Config::getInstance();
+    
+    // Check if dense cloud is enabled
+    if (!config.m_rgbd_enable_dense_cloud) {
+        std::lock_guard<std::mutex> lock(m_data_mutex);
+        m_dense_point_cloud.clear();
+        m_dense_point_colors.clear();
+        return;
+    }
+    
+    // Get parameters from config
+    int stride = config.m_rgbd_dense_cloud_stride;
+    float min_depth = config.m_rgbd_min_depth;
+    float max_depth = config.m_rgbd_max_depth;
+    int color_mode = config.m_rgbd_dense_cloud_color_mode;
+    
+    // Generate colored point cloud
+    auto colored_points = frame->generate_colored_point_cloud(stride, min_depth, max_depth, color_mode);
+    
+    // Update storage (thread-safe)
+    std::lock_guard<std::mutex> lock(m_data_mutex);
+    
+    m_dense_point_cloud.clear();
+    m_dense_point_colors.clear();
+    
+    m_dense_point_cloud.reserve(colored_points.size());
+    m_dense_point_colors.reserve(colored_points.size());
+    
+    for (const auto& cp : colored_points) {
+        m_dense_point_cloud.push_back(cp.position);
+        m_dense_point_colors.push_back(cp.color);
+    }
+    
+    // Debug info
+    if (!colored_points.empty()) {
+        spdlog::debug("[PangolinViewer] Updated dense point cloud: {} points (stride={}, color_mode={})",
+                     colored_points.size(), stride, color_mode);
+    }
+}
+
+void PangolinViewer::draw_dense_point_cloud() {
+    std::lock_guard<std::mutex> lock(m_data_mutex);
+    
+    if (m_dense_point_cloud.empty()) {
+        return;
+    }
+    
+    // Use small point size for dense cloud
+    glPointSize(1.0f);
+    
+    glBegin(GL_POINTS);
+    
+    if (m_dense_point_colors.empty()) {
+        // No color info - use default cyan
+        glColor3f(0.0f, 1.0f, 1.0f);
+        for (const auto& pt : m_dense_point_cloud) {
+            glVertex3f(pt.x(), pt.y(), pt.z());
+        }
+    } else {
+        // Render with colors
+        for (size_t i = 0; i < m_dense_point_cloud.size(); ++i) {
+            const auto& pt = m_dense_point_cloud[i];
+            const auto& color = m_dense_point_colors[i];
+            glColor3f(color.x(), color.y(), color.z());
+            glVertex3f(pt.x(), pt.y(), pt.z());
+        }
+    }
+    
+    glEnd();
+    
+    // Reset point size
+    glPointSize(1.0f);
+}
+
+// ⭐ RGBD Depth Image Visualization
+void PangolinViewer::update_depth_image(std::shared_ptr<Frame> frame) {
+    if (!frame || !frame->is_rgbd()) {
+        return;
+    }
+    
+    const cv::Mat& depth_map = frame->get_depth_map();
+    if (depth_map.empty()) {
+        return;
+    }
+    
+    const Config& config = Config::getInstance();
+    float min_depth = config.m_rgbd_min_depth;
+    float max_depth = 20.0f;  // Fixed at 20m for better visualization
+    
+    // Create depth heatmap
+    cv::Mat depth_heatmap = create_depth_heatmap(depth_map, min_depth, max_depth);
+    
+    // Update texture (thread-safe)
+    std::lock_guard<std::mutex> lock(m_data_mutex);
+    m_depth_image = create_texture_from_cv_mat(depth_heatmap);
+    m_has_depth_image = true;
+}
+
+cv::Mat PangolinViewer::create_depth_heatmap(const cv::Mat& depth_map, float min_depth, float max_depth) {
+    if (depth_map.empty()) {
+        return cv::Mat();
+    }
+    
+    // Create RGB heatmap image
+    cv::Mat heatmap(depth_map.rows, depth_map.cols, CV_8UC3);
+    
+    for (int v = 0; v < depth_map.rows; ++v) {
+        for (int u = 0; u < depth_map.cols; ++u) {
+            float depth = depth_map.at<float>(v, u);
+            
+            cv::Vec3b color;
+            
+            // Check if depth is valid
+            if (depth <= min_depth || depth >= max_depth) {
+                // Invalid depth = black
+                color = cv::Vec3b(0, 0, 0);
+            } else {
+                // Normalize depth to [0, 1]
+                float normalized_depth = (depth - min_depth) / (max_depth - min_depth);
+                normalized_depth = std::max(0.0f, std::min(1.0f, normalized_depth));
+                
+                // Heatmap: Red (near) -> Yellow -> Green -> Cyan -> Blue (far)
+                float r, g, b;
+                if (normalized_depth < 0.25f) {
+                    // Red to Yellow
+                    float t = normalized_depth / 0.25f;
+                    r = 1.0f;
+                    g = t;
+                    b = 0.0f;
+                } else if (normalized_depth < 0.5f) {
+                    // Yellow to Green
+                    float t = (normalized_depth - 0.25f) / 0.25f;
+                    r = 1.0f - t;
+                    g = 1.0f;
+                    b = 0.0f;
+                } else if (normalized_depth < 0.75f) {
+                    // Green to Cyan
+                    float t = (normalized_depth - 0.5f) / 0.25f;
+                    r = 0.0f;
+                    g = 1.0f;
+                    b = t;
+                } else {
+                    // Cyan to Blue
+                    float t = (normalized_depth - 0.75f) / 0.25f;
+                    r = 0.0f;
+                    g = 1.0f - t;
+                    b = 1.0f;
+                }
+                
+                // Convert to BGR for OpenCV (note: reversed order!)
+                color = cv::Vec3b(
+                    static_cast<uchar>(b * 255),
+                    static_cast<uchar>(g * 255),
+                    static_cast<uchar>(r * 255)
+                );
+            }
+            
+            heatmap.at<cv::Vec3b>(v, u) = color;
+        }
+    }
+    
+    return heatmap;
 }
 
 }

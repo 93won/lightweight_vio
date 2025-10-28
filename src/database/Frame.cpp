@@ -31,6 +31,7 @@ std::shared_ptr<Frame> Frame::m_last_keyframe = nullptr;
 Frame::Frame(long long timestamp, int frame_id)
     : m_timestamp(timestamp)
     , m_frame_id(frame_id)
+    , m_frame_type(FrameType::STEREO)  // ⭐ Default to STEREO
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
@@ -70,6 +71,7 @@ Frame::Frame(long long timestamp, int frame_id,
              const std::vector<double>& distortion_coeffs)
     : m_timestamp(timestamp)
     , m_frame_id(frame_id)
+    , m_frame_type(FrameType::STEREO)  // ⭐ Default to STEREO
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
@@ -107,6 +109,7 @@ Frame::Frame(long long timestamp, int frame_id,
              const std::vector<double>& distortion_coeffs)
     : m_timestamp(timestamp)
     , m_frame_id(frame_id)
+    , m_frame_type(FrameType::STEREO)  // ⭐ Stereo frame
     , m_left_image(left_image.clone())
     , m_right_image(right_image.clone())
     , m_rotation(Eigen::Matrix3f::Identity())
@@ -147,6 +150,7 @@ Frame::Frame(long long timestamp, int frame_id,
              const cv::Mat& left_image, const cv::Mat& right_image)
     : m_timestamp(timestamp)
     , m_frame_id(frame_id)
+    , m_frame_type(FrameType::STEREO)  // ⭐ Stereo frame
     , m_left_image(left_image.clone())
     , m_right_image(right_image.clone())
     , m_rotation(Eigen::Matrix3f::Identity())
@@ -207,6 +211,86 @@ Frame::Frame(long long timestamp, int frame_id,
     
     // Compute undistorted image boundaries
     undistort_corner_points();
+}
+
+// ⭐ RGBD Constructor (using tag dispatch)
+Frame::Frame(long long timestamp, int frame_id,
+             const cv::Mat& rgb_image, const cv::Mat& depth_map, RGBDTag)
+    : m_timestamp(timestamp)
+    , m_frame_id(frame_id)
+    , m_frame_type(FrameType::RGBD)
+    , m_left_image(rgb_image.clone())
+    , m_rotation(Eigen::Matrix3f::Identity())
+    , m_translation(Eigen::Vector3f::Zero())
+    , m_is_keyframe(false)
+    , m_T_relative_from_ref(Eigen::Matrix4f::Identity())
+    , m_accel_bias(Eigen::Vector3f::Zero())
+    , m_gyro_bias(Eigen::Vector3f::Zero())
+{
+    // Get camera parameters from Config
+    const Config& config = Config::getInstance();
+    
+    // For RGBD, use RGB camera intrinsics
+    cv::Mat rgb_K = config.left_camera_matrix();  // Reuse left camera matrix
+    
+    spdlog::debug("[FRAME_RGBD] Config left_camera_matrix: empty={}, rows={}, cols={}", 
+                 rgb_K.empty(), rgb_K.rows, rgb_K.cols);
+    
+    if (!rgb_K.empty()) {
+        m_fx = rgb_K.at<double>(0, 0);
+        m_fy = rgb_K.at<double>(1, 1);
+        m_cx = rgb_K.at<double>(0, 2);
+        m_cy = rgb_K.at<double>(1, 2);
+        spdlog::debug("[FRAME_RGBD] Loaded intrinsics: fx={}, fy={}, cx={}, cy={}", m_fx, m_fy, m_cx, m_cy);
+    } else {
+        // Fallback to default values
+        m_fx = 458.654; m_fy = 457.296; 
+        m_cx = 367.215; m_cy = 248.375;
+        spdlog::warn("[FRAME_RGBD] Camera matrix empty! Using default values");
+    }
+    
+    // Get distortion coefficients
+    cv::Mat rgb_D = config.left_dist_coeffs();
+    if (!rgb_D.empty()) {
+        m_distortion_coeffs.clear();
+        for (int i = 0; i < rgb_D.rows; ++i) {
+            m_distortion_coeffs.push_back(rgb_D.at<double>(i, 0));
+        }
+    } else {
+        m_distortion_coeffs = {0.0, 0.0, 0.0, 0.0, 0.0};
+    }
+    
+    // Get T_BC from config
+    cv::Mat T_bc_cv = config.left_T_BC();
+    if (!T_bc_cv.empty()) {
+        Eigen::Matrix4d T_bc;
+        for (int i = 0; i < 4; ++i) {
+            for (int j = 0; j < 4; ++j) {
+                T_bc(i, j) = T_bc_cv.at<double>(i, j);
+            }
+        }
+        m_T_CB = T_bc.inverse();
+    } else {
+        m_T_CB = Eigen::Matrix4d::Identity();
+    }
+    
+    // Set reference keyframe
+    if (m_last_keyframe) {
+        m_reference_keyframe = m_last_keyframe;
+        m_T_relative_from_ref = Eigen::Matrix4f::Identity();
+    }
+    
+    // Process depth map
+    process_depth_map(depth_map);
+    
+    // Compute undistorted image boundaries
+    undistort_corner_points();
+}
+
+// ⭐ Static factory method for RGBD frames
+std::shared_ptr<Frame> Frame::create_rgbd_frame(long long timestamp, int frame_id,
+                                                 const cv::Mat& rgb_image, const cv::Mat& depth_map) {
+    return std::make_shared<Frame>(timestamp, frame_id, rgb_image, depth_map, RGBDTag{});
 }
 
 void Frame::set_pose(const Eigen::Matrix3f& rotation, const Eigen::Vector3f& translation) {
@@ -1314,6 +1398,46 @@ void Frame::compute_stereo_depth() {
     }
 }
 
+void Frame::compute_depth() {
+    // RGBD depth computation - extract depth directly from depth map
+    // No triangulation needed, just read from depth map at feature locations
+    
+    // Note: For RGBD, features are already processed by compute_rgbd_3d()
+    // which handles undistortion internally, so we don't need to call undistort_features() again
+    
+    // Update depth array from depth map
+
+    // Then undistort features
+    undistort_features();
+
+    m_depths.assign(m_features.size(), -1.0);
+    
+    for (size_t i = 0; i < m_features.size(); ++i) {
+        auto feature = m_features[i];
+        if (feature && feature->is_valid()) {
+            // Use pixel coordinates directly (compute_rgbd_3d already handles distortion)
+            cv::Point2f pixel = feature->get_undistorted_coord();
+            
+            // Get depth value from depth map with bilinear interpolation
+            float depth = get_interpolated_depth(pixel.x, pixel.y);
+            
+            if (depth > 0.0f) {
+                m_depths[i] = static_cast<double>(depth);
+                
+                // Verify consistency with 3D point if available
+                if (feature->has_3d_point()) {
+                    Eigen::Vector3f point3d = feature->get_3d_point();
+                    // The Z coordinate should match the depth
+                    if (std::abs(point3d[2] - depth) > 0.001f) {
+                        // Small mismatch is expected due to interpolation
+                        // Keep the 3D point as-is (already computed correctly)
+                    }
+                }
+            }
+        }
+    }
+}
+
 double Frame::get_depth(int feature_index) const {
     if (feature_index >= 0 && feature_index < static_cast<int>(m_depths.size())) {
         return m_depths[feature_index];
@@ -1508,6 +1632,331 @@ void Frame::initialize_velocity_from_preintegration() {
         if (i < velocity_sources.size() - 1) sources_str += "+";
     }
     
+}
+
+// ⭐ ========================================================================
+// RGBD-specific methods
+// ========================================================================
+
+void Frame::process_depth_map(const cv::Mat& raw_depth) {
+    if (raw_depth.empty()) {
+        spdlog::warn("Frame {}: Empty depth map received!", m_frame_id);
+        return;
+    }
+    
+    const Config& config = Config::getInstance();
+    float depth_scale = config.m_rgbd_depth_scale;  // ⭐ Read from config (default: 1000.0)
+    float min_depth = config.m_rgbd_min_depth;
+    float max_depth = config.m_rgbd_max_depth;
+    
+    // Convert depth format if needed
+    if (raw_depth.type() == CV_16UC1) {
+        // Convert uint16 to float: depth_in_meters = raw_value / depth_scale
+        raw_depth.convertTo(m_depth_map, CV_32FC1, 1.0 / depth_scale);
+    } else if (raw_depth.type() == CV_32FC1) {
+        // Already float (assumed in meters), just clone
+        m_depth_map = raw_depth.clone();
+    } else {
+        spdlog::warn("Frame {}: Unsupported depth map type: {}", m_frame_id, raw_depth.type());
+        return;
+    }
+    
+    // Create validity mask
+    cv::Mat valid_mask = (m_depth_map > min_depth) & (m_depth_map < max_depth);
+    
+    // Set invalid depths to 0
+    m_depth_map.setTo(0.0f, ~valid_mask);
+    
+    // ⭐ No filtering, no hole filling - use raw depth as is
+}
+
+void Frame::preprocess_depth_map() {
+    // ⭐ Disabled - using raw depth only
+    // No bilateral filtering, no hole filling
+    return;
+}
+
+float Frame::get_depth_at(float u, float v) const {
+    if (m_depth_map.empty()) return 0.0f;
+    
+    const Config& config = Config::getInstance();
+    float min_depth = config.m_rgbd_min_depth;
+    float max_depth = config.m_rgbd_max_depth;
+    
+    int x = static_cast<int>(std::round(u));
+    int y = static_cast<int>(std::round(v));
+    
+    // Boundary check
+    if (x < 0 || x >= m_depth_map.cols || y < 0 || y >= m_depth_map.rows) {
+        return 0.0f;
+    }
+    
+    float depth = m_depth_map.at<float>(y, x);
+    
+    // Validate depth
+    if (depth <= min_depth || depth >= max_depth) {
+        return 0.0f;
+    }
+    
+    return depth;
+}
+
+float Frame::get_interpolated_depth(float u, float v) const {
+    if (m_depth_map.empty()) return 0.0f;
+    
+    const Config& config = Config::getInstance();
+    float min_depth = config.m_rgbd_min_depth;
+    float max_depth = config.m_rgbd_max_depth;
+    
+    // Floor coordinates
+    int x0 = static_cast<int>(std::floor(u));
+    int y0 = static_cast<int>(std::floor(v));
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
+    
+    // Boundary check
+    if (x0 < 0 || x1 >= m_depth_map.cols || y0 < 0 || y1 >= m_depth_map.rows) {
+        return 0.0f;
+    }
+    
+    // Get four corner depths
+    float d00 = m_depth_map.at<float>(y0, x0);
+    float d01 = m_depth_map.at<float>(y1, x0);
+    float d10 = m_depth_map.at<float>(y0, x1);
+    float d11 = m_depth_map.at<float>(y1, x1);
+    
+    // Check if any corner is invalid
+    if (d00 <= 0 || d01 <= 0 || d10 <= 0 || d11 <= 0) {
+        // Fallback to nearest neighbor
+        return get_depth_at(u, v);
+    }
+    
+    // Bilinear interpolation
+    float wx = u - x0;
+    float wy = v - y0;
+    
+    float depth = (1 - wx) * (1 - wy) * d00 +
+                  wx * (1 - wy) * d10 +
+                  (1 - wx) * wy * d01 +
+                  wx * wy * d11;
+    
+    // Validate interpolated depth
+    if (depth <= min_depth || depth >= max_depth) {
+        return 0.0f;
+    }
+    
+    return depth;
+}
+
+bool Frame::has_valid_depth_at(float u, float v) const {
+    float depth = get_depth_at(u, v);
+    const Config& config = Config::getInstance();
+    return depth > config.m_rgbd_min_depth && depth < config.m_rgbd_max_depth;
+}
+
+float Frame::compute_depth_uncertainty(float depth) const {
+    const Config& config = Config::getInstance();
+    
+    // Quadratic error model: σ² = a*d² + b*d + c
+    float a = config.m_rgbd_uncertainty_a;
+    float b = config.m_rgbd_uncertainty_b;
+    float c = config.m_rgbd_uncertainty_c;
+    
+    float variance = a * depth * depth + b * depth + c;
+    return std::sqrt(variance);
+}
+
+Frame::DepthStats Frame::get_depth_statistics() const {
+    DepthStats stats;
+    
+    if (m_depth_map.empty()) {
+        stats.min_valid_depth = 0.0f;
+        stats.max_valid_depth = 0.0f;
+        stats.mean_depth = 0.0f;
+        stats.valid_pixels = 0;
+        stats.total_pixels = 0;
+        stats.valid_ratio = 0.0f;
+        return stats;
+    }
+    
+    const Config& config = Config::getInstance();
+    float min_depth = config.m_rgbd_min_depth;
+    float max_depth = config.m_rgbd_max_depth;
+    
+    stats.total_pixels = m_depth_map.rows * m_depth_map.cols;
+    stats.valid_pixels = 0;
+    stats.min_valid_depth = std::numeric_limits<float>::max();
+    stats.max_valid_depth = 0.0f;
+    double sum_depth = 0.0;
+    
+    for (int y = 0; y < m_depth_map.rows; ++y) {
+        for (int x = 0; x < m_depth_map.cols; ++x) {
+            float depth = m_depth_map.at<float>(y, x);
+            if (depth > min_depth && depth < max_depth) {
+                stats.valid_pixels++;
+                sum_depth += depth;
+                stats.min_valid_depth = std::min(stats.min_valid_depth, depth);
+                stats.max_valid_depth = std::max(stats.max_valid_depth, depth);
+            }
+        }
+    }
+    
+    stats.mean_depth = stats.valid_pixels > 0 ? 
+                      static_cast<float>(sum_depth / stats.valid_pixels) : 0.0f;
+    stats.valid_ratio = static_cast<float>(stats.valid_pixels) / stats.total_pixels;
+    
+    return stats;
+}
+
+// ⭐ RGBD Dense Point Cloud Generation
+std::vector<Eigen::Vector3f> Frame::generate_dense_point_cloud(
+    int stride,
+    float min_depth,
+    float max_depth
+) const {
+    std::vector<Eigen::Vector3f> points;
+    
+    // Check if this is an RGBD frame with depth map
+    if (m_frame_type != FrameType::RGBD || m_depth_map.empty()) {
+        return points;
+    }
+    
+    // Reserve approximate space (accounting for stride and invalid depths)
+    int approx_points = (m_depth_map.rows / stride) * (m_depth_map.cols / stride);
+    points.reserve(approx_points / 2);  // Assume ~50% valid depths
+    
+    // Get camera pose (world to camera transform)
+    Eigen::Matrix4f Twc = get_Twc();
+    Eigen::Matrix3f R_wc = Twc.block<3, 3>(0, 0);
+    Eigen::Vector3f t_wc = Twc.block<3, 1>(0, 3);
+    
+    // Iterate through depth map with stride
+    for (int v = 0; v < m_depth_map.rows; v += stride) {
+        for (int u = 0; u < m_depth_map.cols; u += stride) {
+            float depth = m_depth_map.at<float>(v, u);
+            
+            // Check depth validity
+            if (depth <= min_depth || depth >= max_depth) {
+                continue;
+            }
+            
+            // Back-project pixel to 3D camera coordinates
+            float x_cam = (u - m_cx) * depth / m_fx;
+            float y_cam = (v - m_cy) * depth / m_fy;
+            float z_cam = depth;
+            
+            Eigen::Vector3f P_cam(x_cam, y_cam, z_cam);
+            
+            // Transform to world coordinates
+            Eigen::Vector3f P_world = R_wc * P_cam + t_wc;
+            
+            points.push_back(P_world);
+        }
+    }
+    
+    return points;
+}
+
+std::vector<Frame::ColoredPoint> Frame::generate_colored_point_cloud(
+    int stride,
+    float min_depth,
+    float max_depth,
+    int color_mode
+) const {
+    std::vector<ColoredPoint> colored_points;
+    
+    // Check if this is an RGBD frame with depth map
+    if (m_frame_type != FrameType::RGBD || m_depth_map.empty()) {
+        return colored_points;
+    }
+    
+    // Reserve approximate space
+    int approx_points = (m_depth_map.rows / stride) * (m_depth_map.cols / stride);
+    colored_points.reserve(approx_points / 2);
+    
+    // Get camera pose
+    Eigen::Matrix4f Twc = get_Twc();
+    Eigen::Matrix3f R_wc = Twc.block<3, 3>(0, 0);
+    Eigen::Vector3f t_wc = Twc.block<3, 1>(0, 3);
+    
+    // Check if RGB image is available for color mode 1 (use m_rgb_image, not m_left_image!)
+    bool has_rgb = !m_rgb_image.empty() && m_rgb_image.channels() >= 3;
+    
+    // Iterate through depth map with stride
+    for (int v = 0; v < m_depth_map.rows; v += stride) {
+        for (int u = 0; u < m_depth_map.cols; u += stride) {
+            float depth = m_depth_map.at<float>(v, u);
+            
+            // Check depth validity
+            if (depth <= min_depth || depth >= max_depth) {
+                continue;
+            }
+            
+            // Back-project to 3D camera coordinates
+            float x_cam = (u - m_cx) * depth / m_fx;
+            float y_cam = (v - m_cy) * depth / m_fy;
+            float z_cam = depth;
+            
+            Eigen::Vector3f P_cam(x_cam, y_cam, z_cam);
+            
+            // Transform to world coordinates
+            Eigen::Vector3f P_world = R_wc * P_cam + t_wc;
+            
+            // Determine color based on mode
+            Eigen::Vector3f color;
+            
+            switch (color_mode) {
+                case 0: // Mono (cyan)
+                    color = Eigen::Vector3f(0.0f, 1.0f, 1.0f);
+                    break;
+                    
+                case 1: // RGB from image
+                    if (has_rgb) {
+                        cv::Vec3b bgr = m_rgb_image.at<cv::Vec3b>(v, u);
+                        // Convert BGR to RGB and normalize to [0, 1]
+                        color = Eigen::Vector3f(
+                            bgr[2] / 255.0f,  // R
+                            bgr[1] / 255.0f,  // G
+                            bgr[0] / 255.0f   // B
+                        );
+                    } else {
+                        // Fallback to cyan if no RGB available
+                        color = Eigen::Vector3f(0.0f, 1.0f, 1.0f);
+                    }
+                    break;
+                    
+                case 2: // Depth heatmap (near=red, far=blue)
+                {
+                    float normalized_depth = (depth - min_depth) / (max_depth - min_depth);
+                    normalized_depth = std::max(0.0f, std::min(1.0f, normalized_depth));
+                    
+                    // Heatmap: Blue (0) -> Cyan -> Green -> Yellow -> Red (1)
+                    if (normalized_depth < 0.25f) {
+                        float t = normalized_depth / 0.25f;
+                        color = Eigen::Vector3f(0.0f, t, 1.0f);  // Blue to Cyan
+                    } else if (normalized_depth < 0.5f) {
+                        float t = (normalized_depth - 0.25f) / 0.25f;
+                        color = Eigen::Vector3f(0.0f, 1.0f, 1.0f - t);  // Cyan to Green
+                    } else if (normalized_depth < 0.75f) {
+                        float t = (normalized_depth - 0.5f) / 0.25f;
+                        color = Eigen::Vector3f(t, 1.0f, 0.0f);  // Green to Yellow
+                    } else {
+                        float t = (normalized_depth - 0.75f) / 0.25f;
+                        color = Eigen::Vector3f(1.0f, 1.0f - t, 0.0f);  // Yellow to Red
+                    }
+                    break;
+                }
+                
+                default:
+                    color = Eigen::Vector3f(0.0f, 1.0f, 1.0f);  // Default cyan
+                    break;
+            }
+            
+            colored_points.push_back({P_world, color});
+        }
+    }
+    
+    return colored_points;
 }
 
 } // namespace lightweight_vio

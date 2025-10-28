@@ -111,6 +111,22 @@ add_executable(tum_stereo app/tum_stereo.cpp
     src/viewer/PangolinViewer.cpp
 )
 
+# Add RGBD pipeline (VO mode)
+add_executable(euroc_depth app/euroc_depth.cpp 
+    app/player/rgbd_player.cpp
+    src/database/Frame.cpp
+    src/database/Feature.cpp
+    src/database/MapPoint.cpp
+    src/processing/FeatureTracker.cpp
+    src/processing/Optimizer.cpp
+    src/processing/Estimator.cpp
+    src/processing/IMUHandler.cpp
+    src/optimization/Factors.cpp
+    src/optimization/Parameters.cpp
+    src/util/Config.cpp
+    src/viewer/PangolinViewer.cpp
+)
+
 
 # Link libraries
 target_link_libraries(euroc_stereo 
@@ -147,14 +163,33 @@ target_link_libraries(tum_stereo
     m  # Math library for M_PI
 )
 
+target_link_libraries(euroc_depth 
+    ${OpenCV_LIBS} 
+    yaml-cpp 
+    OpenGL::GL 
+    GLEW::GLEW
+    Threads::Threads
+    ceres
+    Sophus::Sophus
+    spdlog::spdlog
+    pango_display
+    pango_windowing
+    pango_opengl
+    pango_core
+    pango_image
+    m  # Math library for M_PI
+)
+
 # Link Eigen3 to all targets
 if(TARGET Eigen3::Eigen)
     target_link_libraries(euroc_stereo Eigen3::Eigen)
     target_link_libraries(tum_stereo Eigen3::Eigen)
+    target_link_libraries(euroc_depth Eigen3::Eigen)
 else()
     # Fallback for older CMake versions
     target_include_directories(euroc_stereo PRIVATE ${EIGEN3_INCLUDE_DIR})
     target_include_directories(tum_stereo PRIVATE ${EIGEN3_INCLUDE_DIR})
+    target_include_directories(euroc_depth PRIVATE ${EIGEN3_INCLUDE_DIR})
 endif()
 
 # Print OpenCV information for debugging

@@ -27,6 +27,13 @@ class Feature; // Forward declaration
 class MapPoint;
 struct IMUPreintegration; // Forward declaration for IMU preintegration
 
+// ⭐ Frame type enumeration
+enum class FrameType {
+    STEREO,
+    RGBD,
+    MONOCULAR
+};
+
 // IMU measurement structure
 struct IMUData {
     double timestamp;              // timestamp in seconds
@@ -55,6 +62,20 @@ public:
     // Simple stereo constructor - uses Config for camera parameters
     Frame(long long timestamp, int frame_id,
           const cv::Mat& left_image, const cv::Mat& right_image);
+    
+private:
+    // ⭐ RGBD constructor helper tag
+    struct RGBDTag {};
+    
+public:
+    // ⭐ RGBD constructor - uses tag dispatch to avoid ambiguity
+    Frame(long long timestamp, int frame_id,
+          const cv::Mat& rgb_image, const cv::Mat& depth_map, RGBDTag);
+    
+    // ⭐ Static factory method for RGBD frames (recommended way)
+    static std::shared_ptr<Frame> create_rgbd_frame(long long timestamp, int frame_id,
+                                                     const cv::Mat& rgb_image, const cv::Mat& depth_map);
+    
     ~Frame(); // Use explicit destructor
 
 
@@ -64,12 +85,22 @@ public:
     const cv::Mat& get_left_image() const { return m_left_image; }
     const cv::Mat& get_right_image() const { return m_right_image; }
     const cv::Mat& get_image() const { return m_left_image; } // For backward compatibility
+    
+    // ⭐ RGBD specific getters
+    const cv::Mat& get_depth_map() const { return m_depth_map; }
+    FrameType get_frame_type() const { return m_frame_type; }
+    bool is_rgbd() const { return m_frame_type == FrameType::RGBD; }
+    
+    // ⭐ RGBD RGB image storage (for dense point cloud coloring)
+    const cv::Mat& get_rgb_image() const { return m_rgb_image; }
+    void set_rgb_image(const cv::Mat& image) { m_rgb_image = image.clone(); }
+    
     const std::vector<std::shared_ptr<Feature>>& get_features() const { return m_features; }
     std::vector<std::shared_ptr<Feature>>& get_features_mutable() { return m_features; }
     const Eigen::Matrix3f& get_rotation() const { return m_rotation; }
     const Eigen::Vector3f& get_translation() const { return m_translation; }
     bool is_keyframe() const { return m_is_keyframe; }
-    bool is_stereo() const { return true; } // Always stereo
+    bool is_stereo() const { return m_frame_type == FrameType::STEREO; } // Updated to check frame type
 
     // Pose management
     void set_pose(const Eigen::Matrix3f& rotation, const Eigen::Vector3f& translation);
@@ -161,12 +192,49 @@ public:
     // Feature operations
     void extract_stereo_features(int max_features = 150);
     void compute_stereo_depth();
+    void compute_depth();  // RGBD depth computation (from depth map)
     
     // Depth operations
     double get_depth(int feature_index) const;
     void set_depth(int feature_index, double depth);
     bool has_depth(int feature_index) const;
     bool has_valid_stereo_depth(const cv::Point2f& pixel_coord) const;
+    
+    // ⭐ RGBD depth operations
+    float get_depth_at(float u, float v) const;  // Get depth at pixel coordinates
+    float get_interpolated_depth(float u, float v) const;  // Bilinear interpolation
+    bool has_valid_depth_at(float u, float v) const;  // Check if depth is valid
+    float compute_depth_uncertainty(float depth) const;  // Compute depth uncertainty
+    
+    // Depth statistics for debugging
+    struct DepthStats {
+        float min_valid_depth;
+        float max_valid_depth;
+        float mean_depth;
+        int valid_pixels;
+        int total_pixels;
+        float valid_ratio;
+    };
+    DepthStats get_depth_statistics() const;
+    
+    // ⭐ RGBD Dense Point Cloud Generation
+    struct ColoredPoint {
+        Eigen::Vector3f position;
+        Eigen::Vector3f color;  // RGB [0-1]
+    };
+    
+    std::vector<Eigen::Vector3f> generate_dense_point_cloud(
+        int stride = 1,              // Pixel sampling stride (1=all, 2=every 2nd, etc.)
+        float min_depth = 0.1f,      // Minimum valid depth
+        float max_depth = 10.0f      // Maximum valid depth
+    ) const;
+    
+    std::vector<ColoredPoint> generate_colored_point_cloud(
+        int stride = 1,
+        float min_depth = 0.1f,
+        float max_depth = 10.0f,
+        int color_mode = 1           // 0=mono(cyan), 1=rgb, 2=depth_heatmap
+    ) const;
     
     // Visualization functions (for viewer)
     cv::Mat draw_features() const;
@@ -199,8 +267,11 @@ private:
     // Frame information
     long long m_timestamp;         // Timestamp in nanoseconds
     int m_frame_id;               // Unique frame ID
-    cv::Mat m_left_image;          // Left camera grayscale image
-    cv::Mat m_right_image;         // Right camera grayscale image (always provided)
+    FrameType m_frame_type;       // ⭐ Frame type (STEREO or RGBD)
+    cv::Mat m_left_image;          // Left camera grayscale image (or RGB for RGBD)
+    cv::Mat m_right_image;         // Right camera grayscale image (stereo only)
+    cv::Mat m_depth_map;           // ⭐ Depth map (RGBD only, CV_32FC1)
+    cv::Mat m_rgb_image;           // ⭐ RGB image (RGBD only, for dense cloud coloring)
     
     // Features
     std::vector<std::shared_ptr<Feature>> m_features;      // Left camera features
@@ -270,6 +341,10 @@ private:
     void update_feature_index();
     bool is_in_border(const cv::Point2f& point, int border_size = 1) const;
     void undistort_corner_points();  // Compute undistorted image boundaries
+    
+    // ⭐ RGBD processing helpers
+    void process_depth_map(const cv::Mat& raw_depth);  // Process and validate depth map
+    void preprocess_depth_map();  // Apply filtering to depth map
     
     // Internal processing methods
     void extract_features(int max_features = 150);

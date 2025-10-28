@@ -21,6 +21,12 @@ namespace lightweight_vio
         FISHEYE
     };
 
+    enum class CameraType {
+        STEREO,
+        RGBD,
+        MONOCULAR
+    };
+
     class Config
     {
     public:
@@ -54,11 +60,17 @@ namespace lightweight_vio
         
         // Camera model accessor
         CameraModel get_camera_model() const { return m_camera_model; }
+        
+        // ⭐ Camera type accessor
+        CameraType get_camera_type() const { return m_camera_type; }
+        bool is_stereo() const { return m_camera_type == CameraType::STEREO; }
+        bool is_rgbd() const { return m_camera_type == CameraType::RGBD; }
 
         // Public member variables for simple access
 
         // Camera Model Parameters
         CameraModel m_camera_model = CameraModel::PINHOLE;
+        CameraType m_camera_type = CameraType::STEREO;  // ⭐ Default: STEREO
 
         // Feature Detection Parameters
         int m_max_features = 150;
@@ -168,6 +180,26 @@ namespace lightweight_vio
         float m_min_reprojection_error = 0.5f;         // Minimum reprojection error threshold for uncertainty calculation (pixels)
         float m_uncertainty_max_eigenvalue = 1.0f;     // Maximum eigenvalue limit for covariance scaling
         float m_uncertainty_min_eigenvalue = 0.0001f;  // Minimum eigenvalue limit for covariance scaling
+
+        // ⭐ RGBD Specific Parameters
+        float m_rgbd_depth_scale = 1000.0f;            // Depth conversion scale (default: mm to m)
+        float m_rgbd_min_depth = 0.3f;                 // Minimum valid depth (meters)
+        float m_rgbd_max_depth = 10.0f;                // Maximum valid depth (meters)
+        
+        // RGBD uncertainty model: σ² = a*d² + b*d + c
+        float m_rgbd_uncertainty_a = 0.0012f;          // Quadratic coefficient
+        float m_rgbd_uncertainty_b = 0.0019f;          // Linear coefficient
+        float m_rgbd_uncertainty_c = 0.0001f;          // Constant term
+        
+        // RGBD feature selection
+        bool m_rgbd_enable_depth_quality_check = true; // Enable depth quality check
+        float m_rgbd_min_depth_gradient_threshold = 0.1f; // Avoid depth discontinuities
+        int m_rgbd_depth_consistency_window = 3;       // Depth consistency window size
+        
+        // RGBD dense point cloud visualization
+        bool m_rgbd_enable_dense_cloud = true;         // Enable dense point cloud generation
+        int m_rgbd_dense_cloud_stride = 4;             // Pixel sampling stride (1=all, 2=every 2nd, etc.)
+        int m_rgbd_dense_cloud_color_mode = 1;         // 0=mono(cyan), 1=rgb, 2=depth_heatmap
 
     private:
         Config() = default;

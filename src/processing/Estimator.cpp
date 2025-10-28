@@ -1110,6 +1110,67 @@ std::shared_ptr<Frame> Estimator::create_frame(const cv::Mat& left_image, const 
     return frame;
 }
 
+std::shared_ptr<Frame> Estimator::create_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, long long timestamp) {
+    if (rgb_image.empty() || depth_map.empty()) {
+        return nullptr;
+    }
+    
+    // Convert RGB to grayscale if needed
+    cv::Mat gray_image;
+    if (rgb_image.channels() == 3) {
+        cv::cvtColor(rgb_image, gray_image, cv::COLOR_BGR2GRAY);
+    } else {
+        gray_image = rgb_image.clone();
+    }
+    
+    // Get camera parameters from global config
+    const auto& global_config = Config::getInstance();
+    cv::Mat K = global_config.left_camera_matrix();
+    
+    // Create RGBD frame using Frame's static factory method
+    auto frame = Frame::create_rgbd_frame(
+        timestamp,
+        m_frame_id_counter++,
+        gray_image,
+        depth_map
+    );
+    
+    if (!frame) {
+        return nullptr;
+    }
+    
+    // Set initial pose and velocity
+    if (m_previous_frame) {
+        // For non-first frames, start with previous frame pose
+        // Actual prediction will be done in process_frame() via predict_state()
+        frame->set_Twb(m_previous_frame->get_Twb());
+        
+        // Initialize velocity to zero
+        frame->set_velocity(Eigen::Vector3f::Zero());
+    } else {
+        // First frame - use ground truth pose if available, otherwise identity
+        if (m_has_initial_gt_pose) {
+            frame->set_Twb(m_initial_gt_pose);
+            Eigen::Vector3f pos = m_initial_gt_pose.block<3,1>(0,3);
+            spdlog::info("[ESTIMATOR] First RGBD frame initialized with GT pose: [{:.3f}, {:.3f}, {:.3f}]", 
+                        pos.x(), pos.y(), pos.z());
+        } else {
+            frame->set_Twb(Eigen::Matrix4f::Identity());
+            spdlog::info("[ESTIMATOR] First RGBD frame initialized at origin (no GT)");
+        }
+        
+        // First frame velocity is zero
+        frame->set_velocity(Eigen::Vector3f::Zero());
+    }
+    
+    // Inherit IMU bias from the last keyframe (if available)
+    if (m_last_keyframe && m_imu_handler) {
+        m_imu_handler->inherit_bias_from_keyframe(frame.get(), m_last_keyframe.get());
+    }
+    
+    return frame;
+}
+
 
 
 int lightweight_vio::Estimator::create_initial_map_points(std::shared_ptr<Frame> frame) {
@@ -1120,12 +1181,14 @@ int lightweight_vio::Estimator::create_initial_map_points(std::shared_ptr<Frame>
     int num_created = 0;
     const auto& features = frame->get_features();
     
+  
     // Create map points from stereo triangulated features
     for (size_t i = 0; i < features.size(); ++i) {
         auto feature = features[i];
         if (feature && feature->is_valid() && frame->has_depth(i)) {
             // Get 3D point in camera frame from stereo triangulation
             Eigen::Vector3f camera_3d_point = feature->get_3d_point();
+
             if (camera_3d_point.isZero()) {
                 continue;  // Skip if no valid 3D point
             }
@@ -2072,6 +2135,166 @@ void lightweight_vio::Estimator::debug_keyframe_to_keyframe_comparison()
             }
         }
     }
+}
+
+// ⭐ ========================================================================
+// RGBD Frame Processing
+// ========================================================================
+
+Estimator::EstimationResult Estimator::process_rgbd_frame(
+    const cv::Mat& rgb_image, 
+    const cv::Mat& depth_map, 
+    long long timestamp) 
+{
+    EstimationResult result;
+    
+    // Check if VIO mode (RGBD only supports VO for now)
+    const Config& config = Config::getInstance();
+    if (config.m_system_mode == "VIO") {
+        spdlog::warn("RGBD frame processing is only supported in VO mode");
+        result.success = false;
+        return result;
+    }
+    
+    // Create RGBD frame using Estimator's create_rgbd_frame method
+    auto current_frame = create_rgbd_frame(rgb_image, depth_map, timestamp);
+    if (!current_frame) {
+        spdlog::error("[ESTIMATOR] Failed to create RGBD frame!");
+        result.success = false;
+        return result;
+    }
+    m_current_frame = current_frame;  // ⭐ Set m_current_frame so get_current_frame() works!
+    
+    // Feature extraction (from RGB image)
+    auto extract_start = std::chrono::high_resolution_clock::now();
+    m_feature_tracker->track_features(current_frame, m_previous_frame);
+    auto extract_end = std::chrono::high_resolution_clock::now();
+    double extraction_time = std::chrono::duration<double, std::milli>(extract_end - extract_start).count();
+    
+    // ⭐ Compute 3D coordinates using depth map (back-projection)
+    int valid_3d = m_feature_tracker->compute_rgbd_3d(current_frame);
+    
+    // ⭐ Update depth array from depth map (similar to compute_stereo_depth for stereo)
+    current_frame->compute_depth();
+    
+    if (config.m_enable_debug_output) {
+        spdlog::info("Frame {}: Extracted {} features, {} with valid 3D", 
+                     current_frame->get_frame_id(), 
+                     current_frame->get_feature_count(),
+                     valid_3d);
+    }
+    
+    // ========== FIRST FRAME INITIALIZATION ==========
+    if (!m_previous_frame) {
+        // First frame - pose already set during frame creation (identity or GT)
+        // Do NOT overwrite the pose here
+        m_current_pose = current_frame->get_Twb();
+        
+        // Create initial map points from RGBD features
+        int initial_map_points = create_initial_map_points(current_frame);
+            spdlog::info("Frame [RGBD] {}: Created {} initial map points (first frame)", 
+                         current_frame->get_frame_id(), initial_map_points);
+        
+        // First frame is always a keyframe
+        current_frame->set_keyframe(true);
+        create_keyframe(current_frame);
+        
+        // Update state
+        m_previous_frame = current_frame;
+        
+        // Fill result
+        result.success = true;
+        result.pose = m_current_pose;
+        result.num_features = current_frame->get_feature_count();
+        result.num_tracked_features = valid_3d;
+        result.num_new_map_points = initial_map_points;
+        
+        return result;
+    }
+    
+    // ========== SUBSEQUENT FRAMES ==========
+    // Estimate pose using PnP if we have enough 3D-2D correspondences
+    bool pose_estimated = false;
+
+    if (config.m_enable_debug_output) {
+        spdlog::info("Processing RGBD Frame {}: Valid 3D points = {}", current_frame->get_frame_id(), valid_3d);
+    }
+    
+    if (valid_3d >= 8) {
+        auto pnp_start = std::chrono::high_resolution_clock::now();
+        auto opt_result = optimize_pose(current_frame);
+        pose_estimated = opt_result.success;
+        auto pnp_end = std::chrono::high_resolution_clock::now();
+        result.optimization_time_ms = std::chrono::duration<double, std::milli>(pnp_end - pnp_start).count();
+        
+        if (pose_estimated && config.m_enable_debug_output) {
+            Eigen::Matrix4f pose = current_frame->get_Twb();
+            spdlog::info("Frame {}: PnP success, position: [{:.3f}, {:.3f}, {:.3f}]",
+                         current_frame->get_frame_id(),
+                         pose(0,3), pose(1,3), pose(2,3));
+        }
+    } else {
+        // Not enough features - keep previous pose
+        current_frame->set_Twb(m_previous_frame->get_Twb());
+        pose_estimated = false;
+        spdlog::warn("Frame {}: Not enough 3D features for PnP ({}), keeping previous pose", 
+                     current_frame->get_frame_id(), valid_3d);
+    }
+    
+    // Create map points for features with 3D coordinates (after pose estimation)
+    int new_map_points = create_new_map_points(current_frame);
+    
+    // Keyframe decision
+    bool is_keyframe = should_create_keyframe(current_frame);
+    if (is_keyframe) {
+        current_frame->set_keyframe(true);
+        create_keyframe(current_frame);
+        
+        if (config.m_enable_debug_output) {
+            spdlog::info("Frame {}: Created keyframe (total: {})", 
+                         current_frame->get_frame_id(), m_keyframes.size());
+        }
+        
+        // Trigger sliding window optimization if needed
+        if (m_keyframes.size() >= 3) {
+            notify_sliding_window_thread();
+        }
+    }
+    
+    // Update state
+    m_previous_frame = current_frame;
+    m_current_pose = current_frame->get_Twb();
+    
+    // Fill result
+    result.success = pose_estimated;
+    result.pose = m_current_pose;
+    result.num_features = current_frame->get_feature_count();
+    result.num_tracked_features = valid_3d;
+    
+    // Count inliers/outliers from map points
+    int num_inliers = 0;
+    int num_outliers = 0;
+    int num_with_map_points = 0;
+    
+    const auto& outlier_flags = current_frame->get_outlier_flags();
+    const auto& map_points = current_frame->get_map_points();
+    
+    for (size_t i = 0; i < map_points.size(); ++i) {
+        if (map_points[i]) {
+            num_with_map_points++;
+            if (i < outlier_flags.size() && outlier_flags[i]) {
+                num_outliers++;
+            } else {
+                num_inliers++;
+            }
+        }
+    }
+    
+    result.num_inliers = num_inliers;
+    result.num_outliers = num_outliers;
+    result.num_features_with_map_points = num_with_map_points;
+    
+    return result;
 }
 
 } // namespace lightweight_vio

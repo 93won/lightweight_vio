@@ -93,6 +93,8 @@ bool PnPFactor::Evaluate(double const* const* parameters, double* residuals, dou
         residuals[0] = residual_vec[0];
         residuals[1] = residual_vec[1];
     }
+
+
     
     // Compute analytical jacobians if requested
     if (jacobians && jacobians[0]) {

@@ -60,6 +60,9 @@ public:
     // Fundamental matrix RANSAC filtering
     void apply_fundamental_matrix_filter(std::shared_ptr<Frame> current_frame, 
                                        std::shared_ptr<Frame> previous_frame);
+    
+    // ⭐ RGBD-specific 3D computation
+    int compute_rgbd_3d(std::shared_ptr<Frame> frame);
 
 private:
     // Configuration reference
