@@ -62,19 +62,18 @@ RGBDPlayerResult RGBDPlayer::run(const RGBDPlayerConfig& config) {
         size_t start_frame_idx = 0;
         size_t end_frame_idx = image_data.size();
         
-        // 3. Setup ground truth if available
-        if (!setup_ground_truth_matching(config.dataset_path, image_data, start_frame_idx, end_frame_idx)) {
-            spdlog::warn("[RGBDPlayer] Failed to setup ground truth matching, using all frames");
-        }
+        // Try to setup ground truth matching (optional)
+        setup_ground_truth_matching(config.dataset_path, image_data, start_frame_idx, end_frame_idx);
         
-        // 4. Initialize systems
+        // 3. Initialize systems
         auto viewer = initialize_viewer(config);
         Estimator estimator;
         
-        // 5. Process frames
+        // 4. Process frames
         RGBDFrameContext context;
         context.step_mode = config.step_mode;
         context.auto_play = !config.step_mode;  // auto_play is opposite of step_mode
+        context.gt_poses = matched_gt_poses_;  // ⭐ Pass matched GT poses to context
         
         initialize_estimator(estimator, context);
         
@@ -148,12 +147,7 @@ RGBDPlayerResult RGBDPlayer::run(const RGBDPlayerConfig& config) {
         }
         
         // 6. Save results
-        if (config.enable_statistics) {
-            save_trajectories(estimator, context, config.dataset_path, config.use_vio_mode);
-            result.error_stats = analyze_transform_errors(estimator, context.gt_poses, config.use_vio_mode);
-            result.velocity_stats = analyze_velocity_statistics(estimator, context.gt_poses);
-            save_statistics(result, config.dataset_path, config.use_vio_mode);
-        }
+        save_trajectories(estimator, context, config.dataset_path, config.use_vio_mode);
         
         // 7. Calculate final statistics
         result.success = true;
@@ -178,30 +172,6 @@ RGBDPlayerResult RGBDPlayer::run(const RGBDPlayerConfig& config) {
             spdlog::info(" Average Processing Time: {:.2f}ms", result.average_processing_time_ms);
             double fps = 1000.0 / result.average_processing_time_ms;
             spdlog::info(" Average Frame Rate: {:.1f}fps", fps);
-            spdlog::info("");
-            
-            if (result.error_stats.available) {
-                spdlog::info("               FRAME-TO-FRAME TRANSFORM ERROR ANALYSIS              ");
-                spdlog::info("════════════════════════════════════════════════════════════════════");
-                spdlog::info(" Total Frame Pairs Analyzed: {} (all_frames: {}, gt_poses: {})", 
-                            result.error_stats.total_frame_pairs, result.error_stats.total_frames, 
-                            result.error_stats.gt_poses_count);
-                spdlog::info("");
-                spdlog::info("                     ROTATION ERROR STATISTICS                    ");
-                spdlog::info(" Mean      : {:>10.4f}°", result.error_stats.rotation_mean);
-                spdlog::info(" Median    : {:>10.4f}°", result.error_stats.rotation_median);
-                spdlog::info(" Minimum   : {:>10.4f}°", result.error_stats.rotation_min);
-                spdlog::info(" Maximum   : {:>10.4f}°", result.error_stats.rotation_max);
-                spdlog::info(" RMSE      : {:>10.4f}°", result.error_stats.rotation_rmse);
-                spdlog::info("");
-                spdlog::info("                   TRANSLATION ERROR STATISTICS                   ");
-                spdlog::info(" Mean      : {:>10.6f}m", result.error_stats.translation_mean);
-                spdlog::info(" Median    : {:>10.6f}m", result.error_stats.translation_median);
-                spdlog::info(" Minimum   : {:>10.6f}m", result.error_stats.translation_min);
-                spdlog::info(" Maximum   : {:>10.6f}m", result.error_stats.translation_max);
-                spdlog::info(" RMSE      : {:>10.6f}m", result.error_stats.translation_rmse);
-            }
-            
             spdlog::info("════════════════════════════════════════════════════════════════════");
         }
         
@@ -376,8 +346,15 @@ bool RGBDPlayer::setup_ground_truth_matching(const std::string& dataset_path,
                                             const std::vector<RGBDImageData>& image_data,
                                             size_t& start_frame_idx,
                                             size_t& end_frame_idx) {
-    // Load EuRoC format ground truth data from gt.csv
-    if (!load_ground_truth_euroc_format(dataset_path)) {
+    // Try TUM format first (ground_truth.txt)
+    if (load_ground_truth_tum_format(dataset_path)) {
+        spdlog::info("[RGBDPlayer] Using TUM format ground truth (ground_truth.txt)");
+    }
+    // Fallback to EuRoC format (gt.csv)
+    else if (load_ground_truth_euroc_format(dataset_path)) {
+        spdlog::info("[RGBDPlayer] Using EuRoC format ground truth (gt.csv)");
+    }
+    else {
         spdlog::warn("[RGBDPlayer] Failed to load ground truth data, continuing without it");
         return false;
     }
@@ -505,6 +482,73 @@ bool RGBDPlayer::load_ground_truth_euroc_format(const std::string& dataset_path)
     return !gt_data_.empty();
 }
 
+bool RGBDPlayer::load_ground_truth_tum_format(const std::string& dataset_path) {
+    std::string gt_file_path = dataset_path + "/ground_truth.txt";
+    
+    std::ifstream file(gt_file_path);
+    if (!file.is_open()) {
+        // Not an error, just no TUM format GT available
+        return false;
+    }
+    
+    std::string line;
+    gt_data_.clear();
+    
+    int line_count = 0;
+    while (std::getline(file, line)) {
+        line_count++;
+        
+        // Skip comments and empty lines
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        
+        std::istringstream iss(line);
+        std::vector<double> values;
+        double value;
+        
+        // Parse space-separated values
+        while (iss >> value) {
+            values.push_back(value);
+        }
+        
+        // TUM format: timestamp tx ty tz qx qy qz qw (8 values)
+        if (values.size() < 8) {
+            spdlog::warn("[RGBDPlayer] Incomplete data in line {}, got {} values, expected 8", line_count, values.size());
+            continue;
+        }
+        
+        GroundTruthPose gt_pose;
+        
+        // Extract timestamp (convert seconds to nanoseconds)
+        gt_pose.timestamp = static_cast<long long>(values[0] * 1e9);
+        
+        // Extract position
+        Eigen::Vector3f position(values[1], values[2], values[3]);
+        
+        // Extract quaternion (TUM format: qx qy qz qw)
+        Eigen::Quaternionf quaternion(values[7], values[4], values[5], values[6]);  // w,x,y,z format
+        
+        // Create 4x4 transformation matrix (T_WB - world to body)
+        Eigen::Matrix4f T_WB = Eigen::Matrix4f::Identity();
+        T_WB.block<3,3>(0,0) = quaternion.toRotationMatrix();
+        T_WB.block<3,1>(0,3) = position;
+        
+        gt_pose.pose = T_WB;
+        
+        // No velocity/bias data in TUM format
+        gt_pose.velocity = Eigen::Vector3f::Zero();
+        gt_pose.bias_gyro = Eigen::Vector3f::Zero();
+        gt_pose.bias_accel = Eigen::Vector3f::Zero();
+        
+        gt_data_.push_back(gt_pose);
+    }
+    
+    file.close();
+    spdlog::info("[RGBDPlayer] Loaded {} ground truth poses from {} (TUM format)", gt_data_.size(), gt_file_path);
+    return !gt_data_.empty();
+}
+
 bool RGBDPlayer::match_image_timestamps_with_gt(const std::vector<long long>& image_timestamps) {
     if (gt_data_.empty() || image_timestamps.empty()) {
         return false;
@@ -544,6 +588,16 @@ bool RGBDPlayer::match_image_timestamps_with_gt(const std::vector<long long>& im
     
     spdlog::info("[RGBDPlayer] Matched {}/{} image timestamps with ground truth", 
                 matched_gt_poses_.size(), image_timestamps.size());
+    
+    // ⭐ Set first matched GT pose for initialization
+    if (!matched_gt_poses_.empty()) {
+        first_matched_gt_pose_ = matched_gt_poses_[0];
+        has_first_matched_gt_pose_ = true;
+        
+        Eigen::Vector3f first_pos = first_matched_gt_pose_.block<3,1>(0,3);
+        spdlog::info("[RGBDPlayer] First matched GT pose at: [{:.3f}, {:.3f}, {:.3f}]",
+                    first_pos.x(), first_pos.y(), first_pos.z());
+    }
     
     return !matched_gt_poses_.empty();
 }
@@ -616,11 +670,19 @@ double RGBDPlayer::process_single_frame(Estimator& estimator,
     estimator.process_rgbd_frame(processed_gray, depth_image, image_data[context.current_idx].timestamp);
     
     // IMPORTANT: Store original RGB image in the frame (for dense point cloud coloring)
+    // Use std::move to transfer ownership and avoid extra copy
     auto current_frame = estimator.get_current_frame();
     if (current_frame && current_frame->is_rgbd()) {
-        // Store original RGB image separately (m_left_image remains grayscale for optical flow)
-        current_frame->set_rgb_image(rgb_image);
+        // Move RGB image to frame (no clone, ownership transferred)
+        current_frame->set_rgb_image(std::move(rgb_image));
     }
+    
+    // Release player's local image memory after passing to estimator
+    // Note: rgb_image is already moved, but still call release for safety
+    rgb_image.release();
+    depth_image.release();
+    gray_image.release();
+    processed_gray.release();
     
     // Handle ground truth pose matching
     if (context.processed_frames < matched_gt_poses_.size()) {
@@ -666,12 +728,9 @@ bool RGBDPlayer::handle_viewer_controls(PangolinViewer& viewer, RGBDFrameContext
 void RGBDPlayer::update_viewer(PangolinViewer& viewer,
                               const Estimator& estimator,
                               const RGBDFrameContext& context) {
-    spdlog::info("[RGBDPlayer] update_viewer() called for frame {}", context.processed_frames + 1);
-    
     // Try to get current frame, if null try to get from all frames or keyframes
     auto current_frame = estimator.get_current_frame();
     if (!current_frame) {
-        spdlog::warn("[RGBDPlayer] current_frame is nullptr, trying to get last frame from all_frames");
         const auto& all_frames = estimator.get_all_frames();
         if (!all_frames.empty()) {
             current_frame = all_frames.back();
@@ -679,7 +738,6 @@ void RGBDPlayer::update_viewer(PangolinViewer& viewer,
     }
     
     if (!current_frame) {
-        spdlog::warn("[RGBDPlayer] Still no frame, trying to get from keyframes");
         const auto keyframes = estimator.get_keyframes_safe();
         if (!keyframes.empty()) {
             current_frame = keyframes.back();
@@ -690,8 +748,6 @@ void RGBDPlayer::update_viewer(PangolinViewer& viewer,
         spdlog::error("[RGBDPlayer] Cannot get any frame! Skipping viewer update");
         return;
     }
-    
-    spdlog::info("[RGBDPlayer] current_frame valid, proceeding to update viewer");
     
     // Update poses
     Eigen::Matrix4f current_pose = current_frame->get_Twb();
@@ -704,10 +760,13 @@ void RGBDPlayer::update_viewer(PangolinViewer& viewer,
     auto trajectory_positions = extract_positions_from_poses(trajectory_poses);
     viewer.update_trajectory(trajectory_positions);
     
-    if (context.processed_frames % 50 == 0) {
-        spdlog::info("[RGBDPlayer] Trajectory has {} poses, current position: [{:.3f}, {:.3f}, {:.3f}]", 
-                     trajectory_poses.size(),
-                     current_pose(0, 3), current_pose(1, 3), current_pose(2, 3));
+    // ⭐ Update ground truth trajectory (only once or when changed)
+    static bool gt_trajectory_sent = false;
+    if (!gt_trajectory_sent && !matched_gt_poses_.empty()) {
+        auto gt_positions = extract_positions_from_poses(matched_gt_poses_);
+        viewer.update_ground_truth_trajectory(gt_positions);
+        gt_trajectory_sent = true;
+        spdlog::info("[RGBDPlayer] Sent {} GT trajectory points to viewer", gt_positions.size());
     }
     
     // Update frame and keyframes
@@ -730,10 +789,6 @@ void RGBDPlayer::update_viewer(PangolinViewer& viewer,
     
     all_map_points.assign(unique_map_points.begin(), unique_map_points.end());
     viewer.update_all_map_points(all_map_points);
-    
-    if (context.processed_frames % 50 == 0) {
-        spdlog::info("[RGBDPlayer] Keyframes: {}, Map points: {}", keyframes.size(), all_map_points.size());
-    }
     
     // Update tracking statistics
     int total_features = current_frame->get_feature_count();
@@ -768,9 +823,7 @@ void RGBDPlayer::update_viewer(PangolinViewer& viewer,
         viewer.update_depth_image(current_frame);  // ⭐ Add depth heatmap
     }
     
-    spdlog::info("[RGBDPlayer] Calling viewer.render() for frame {}", context.processed_frames + 1);
     viewer.render();
-    spdlog::info("[RGBDPlayer] viewer.render() completed");
 }
 
 void RGBDPlayer::save_trajectories(const Estimator& estimator,

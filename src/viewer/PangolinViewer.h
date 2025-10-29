@@ -55,8 +55,9 @@ public:
     // Data updates
     void update_points(const std::vector<Eigen::Vector3f>& points);
     void update_pose(const Eigen::Matrix4f& pose);
-    void update_camera_pose(const Eigen::Matrix4f& T_wc);  // Update current frame camera pose
+    void update_camera_pose(const Eigen::Matrix4f& T_wc);
     void update_trajectory(const std::vector<Eigen::Vector3f>& trajectory);
+    void update_ground_truth_trajectory(const std::vector<Eigen::Vector3f>& gt_trajectory);  // ⭐ NEW
     void update_keyframe_poses(const std::vector<Eigen::Matrix4f>& keyframe_poses);
     
     // Map point updates with color differentiation
@@ -158,6 +159,7 @@ private:
     // Data storage
     std::vector<Eigen::Vector3f> m_points;
     std::vector<Eigen::Vector3f> m_trajectory;
+    std::vector<Eigen::Vector3f> m_gt_trajectory;  // ⭐ Ground truth trajectory
     std::vector<Eigen::Matrix4f> m_keyframe_poses;  // Store full poses for frustum drawing
     Eigen::Matrix4f m_current_pose;
     Eigen::Matrix4f m_current_camera_pose;  // Store current frame camera pose (T_wc)
@@ -185,7 +187,8 @@ private:
     
     // ⭐ Dense point cloud data (RGBD only)
     std::vector<Eigen::Vector3f> m_dense_point_cloud;
-    std::vector<Eigen::Vector3f> m_dense_point_colors;
+    std::vector<Eigen::Vector3f> m_dense_point_colors_rgb;   // RGB colors
+    std::vector<float> m_dense_point_depths;                  // Depth values for heatmap
     
     // Thread safety
     mutable std::mutex m_data_mutex;
@@ -231,6 +234,7 @@ private:
     pangolin::Var<bool> m_show_uncertainty_ellipsoids;  // New UI control
     pangolin::Var<bool> m_show_observation_point_clouds;  // Multi-view observation visualization
     pangolin::Var<bool> m_show_dense_point_cloud;  // ⭐ RGBD dense cloud visualization
+    pangolin::Var<bool> m_toggle_dense_color_mode;  // Toggle between RGB and Depth Heatmap
     mutable bool m_step_forward_pressed;
     mutable bool m_finish_pressed;
     

@@ -69,8 +69,8 @@ int main(int argc, char* argv[]) {
     spdlog::info("  viewer_height: {}", config.viewer_height);
     spdlog::info("  depth_scale: {}", Config::getInstance().m_rgbd_depth_scale);
     spdlog::info("  depth_range: [{}, {}] m", 
-                 Config::getInstance().m_rgbd_min_depth,
-                 Config::getInstance().m_rgbd_max_depth);
+                 Config::getInstance().m_min_depth,
+                 Config::getInstance().m_max_depth);
     
     // Create and run RGBD player
     RGBDPlayer player;

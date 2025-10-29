@@ -57,8 +57,8 @@ PangolinViewer::PangolinViewer()
     , m_show_trajectory(true)
     , m_show_keyframe_frustums(true)
     , m_show_camera_frustum(true)
-    , m_show_grid(true)
-    , m_show_axis(true)
+    , m_show_grid(false)
+    , m_show_axis(false)
     , m_follow_camera(true)
     , m_point_size(3.0f)
     , m_trajectory_width(2.0f)
@@ -67,7 +67,7 @@ PangolinViewer::PangolinViewer()
     , m_min_uncertainty_size(0.01f)
     , m_frame_id("ui.Frame ID", 0)
     , m_successful_matches("ui.Num Tracked Map Points", 0, 0, get_max_features_from_config())
-    , m_auto_mode_checkbox("ui.1. Auto Mode", true, true)
+    , m_auto_mode_checkbox("ui.1. Auto Mode", false, true)
     , m_show_map_point_indices("ui.2. Show Map Point IDs", true, true)
     , m_show_accumulated_map_points("ui.3. Show Local Map Points", true, true)
     , m_show_current_map_points("ui.4. Show Current Map Points", true, true)
@@ -76,9 +76,10 @@ PangolinViewer::PangolinViewer()
     , m_follow_frame_checkbox("ui.7. Follow Frame", true, true)
     , m_step_forward_button("ui.8. Step Forward", false, false)
     , m_finish_button("ui.9. Finish & Exit", false, false)
-    , m_show_uncertainty_ellipsoids("ui.10. Show Uncertainty Ellipsoids", true, true)
+    , m_show_uncertainty_ellipsoids("ui.10. Show Uncertainty Ellipsoids", false, true)
     , m_show_observation_point_clouds("ui.11. Show Observation Point Clouds", true, true)
     , m_show_dense_point_cloud("ui.12. Show Dense Point Cloud (RGBD)", true, true)
+    , m_toggle_dense_color_mode("ui.13. Toggle Dense Color (RGB/Depth)", false, false)
     , m_step_forward_pressed(false)
     , m_finish_pressed(false)
     , m_previous_follow_frame_state(true)  // Initialize to true since follow frame starts enabled
@@ -357,43 +358,58 @@ void PangolinViewer::render() {
     // Process keyboard input - will be handled externally
     // Note: Space bar and 'n' key handling is done in the main application loop
 
-    // Follow Frame mode - use current frame directly for most accurate pose
+    // ===== Follow Frame Mode (Camera Following) =====
+    // This mode makes the viewer camera follow the current frame position
+    // while still allowing user to zoom and rotate around it
+    static bool was_follow_active = false;  // Track follow mode state across frames
+    
+    // Follow Frame mode - based on ORB-SLAM2 implementation
+    static bool bFollow = false;       // Track if currently following
+    static bool bFirstTime = true;     // Track if this is the first time ever
+    
     if (m_follow_frame_checkbox && m_current_frame) {
-        // Get T_wc (world to camera) from current frame
+        // Get camera-to-world transformation
         Eigen::Matrix4f T_wc = m_current_frame->get_Twc();
         
-        Eigen::Vector3f cam_pos = T_wc.block<3, 1>(0, 3);
-        Eigen::Matrix3f cam_rot = T_wc.block<3, 3>(0, 0);
+        // Convert Eigen matrix to Pangolin OpenGL matrix
+        pangolin::OpenGlMatrix Twc_gl(T_wc);
         
-        // Camera coordinate system in OpenCV/SLAM: X-right, Y-down, Z-forward
-        // We want to place viewer behind (-Z) and above (-Y which is up)
-        Eigen::Vector3f cam_forward = cam_rot.col(2);   // +Z forward
-        Eigen::Vector3f cam_up = -cam_rot.col(1);       // -Y is up (Y is down in camera frame)
-        
-        // Place viewer behind and above the camera
-        float distance = 2.5f;   // Distance behind camera
-        float height = 1.2f;     // Height above camera
-        Eigen::Vector3f viewer_position = cam_pos - cam_forward * distance + cam_up * height;
-        
-        // Look at current camera position
-        Eigen::Vector3f look_at_point = cam_pos;
-        
-        // Use world Z-up as the up vector for stable view
-        Eigen::Vector3f up_vector(0.0f, 0.0f, 1.0f);
-        
-        // Set the view matrix directly
-        s_cam.SetModelViewMatrix(pangolin::ModelViewLookAt(
-            viewer_position.x(), viewer_position.y(), viewer_position.z(),
-            look_at_point.x(), look_at_point.y(), look_at_point.z(),
-            up_vector.x(), up_vector.y(), up_vector.z()
-        ));
+        if (bFollow) {
+            // Already following - just continue following
+            s_cam.Follow(Twc_gl);
+        } else 
+        {
+            // Just turned on
+            if (bFirstTime) {
+                // First time ever - set initial view based on current camera pose
+                Eigen::Vector3f cam_pos = T_wc.block<3, 1>(0, 3);
+                Eigen::Matrix3f R_wc = T_wc.block<3, 3>(0, 0);
+                
+                // Camera frame axes in world coordinates
+                Eigen::Vector3f cam_z = R_wc.col(2);  // Forward direction
+                Eigen::Vector3f cam_y = R_wc.col(1);  // Down direction
+                
+                // Place viewer behind and above the camera
+                Eigen::Vector3f viewer_pos = cam_pos 
+                    - cam_z * 4.0f   // 2m behind camera
+                    - cam_y * 2.0f;  // 1m above camera
+                
+                pangolin::OpenGlMatrix initial_view = pangolin::ModelViewLookAt(
+                    viewer_pos.x(), viewer_pos.y(), viewer_pos.z(),
+                    cam_pos.x(), cam_pos.y(), cam_pos.z(),
+                    -cam_y.x(), -cam_y.y(), -cam_y.z()
+                );
+                s_cam.SetModelViewMatrix(initial_view);
+                bFirstTime = false;
+            }
+            s_cam.Follow(Twc_gl);
+            bFollow = true;
+        }
+    } else if (bFollow) {
+        // Just turned off - stop following (don't call Follow anymore)
+        bFollow = false;
     }
 
-    // Legacy follow camera mode (fallback)
-    if (m_follow_camera && !m_current_pose.isZero() && !m_follow_frame_checkbox) {
-        Eigen::Vector3f pos = m_current_pose.block<3, 1>(0, 3);
-        s_cam.Follow(pangolin::OpenGlMatrix::Translate(pos.x(), pos.y(), pos.z()));
-    }
 
     // Ensure UI text is rendered in white for dark theme
     glColor3f(1.0f, 1.0f, 1.0f);
@@ -645,7 +661,7 @@ void PangolinViewer::draw_map_points() {
    
     // Draw current frame tracking points in red (highest priority - overlay on top)
     if (!m_current_map_points.empty() && m_show_current_map_points) {
-        glPointSize(m_point_size * 4.0f); // Largest for visibility
+        glPointSize(m_point_size * 2.0f); // Largest for visibility
         glColor3f(1.0f, 0.0f, 0.0f); // Red for current frame tracking points
         
         glBegin(GL_POINTS);
@@ -679,6 +695,18 @@ void PangolinViewer::draw_trajectory() {
         }
     }
     glEnd();
+    
+    // ⭐ Draw ground truth trajectory (Green, thicker, semi-transparent)
+    if (m_gt_trajectory.size() >= 2) {
+        glLineWidth(m_trajectory_width * 1.5f);  // Slightly thicker
+        glColor4f(0.0f, 1.0f, 0.0f, 0.5f); // Green with 0.5 alpha
+        
+        glBegin(GL_LINE_STRIP);
+        for (const auto& pos : m_gt_trajectory) {
+            glVertex3f(pos.x(), pos.y(), pos.z());
+        }
+        glEnd();
+    }
     
     // Disable blending after drawing
     glDisable(GL_BLEND);
@@ -847,6 +875,10 @@ pangolin::GlTexture PangolinViewer::create_texture_from_cv_mat(const cv::Mat& ma
     tex.Reinitialise(flipped_mat.cols, flipped_mat.rows, GL_RGB, false, 0, GL_RGB, GL_UNSIGNED_BYTE);
     tex.Upload(flipped_mat.ptr(), GL_RGB, GL_UNSIGNED_BYTE);
     
+    // Release temporary cv::Mat objects to free memory immediately
+    rgb_mat.release();
+    flipped_mat.release();
+    
     return tex;
 }
 
@@ -865,6 +897,10 @@ void PangolinViewer::update_camera_pose(const Eigen::Matrix4f& T_wc) {
 
 void PangolinViewer::update_trajectory(const std::vector<Eigen::Vector3f>& trajectory) {
     m_trajectory = trajectory;
+}
+
+void PangolinViewer::update_ground_truth_trajectory(const std::vector<Eigen::Vector3f>& gt_trajectory) {
+    m_gt_trajectory = gt_trajectory;
 }
 
 // DEPRECATED: Use update_keyframe_window() instead
@@ -929,6 +965,9 @@ void PangolinViewer::update_tracking_image_with_map_points(const cv::Mat& image,
     // Convert to texture
     m_tracking_image = create_texture_from_cv_mat(image_with_grid);
     m_has_tracking_image = true;
+    
+    // Release temporary cv::Mat to free memory immediately
+    image_with_grid.release();
 
     // The bounds and aspect ratio are now handled exclusively by setup_panels().
     // This function is only responsible for updating the texture.
@@ -983,6 +1022,9 @@ void PangolinViewer::update_tracking_with_frame(std::shared_ptr<Frame> frame) {
     m_tracking_image = create_texture_from_cv_mat(display_image);
     m_has_tracking_image = true;
     
+    // Release temporary cv::Mat to free memory immediately
+    display_image.release();
+    
     // Clear OpenGL feature storage (not used anymore)
     m_current_features.clear();
     m_current_feature_colors.clear();
@@ -1002,6 +1044,9 @@ void PangolinViewer::update_tracking_image_direct(const cv::Mat& raw_image,
     // Just update the texture with raw image - features will be rendered by OpenGL
     m_tracking_image = create_texture_from_cv_mat(display_image);
     m_has_tracking_image = true;
+    
+    // Release temporary cv::Mat to free memory immediately
+    display_image.release();
     
     // Debug: Print feature count
     spdlog::info("Updated tracking image: {}x{}, {} features", 
@@ -1073,6 +1118,9 @@ void PangolinViewer::update_tracking_image_with_uncertainty_debug(const cv::Mat&
     // Convert to texture
     m_tracking_image = create_texture_from_cv_mat(image_with_debug);
     m_has_tracking_image = true;
+    
+    // Release temporary cv::Mat to free memory immediately
+    image_with_debug.release();
 }
 
 void PangolinViewer::update_uncertainty_debug_image(const cv::Mat& image) {
@@ -1722,38 +1770,47 @@ void PangolinViewer::update_dense_point_cloud(std::shared_ptr<Frame> frame) {
     if (!config.m_rgbd_enable_dense_cloud) {
         std::lock_guard<std::mutex> lock(m_data_mutex);
         m_dense_point_cloud.clear();
-        m_dense_point_colors.clear();
+        m_dense_point_cloud.shrink_to_fit();
+        m_dense_point_colors_rgb.clear();
+        m_dense_point_colors_rgb.shrink_to_fit();
+        m_dense_point_depths.clear();
+        m_dense_point_depths.shrink_to_fit();
         return;
     }
     
     // Get parameters from config
     int stride = config.m_rgbd_dense_cloud_stride;
-    float min_depth = config.m_rgbd_min_depth;
-    float max_depth = config.m_rgbd_max_depth;
-    int color_mode = config.m_rgbd_dense_cloud_color_mode;
+    float min_depth = config.m_min_depth;
+    float max_depth = config.m_max_depth;
     
-    // Generate colored point cloud
-    auto colored_points = frame->generate_colored_point_cloud(stride, min_depth, max_depth, color_mode);
+    // Generate colored point cloud with RGB colors (color_mode=1)
+    auto colored_points = frame->generate_colored_point_cloud(stride, min_depth, max_depth, 1);
     
     // Update storage (thread-safe)
     std::lock_guard<std::mutex> lock(m_data_mutex);
     
+    // Clear and shrink previous data to release memory
     m_dense_point_cloud.clear();
-    m_dense_point_colors.clear();
+    m_dense_point_cloud.shrink_to_fit();
+    m_dense_point_colors_rgb.clear();
+    m_dense_point_colors_rgb.shrink_to_fit();
+    m_dense_point_depths.clear();
+    m_dense_point_depths.shrink_to_fit();
     
+    // Move data instead of copying
     m_dense_point_cloud.reserve(colored_points.size());
-    m_dense_point_colors.reserve(colored_points.size());
+    m_dense_point_colors_rgb.reserve(colored_points.size());
+    m_dense_point_depths.reserve(colored_points.size());
     
-    for (const auto& cp : colored_points) {
-        m_dense_point_cloud.push_back(cp.position);
-        m_dense_point_colors.push_back(cp.color);
+    for (auto& cp : colored_points) {
+        m_dense_point_cloud.push_back(std::move(cp.position));
+        m_dense_point_colors_rgb.push_back(std::move(cp.color));
+        m_dense_point_depths.push_back(cp.depth);
     }
     
-    // Debug info
-    if (!colored_points.empty()) {
-        spdlog::debug("[PangolinViewer] Updated dense point cloud: {} points (stride={}, color_mode={})",
-                     colored_points.size(), stride, color_mode);
-    }
+    // Shrink colored_points to release temporary memory
+    colored_points.clear();
+    colored_points.shrink_to_fit();
 }
 
 void PangolinViewer::draw_dense_point_cloud() {
@@ -1768,18 +1825,18 @@ void PangolinViewer::draw_dense_point_cloud() {
     
     glBegin(GL_POINTS);
     
-    if (m_dense_point_colors.empty()) {
-        // No color info - use default cyan
-        glColor3f(0.0f, 1.0f, 1.0f);
-        for (const auto& pt : m_dense_point_cloud) {
+    // Always use RGB colors from image
+    if (!m_dense_point_colors_rgb.empty()) {
+        for (size_t i = 0; i < m_dense_point_cloud.size(); ++i) {
+            const auto& pt = m_dense_point_cloud[i];
+            const auto& color = m_dense_point_colors_rgb[i];
+            glColor3f(color.x(), color.y(), color.z());
             glVertex3f(pt.x(), pt.y(), pt.z());
         }
     } else {
-        // Render with colors
-        for (size_t i = 0; i < m_dense_point_cloud.size(); ++i) {
-            const auto& pt = m_dense_point_cloud[i];
-            const auto& color = m_dense_point_colors[i];
-            glColor3f(color.x(), color.y(), color.z());
+        // Fallback to cyan if no RGB data
+        glColor3f(0.0f, 1.0f, 1.0f);
+        for (const auto& pt : m_dense_point_cloud) {
             glVertex3f(pt.x(), pt.y(), pt.z());
         }
     }
@@ -1802,8 +1859,8 @@ void PangolinViewer::update_depth_image(std::shared_ptr<Frame> frame) {
     }
     
     const Config& config = Config::getInstance();
-    float min_depth = config.m_rgbd_min_depth;
-    float max_depth = 20.0f;  // Fixed at 20m for better visualization
+    float min_depth = config.m_rgbd_vis_min_depth;  // Use vis_min_depth from config
+    float max_depth = config.m_rgbd_vis_max_depth;  // Use vis_max_depth from config
     
     // Create depth heatmap
     cv::Mat depth_heatmap = create_depth_heatmap(depth_map, min_depth, max_depth);
@@ -1828,17 +1885,23 @@ cv::Mat PangolinViewer::create_depth_heatmap(const cv::Mat& depth_map, float min
             
             cv::Vec3b color;
             
-            // Check if depth is valid
-            if (depth <= min_depth || depth >= max_depth) {
-                // Invalid depth = black
-                color = cv::Vec3b(0, 0, 0);
-            } else {
-                // Normalize depth to [0, 1]
-                float normalized_depth = (depth - min_depth) / (max_depth - min_depth);
-                normalized_depth = std::max(0.0f, std::min(1.0f, normalized_depth));
-                
-                // Heatmap: Red (near) -> Yellow -> Green -> Cyan -> Blue (far)
-                float r, g, b;
+            // ⭐ Depth = 0 → Black (no depth data)
+            if (depth <= 0.0f) {
+                color = cv::Vec3b(0, 0, 0);  // Black for invalid/missing depth
+                heatmap.at<cv::Vec3b>(v, u) = color;
+                continue;
+            }
+            
+            // Clamp depth to [min_depth, max_depth] range
+            // Below min_depth → Red, Above max_depth → Blue
+            float clamped_depth = std::max(min_depth, std::min(max_depth, depth));
+            
+            // Normalize depth to [0, 1]
+            float normalized_depth = (clamped_depth - min_depth) / (max_depth - min_depth);
+            normalized_depth = std::max(0.0f, std::min(1.0f, normalized_depth));
+            
+            // Heatmap: Red (near/below min) -> Yellow -> Green -> Cyan -> Blue (far/above max)
+            float r, g, b;
                 if (normalized_depth < 0.25f) {
                     // Red to Yellow
                     float t = normalized_depth / 0.25f;
@@ -1871,7 +1934,6 @@ cv::Mat PangolinViewer::create_depth_heatmap(const cv::Mat& depth_map, float min
                     static_cast<uchar>(g * 255),
                     static_cast<uchar>(r * 255)
                 );
-            }
             
             heatmap.at<cv::Vec3b>(v, u) = color;
         }

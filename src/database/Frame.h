@@ -58,24 +58,22 @@ public:
           const cv::Mat& left_image, const cv::Mat& right_image,
           double fx, double fy, double cx, double cy, 
           const std::vector<double>& distortion_coeffs);
-          
-    // Simple stereo constructor - uses Config for camera parameters
+
+    // RGBD constructor - directly takes both images, uses Config for camera params
     Frame(long long timestamp, int frame_id,
-          const cv::Mat& left_image, const cv::Mat& right_image);
+          const cv::Mat& rgb_image, const cv::Mat& depth_map, 
+          double fx, double fy, double cx, double cy, const std::vector<double>& distortion_coeffs, bool is_rgbd);
+
+        
     
 private:
     // ⭐ RGBD constructor helper tag
     struct RGBDTag {};
     
 public:
-    // ⭐ RGBD constructor - uses tag dispatch to avoid ambiguity
-    Frame(long long timestamp, int frame_id,
-          const cv::Mat& rgb_image, const cv::Mat& depth_map, RGBDTag);
+
     
-    // ⭐ Static factory method for RGBD frames (recommended way)
-    static std::shared_ptr<Frame> create_rgbd_frame(long long timestamp, int frame_id,
-                                                     const cv::Mat& rgb_image, const cv::Mat& depth_map);
-    
+
     ~Frame(); // Use explicit destructor
 
 
@@ -93,7 +91,8 @@ public:
     
     // ⭐ RGBD RGB image storage (for dense point cloud coloring)
     const cv::Mat& get_rgb_image() const { return m_rgb_image; }
-    void set_rgb_image(const cv::Mat& image) { m_rgb_image = image.clone(); }
+    void set_rgb_image(const cv::Mat& image) { m_rgb_image = image; }  // Direct assignment (no clone)
+    void set_rgb_image(cv::Mat&& image) { m_rgb_image = std::move(image); }  // Move version
     
     const std::vector<std::shared_ptr<Feature>>& get_features() const { return m_features; }
     std::vector<std::shared_ptr<Feature>>& get_features_mutable() { return m_features; }
@@ -138,6 +137,9 @@ public:
     // Static keyframe management
     static void set_last_keyframe(std::shared_ptr<Frame> keyframe) { m_last_keyframe = keyframe; }
     static std::shared_ptr<Frame> get_last_keyframe() { return m_last_keyframe; }
+
+    // Memory management
+    void release_images();  // Release cv::Mat image data to free memory
 
     // Feature management
     void add_feature(std::shared_ptr<Feature> feature);
@@ -221,6 +223,7 @@ public:
     struct ColoredPoint {
         Eigen::Vector3f position;
         Eigen::Vector3f color;  // RGB [0-1]
+        float depth;            // Actual depth value from depth map
     };
     
     std::vector<Eigen::Vector3f> generate_dense_point_cloud(

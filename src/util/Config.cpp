@@ -391,8 +391,6 @@ bool Config::load(const std::string& config_file) {
     cv::FileNode rgbd = fs["rgbd"];
     if (!rgbd.empty()) {
         m_rgbd_depth_scale = (float)(double)rgbd["depth_scale"];
-        m_rgbd_min_depth = (float)(double)rgbd["min_depth"];
-        m_rgbd_max_depth = (float)(double)rgbd["max_depth"];
         
         // Uncertainty model
         if (!rgbd["uncertainty_a"].empty()) {
@@ -423,16 +421,19 @@ bool Config::load(const std::string& config_file) {
         if (!rgbd["dense_cloud_stride"].empty()) {
             m_rgbd_dense_cloud_stride = (int)rgbd["dense_cloud_stride"];
         }
-        if (!rgbd["dense_cloud_color_mode"].empty()) {
-            m_rgbd_dense_cloud_color_mode = (int)rgbd["dense_cloud_color_mode"];
+        if (!rgbd["vis_min_depth"].empty()) {
+            m_rgbd_vis_min_depth = (float)(double)rgbd["vis_min_depth"];
+        }
+        if (!rgbd["vis_max_depth"].empty()) {
+            m_rgbd_vis_max_depth = (float)(double)rgbd["vis_max_depth"];
         }
         
         if (m_enable_debug_output) {
             spdlog::info("[CONFIG] RGBD parameters loaded:");
             spdlog::info("  - Depth scale: {:.1f}", m_rgbd_depth_scale);
-            spdlog::info("  - Depth range: [{:.2f}, {:.2f}] m", m_rgbd_min_depth, m_rgbd_max_depth);
-            spdlog::info("  - Dense cloud: {} (stride={}, color_mode={})", 
-                        m_rgbd_enable_dense_cloud, m_rgbd_dense_cloud_stride, m_rgbd_dense_cloud_color_mode);
+            spdlog::info("  - Visualization depth range: [{:.1f}, {:.1f}] m", m_rgbd_vis_min_depth, m_rgbd_vis_max_depth);
+            spdlog::info("  - Dense cloud: {} (stride={}, RGB color mode)", 
+                        m_rgbd_enable_dense_cloud, m_rgbd_dense_cloud_stride);
             spdlog::info("  - Uncertainty model: a={:.6f}, b={:.6f}, c={:.6f}", 
                         m_rgbd_uncertainty_a, m_rgbd_uncertainty_b, m_rgbd_uncertainty_c);
         }

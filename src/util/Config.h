@@ -183,8 +183,6 @@ namespace lightweight_vio
 
         // ⭐ RGBD Specific Parameters
         float m_rgbd_depth_scale = 1000.0f;            // Depth conversion scale (default: mm to m)
-        float m_rgbd_min_depth = 0.3f;                 // Minimum valid depth (meters)
-        float m_rgbd_max_depth = 10.0f;                // Maximum valid depth (meters)
         
         // RGBD uncertainty model: σ² = a*d² + b*d + c
         float m_rgbd_uncertainty_a = 0.0012f;          // Quadratic coefficient
@@ -199,7 +197,8 @@ namespace lightweight_vio
         // RGBD dense point cloud visualization
         bool m_rgbd_enable_dense_cloud = true;         // Enable dense point cloud generation
         int m_rgbd_dense_cloud_stride = 4;             // Pixel sampling stride (1=all, 2=every 2nd, etc.)
-        int m_rgbd_dense_cloud_color_mode = 1;         // 0=mono(cyan), 1=rgb, 2=depth_heatmap
+        float m_rgbd_vis_min_depth = 0.3f;             // Minimum depth for heatmap visualization (clamp to red below this)
+        float m_rgbd_vis_max_depth = 20.0f;            // Maximum depth for heatmap visualization (clamp to blue above this)
 
     private:
         Config() = default;

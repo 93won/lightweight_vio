@@ -477,6 +477,12 @@ double TUMPlayer::process_single_frame(Estimator& estimator,
         }
     }
     
+    // Release player's local image memory after passing to estimator
+    left_image.release();
+    right_image.release();
+    processed_left.release();
+    processed_right.release();
+    
     // Update frame timestamp
     context.previous_frame_timestamp = image_data[image_idx].timestamp;
     

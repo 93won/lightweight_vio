@@ -630,6 +630,7 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
     SlidingWindowResult result;
     
     
+    
     if (keyframes.size() < 2) {
         return result;
     }
@@ -777,7 +778,8 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
                                        accel_bias_params, gyro_bias_params);
         }
         
-        if (Config::getInstance().m_enable_debug_output) {
+        // if (Config::getInstance().m_enable_debug_output) 
+        {
             spdlog::info("[SlidingWindowOptimizer] ✅ Optimization successful: {} poses, {} points, {} visual obs, {} IMU factors, {} inliers, {} outliers, cost: {:.10e} -> {:.10e}",
                         result.num_poses_optimized, result.num_points_optimized, 
                         observations.size(), num_imu_factors,
@@ -883,7 +885,6 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
         mappoint_to_index[map_points[i]] = static_cast<int>(i);
     }
     
-
     // Initialize pose parameters from keyframes with keyframe mutex protection
     {
         std::lock_guard<std::mutex> lock(s_keyframe_mutex);
@@ -926,6 +927,7 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
             // Then set pose parameterization
             auto* pose_parameterization = new factor::SE3GlobalParameterization();
             problem.SetParameterization(pose_params_vec[kf_idx].data(), pose_parameterization);
+
         }
     }
 
@@ -965,6 +967,9 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
     std::vector<double> reprojection_errors;
     std::vector<double> predicted_errors;
     
+
+    unsigned int total_constraints = 0;
+
     // Add observations for each keyframe with mutex protection
     {
         std::lock_guard<std::mutex> lock(s_mappoint_mutex);
@@ -1013,6 +1018,11 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
                     mp_idx,
                     m_pixel_noise_std);
 
+
+                total_constraints++;
+
+                
+
                 Eigen::Vector3f world_pos = map_point->get_position();
                 Eigen::Matrix4f T_cw = keyframe->get_Twc().inverse();
                 Eigen::Vector3f cam_pos = T_cw.block<3,3>(0,0) * world_pos + T_cw.block<3,1>(0,3);
@@ -1042,7 +1052,7 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
             }
         }
     }
-    
+
     // // Print error statistics
     // if (!reprojection_errors.empty() && !predicted_errors.empty()) {
     //     // Calculate statistics for reprojection errors
@@ -1146,6 +1156,8 @@ void SlidingWindowOptimizer::apply_marginalization_strategy(
             
         } 
     }
+
+    spdlog::info("Total and fixed map points: {} , {} ", map_points.size(), fixed_points);
 
 }
 

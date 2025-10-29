@@ -140,7 +140,7 @@ std::pair<int, int> FeatureTracker::extract_new_features(std::shared_ptr<Frame> 
                 for (int x = 0; x < depth_map.cols; ++x) {
                     float depth = depth_map.at<float>(y, x);
                     // Check if depth is valid (non-zero and within range)
-                    if (depth > config.m_rgbd_min_depth && depth < config.m_rgbd_max_depth) {
+                    if (depth > config.m_min_depth && depth < config.m_max_depth) {
                         depth_mask.at<uchar>(y, x) = 255;
                     }
                 }
@@ -152,9 +152,6 @@ std::pair<int, int> FeatureTracker::extract_new_features(std::shared_ptr<Frame> 
             } else {
                 cv::bitwise_and(mask_to_use, depth_mask, mask_to_use);
             }
-            
-            spdlog::debug("[FEATURE_TRACKER] RGBD depth mask applied: {} valid pixels", 
-                         cv::countNonZero(depth_mask));
         }
     }
 
@@ -923,9 +920,6 @@ int FeatureTracker::compute_rgbd_3d(std::shared_ptr<Frame> frame) {
         
         valid_3d_count++;
     }
-    
-        spdlog::info("Frame {}: Computed 3D for {}/{} RGBD features", 
-                     frame->get_frame_id(), valid_3d_count, features.size());
     
     return valid_3d_count;
 }

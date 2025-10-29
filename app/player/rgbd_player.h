@@ -196,6 +196,13 @@ private:
     bool load_ground_truth_euroc_format(const std::string& dataset_path);
     
     /**
+     * @brief Load ground truth poses from TUM format file (ground_truth.txt in dataset root)
+     * @param dataset_path Path to dataset
+     * @return Success status
+     */
+    bool load_ground_truth_tum_format(const std::string& dataset_path);
+    
+    /**
      * @brief Match image timestamps with loaded ground truth
      * @param image_timestamps Vector of image timestamps
      * @return True if matching was successful

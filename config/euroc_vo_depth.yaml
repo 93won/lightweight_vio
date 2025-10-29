@@ -15,7 +15,7 @@ viewer:
   height: 1080                   # Viewer window height (pixels)
   
 performance:
-  enable_debug_output: 1  # Print debug messages and feature counts
+  enable_debug_output: 0  # Print debug messages and feature counts
 
 # Camera Parameters (Gemini RGBD specific)
 # Image dimensions and processing parameters
@@ -40,20 +40,19 @@ camera:
 rgbd:
   # Depth sensor configuration
   depth_scale: 1000.0           # Depth conversion scale (e.g., 1000.0 for mm->m conversion)
-  min_depth: 0.1                # Minimum valid depth (meters)
-  max_depth: 50.0               # Maximum valid depth (meters)
   
   # Dense point cloud visualization
   enable_dense_cloud: true      # Enable dense point cloud generation and visualization
   dense_cloud_stride: 1         # Pixel sampling stride (1=all pixels, 2=every 2nd pixel, etc.)
-  dense_cloud_color_mode: 1     # 0=mono(cyan), 1=rgb, 2=depth_heatmap
+  vis_min_depth: 0.0            # Minimum depth for heatmap visualization (meters, for color normalization)
+  vis_max_depth: 5.0            # Maximum depth for heatmap visualization (meters, for color normalization)
 
 
 # Keyframe and Windowing Parameters
 # Controls keyframe selection and sliding window management
 keyframe_management:
   keyframe_window_size: 5
-  grid_coverage_ratio: 0.7  # Add keyframe when coverage drops to 70% of last keyframe's coverage
+  grid_coverage_ratio: 0.7  # Add keyframe when coverage drops to 80% of last keyframe's coverage
   time_threshold: 0.05   
   
 # Feature Detection Parameters
@@ -80,30 +79,11 @@ optical_flow:
   min_eigen_threshold: 1e-3   # Minimum eigenvalue threshold for optical flow
   F_threshold: 1.0            # Fundamental matrix RANSAC distance threshold (pixels)
 
-# Stereo Matching Parameters
-# Controls stereo correspondence matching between left/right images
-# Uses dynamically estimated fundamental matrix for epipolar constraint
-stereo_matching:
-  # Optical flow parameters for stereo matching (different from frame-to-frame tracking)
-  window_size: 31             # Search window size for stereo optical flow (larger for robustness)
-  max_level: 4                # Pyramid levels for stereo optical flow (more levels for better matching)
-  max_iterations: 50          # Max iterations for stereo optical flow (more for convergence)
-  min_eigen_threshold: 1e-4   # Lower eigenvalue threshold for stereo (more permissive)
-  
-  # Stereo matching thresholds
-  error_threshold: 50.0       # Maximum optical flow error for stereo matches (pixels)
-  min_disparity: 0.1          # Minimum disparity (pixels) - filters out very far points
-  max_disparity: 300.0        # Maximum disparity (pixels) - filters out very close points  
-  max_y_difference: 30.0      # Maximum Y-coordinate difference for stereo pairs (pixels)
-  epipolar_threshold: 1.0     # Maximum distance from epipolar line using estimated F matrix (pixels)
-
 # Global Depth Parameters
 # Controls depth validation throughout the entire VIO system
 depth:
   min_depth: 0.1              # Minimum depth for valid 3D points (meters) - used in all depth validation
   max_depth: 100.0            # Maximum depth for valid 3D points (meters) - used in all depth validation
-
-
 
 # Optimization Parameters
 # Controls Ceres-based optimization behavior for both PnP and Sliding Window
