@@ -86,7 +86,14 @@ The general syntax for running with TUM VI dataset:
 The general syntax for running with RGBD dataset:
 
 ```bash
-./build/rgbd_example <config_file_path> <rgbd_dataset_path>
+### Detailed Command Syntax
+
+```bash
+./build/rgbd_example <config_file> <dataset_path>
+```
+
+**Parameters:**
+- `<config_file>`: Path to YAML configuration file (e.g., `config/d435i_cafe.yaml`)
 ```
 
 **Parameters:**
@@ -156,7 +163,12 @@ The example RGBD dataset is from the [OpenLORIS-Scene dataset](https://lifelong-
 
 **Run the example:**
 ```bash
-./build/rgbd_example config/d435.yaml /path/to/cafe_dataset
+**Run the example:**
+```bash
+./build/rgbd_example config/d435i_cafe.yaml /path/to/openloris/cafe
+```
+
+### Detailed Command Syntax
 ```
 
 **Expected output:**
