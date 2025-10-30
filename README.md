@@ -1,6 +1,15 @@
 # Lightweight Stereo VIO
 
-This is a lightweight stereo visual-inertial odometry (VIO) project designed for real-time performance. It utilizes feature tracking, IMU pre-integration, sliding window optimization with Ceres Solver, and Pangolin for visualization.
+This is a lig### Supported Datasets
+
+- **EuRoC MAV Dataset** - Stereo + IMU (Visual-Inertial Odometry)
+- **TUM-VI Dataset** - Stereo + IMU (Visual-Inertial Odometry)
+- **Intel RealSense D435/D435i (RGBD)** - RGB-D camera (Visual Odometry only)
+  - Supports custom RGBD datasets with `color/`, `depth/`, and `timestamps.txt`
+  - Example configuration: `config/d435.yaml`
+  - Example dataset: [OpenLORIS-Scene (Cafe sequence)](https://drive.google.com/file/d/1e5-8tpaT5dB2T1-pffpMBEjVnzhrlXMg/view?usp=sharing)
+  - Original dataset: [OpenLORIS-Scene Dataset](https://lifelong-robotic-vision.github.io/dataset/scene.html)
+  - **Note:** RGBD + IMU (VIO mode) is not yet implementedt visual odometry and visual-inertial odometry (VIO) project designed for real-time performance. It supports both **stereo cameras** (with IMU for VIO) and **RGBD cameras** (VO only). The system utilizes feature tracking, IMU pre-integration, sliding window optimization with Ceres Solver, and Pangolin for visualization.
 
 This project implements the **statistical uncertainty learning** method proposed in:
 
@@ -36,6 +45,15 @@ This project is licensed under the 🚀MIT License🚀 - see the [LICENSE](LICEN
 ## Dataset Download
 
 📁 **[Dataset Download Guide](docs/Download_Dataset.md)** - Dataset download and preparation
+
+### Supported Datasets
+
+- **EuRoC MAV Dataset** - Stereo + IMU (Visual-Inertial Odometry)
+- **TUM-VI Dataset** - Stereo + IMU (Visual-Inertial Odometry)
+- **Intel RealSense D435/D435i** - RGBD (Visual Odometry only)
+  - Supports custom RGBD datasets with color/ and depth/ folders
+  - Example configuration: `config/d435.yaml`
+  - ⚠️ Note: RGBD + IMU fusion (VIO mode) is under development
 
 ## Running the Application
 

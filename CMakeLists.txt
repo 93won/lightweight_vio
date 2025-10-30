@@ -112,7 +112,7 @@ add_executable(tum_stereo app/tum_stereo.cpp
 )
 
 # Add RGBD pipeline (VO mode)
-add_executable(euroc_depth app/euroc_depth.cpp 
+add_executable(rgbd_example app/rgbd_example.cpp 
     app/player/rgbd_player.cpp
     src/database/Frame.cpp
     src/database/Feature.cpp
@@ -163,7 +163,7 @@ target_link_libraries(tum_stereo
     m  # Math library for M_PI
 )
 
-target_link_libraries(euroc_depth 
+target_link_libraries(rgbd_example 
     ${OpenCV_LIBS} 
     yaml-cpp 
     OpenGL::GL 
@@ -184,12 +184,12 @@ target_link_libraries(euroc_depth
 if(TARGET Eigen3::Eigen)
     target_link_libraries(euroc_stereo Eigen3::Eigen)
     target_link_libraries(tum_stereo Eigen3::Eigen)
-    target_link_libraries(euroc_depth Eigen3::Eigen)
+    target_link_libraries(rgbd_example Eigen3::Eigen)
 else()
     # Fallback for older CMake versions
     target_include_directories(euroc_stereo PRIVATE ${EIGEN3_INCLUDE_DIR})
     target_include_directories(tum_stereo PRIVATE ${EIGEN3_INCLUDE_DIR})
-    target_include_directories(euroc_depth PRIVATE ${EIGEN3_INCLUDE_DIR})
+    target_include_directories(rgbd_example PRIVATE ${EIGEN3_INCLUDE_DIR})
 endif()
 
 # Print OpenCV information for debugging

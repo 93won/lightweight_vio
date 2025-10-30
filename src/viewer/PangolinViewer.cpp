@@ -57,8 +57,8 @@ PangolinViewer::PangolinViewer()
     , m_show_trajectory(true)
     , m_show_keyframe_frustums(true)
     , m_show_camera_frustum(true)
-    , m_show_grid(false)
-    , m_show_axis(false)
+    , m_show_grid(true)
+    , m_show_axis(true)
     , m_follow_camera(true)
     , m_point_size(3.0f)
     , m_trajectory_width(2.0f)
@@ -82,6 +82,7 @@ PangolinViewer::PangolinViewer()
     , m_toggle_dense_color_mode("ui.13. Toggle Dense Color (RGB/Depth)", false, false)
     , m_step_forward_pressed(false)
     , m_finish_pressed(false)
+    , m_dense_color_mode_rgb(true)  // Start with RGB mode
     , m_previous_follow_frame_state(true)  // Initialize to true since follow frame starts enabled
     , m_Tgw(Eigen::Matrix4f::Identity())
     , m_has_gravity_transformation(false)
@@ -353,6 +354,13 @@ void PangolinViewer::render() {
     // Check Finish button
     if (pangolin::Pushed(m_finish_button)) {
         m_finish_pressed = true;
+    }
+    
+    // Check Toggle Dense Color button
+    if (pangolin::Pushed(m_toggle_dense_color_mode)) {
+        m_dense_color_mode_rgb = !m_dense_color_mode_rgb;
+        spdlog::info("[PangolinViewer] Dense point cloud color mode: {}", 
+                     m_dense_color_mode_rgb ? "RGB" : "Depth Heatmap");
     }
 
     // Process keyboard input - will be handled externally
@@ -968,10 +976,6 @@ void PangolinViewer::update_tracking_image_with_map_points(const cv::Mat& image,
     
     // Release temporary cv::Mat to free memory immediately
     image_with_grid.release();
-
-    // The bounds and aspect ratio are now handled exclusively by setup_panels().
-    // This function is only responsible for updating the texture.
-    // spdlog::debug("[PangolinViewer] Updated tracking image with features texture {}x{}", image.cols, image.rows);
 }
 
 void PangolinViewer::update_tracking_with_frame(std::shared_ptr<Frame> frame) {
@@ -1208,6 +1212,7 @@ bool PangolinViewer::is_finish_requested() const {
 
 void PangolinViewer::draw_feature_grid(cv::Mat& image) {
     const auto& config = Config::getInstance();
+    
     const int grid_cols = config.m_grid_cols;  // From config
     const int grid_rows = config.m_grid_rows;  // From config
     const cv::Scalar grid_color(100, 100, 100);  // Gray color for grid lines
@@ -1769,12 +1774,11 @@ void PangolinViewer::update_dense_point_cloud(std::shared_ptr<Frame> frame) {
     // Check if dense cloud is enabled
     if (!config.m_rgbd_enable_dense_cloud) {
         std::lock_guard<std::mutex> lock(m_data_mutex);
+        // Just clear without shrinking - keep capacity for reuse
         m_dense_point_cloud.clear();
-        m_dense_point_cloud.shrink_to_fit();
         m_dense_point_colors_rgb.clear();
-        m_dense_point_colors_rgb.shrink_to_fit();
+        m_dense_point_colors_depth.clear();
         m_dense_point_depths.clear();
-        m_dense_point_depths.shrink_to_fit();
         return;
     }
     
@@ -1782,33 +1786,69 @@ void PangolinViewer::update_dense_point_cloud(std::shared_ptr<Frame> frame) {
     int stride = config.m_rgbd_dense_cloud_stride;
     float min_depth = config.m_min_depth;
     float max_depth = config.m_max_depth;
-    
-    // Generate colored point cloud with RGB colors (color_mode=1)
-    auto colored_points = frame->generate_colored_point_cloud(stride, min_depth, max_depth, 1);
+    float vis_min_depth = config.m_rgbd_vis_min_depth;
+    float vis_max_depth = config.m_rgbd_vis_max_depth;
     
     // Update storage (thread-safe)
     std::lock_guard<std::mutex> lock(m_data_mutex);
     
-    // Clear and shrink previous data to release memory
+    // Clear previous data but keep capacity to avoid reallocation
     m_dense_point_cloud.clear();
-    m_dense_point_cloud.shrink_to_fit();
     m_dense_point_colors_rgb.clear();
-    m_dense_point_colors_rgb.shrink_to_fit();
+    m_dense_point_colors_depth.clear();
     m_dense_point_depths.clear();
-    m_dense_point_depths.shrink_to_fit();
     
-    // Move data instead of copying
-    m_dense_point_cloud.reserve(colored_points.size());
-    m_dense_point_colors_rgb.reserve(colored_points.size());
-    m_dense_point_depths.reserve(colored_points.size());
+    // Generate colored point cloud with RGB colors (color_mode=1)
+    // Do this INSIDE the lock to minimize the lifetime of colored_points
+    auto colored_points = frame->generate_colored_point_cloud(stride, min_depth, max_depth, 1);
     
+    // Reserve space if needed (only grows, never shrinks)
+    if (m_dense_point_cloud.capacity() < colored_points.size()) {
+        m_dense_point_cloud.reserve(colored_points.size());
+        m_dense_point_colors_rgb.reserve(colored_points.size());
+        m_dense_point_colors_depth.reserve(colored_points.size());
+        m_dense_point_depths.reserve(colored_points.size());
+    }
+    
+    // Move data efficiently and compute depth heatmap colors
     for (auto& cp : colored_points) {
         m_dense_point_cloud.push_back(std::move(cp.position));
         m_dense_point_colors_rgb.push_back(std::move(cp.color));
         m_dense_point_depths.push_back(cp.depth);
+        
+        // Compute depth heatmap color
+        float depth = cp.depth;
+        Eigen::Vector3f depth_color;
+        
+        if (depth <= 0.0f) {
+            depth_color = Eigen::Vector3f(0.0f, 0.0f, 0.0f);  // Black for invalid
+        } else {
+            float clamped_depth = std::max(vis_min_depth, std::min(vis_max_depth, depth));
+            float normalized_depth = (clamped_depth - vis_min_depth) / (vis_max_depth - vis_min_depth);
+            normalized_depth = std::max(0.0f, std::min(1.0f, normalized_depth));
+            
+            // Heatmap: Red (near) -> Yellow -> Green -> Cyan -> Blue (far)
+            float r, g, b;
+            if (normalized_depth < 0.25f) {
+                float t = normalized_depth / 0.25f;
+                r = 1.0f; g = t; b = 0.0f;
+            } else if (normalized_depth < 0.5f) {
+                float t = (normalized_depth - 0.25f) / 0.25f;
+                r = 1.0f - t; g = 1.0f; b = 0.0f;
+            } else if (normalized_depth < 0.75f) {
+                float t = (normalized_depth - 0.5f) / 0.25f;
+                r = 0.0f; g = 1.0f; b = t;
+            } else {
+                float t = (normalized_depth - 0.75f) / 0.25f;
+                r = 0.0f; g = 1.0f - t; b = 1.0f;
+            }
+            depth_color = Eigen::Vector3f(r, g, b);
+        }
+        
+        m_dense_point_colors_depth.push_back(depth_color);
     }
     
-    // Shrink colored_points to release temporary memory
+    // Explicitly release colored_points memory immediately
     colored_points.clear();
     colored_points.shrink_to_fit();
 }
@@ -1825,19 +1865,38 @@ void PangolinViewer::draw_dense_point_cloud() {
     
     glBegin(GL_POINTS);
     
-    // Always use RGB colors from image
-    if (!m_dense_point_colors_rgb.empty()) {
-        for (size_t i = 0; i < m_dense_point_cloud.size(); ++i) {
-            const auto& pt = m_dense_point_cloud[i];
-            const auto& color = m_dense_point_colors_rgb[i];
-            glColor3f(color.x(), color.y(), color.z());
-            glVertex3f(pt.x(), pt.y(), pt.z());
+    // Choose color based on current mode
+    if (m_dense_color_mode_rgb) {
+        // RGB mode - use RGB colors from image
+        if (!m_dense_point_colors_rgb.empty()) {
+            for (size_t i = 0; i < m_dense_point_cloud.size(); ++i) {
+                const auto& pt = m_dense_point_cloud[i];
+                const auto& color = m_dense_point_colors_rgb[i];
+                glColor3f(color.x(), color.y(), color.z());
+                glVertex3f(pt.x(), pt.y(), pt.z());
+            }
+        } else {
+            // Fallback to cyan if no RGB data
+            glColor3f(0.0f, 1.0f, 1.0f);
+            for (const auto& pt : m_dense_point_cloud) {
+                glVertex3f(pt.x(), pt.y(), pt.z());
+            }
         }
     } else {
-        // Fallback to cyan if no RGB data
-        glColor3f(0.0f, 1.0f, 1.0f);
-        for (const auto& pt : m_dense_point_cloud) {
-            glVertex3f(pt.x(), pt.y(), pt.z());
+        // Depth heatmap mode - use depth colors
+        if (!m_dense_point_colors_depth.empty()) {
+            for (size_t i = 0; i < m_dense_point_cloud.size(); ++i) {
+                const auto& pt = m_dense_point_cloud[i];
+                const auto& color = m_dense_point_colors_depth[i];
+                glColor3f(color.x(), color.y(), color.z());
+                glVertex3f(pt.x(), pt.y(), pt.z());
+            }
+        } else {
+            // Fallback to magenta if no depth data
+            glColor3f(1.0f, 0.0f, 1.0f);
+            for (const auto& pt : m_dense_point_cloud) {
+                glVertex3f(pt.x(), pt.y(), pt.z());
+            }
         }
     }
     
@@ -1869,6 +1928,9 @@ void PangolinViewer::update_depth_image(std::shared_ptr<Frame> frame) {
     std::lock_guard<std::mutex> lock(m_data_mutex);
     m_depth_image = create_texture_from_cv_mat(depth_heatmap);
     m_has_depth_image = true;
+    
+    // Release temporary Mat to free memory immediately
+    depth_heatmap.release();
 }
 
 cv::Mat PangolinViewer::create_depth_heatmap(const cv::Mat& depth_map, float min_depth, float max_depth) {

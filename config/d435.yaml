@@ -12,7 +12,7 @@ system_mode:
 viewer:
   enable: 1                      # Enable/disable 3D viewer (0=false, 1=true)
   width: 1920                    # Viewer window width (pixels)
-  height: 1080                   # Viewer window height (pixels)
+  height: 1200                   # Viewer window height (pixels)
   
 performance:
   enable_debug_output: 0  # Print debug messages and feature counts
@@ -21,29 +21,29 @@ performance:
 # Image dimensions and processing parameters
 camera:
   model: "pinhole"            # Camera model: "pinhole" or "fisheye"
-  type: "rgbd"                # Camera type : "stereo" or "rgbd"
-  image_width: 752            # Image width in pixels (EuRoC standard)
-  image_height: 480           # Image height in pixels (EuRoC standard)  
+  type: "rgbd"                # ⭐ Camera type: "stereo" or "rgbd"
+  image_width: 848            # Image width in pixels (Gemini standard)
+  image_height: 480           # Image height in pixels (Gemini standard)  
   border_size: 1              # Border size to exclude from feature detection (pixels)
-
-  # RGB camera intrinsics
-  rgb_intrinsics: [436.244295647102, 436.244295647102, 364.44123458862305, 256.95167541503906]  # [fx, fy, cx, cy]
+  
+  # RGB camera intrinsics (Gemini default - adjust based on calibration)
+  rgb_intrinsics: [611.4509887695312, 611.4857177734375, 433.2039794921875, 249.4730224609375]  # [fx, fy, cx, cy]
   rgb_distortion: [0,0,0,0]  # [k1, k2, p1, p2]
   
+  
   # RGB camera extrinsics (T_BC - camera to body transform)
-  rgb_T_BC: [0.016321064313471176, 0.9997100876917389, -0.017702074098754954, 0.06518509659975036,
-             -0.9998055939700209, 0.016513403207805397, 0.010774125548061047, -0.02067360340504915,
-             0.011063323483664681, 0.017522787512771587, 0.9997852543377403, -0.008435890751677893,
+  rgb_T_BC: [0,0,1,0, 
+             -1,0,0,0, 
+             0,-1,0,1, 
              0.0, 0.0, 0.0, 1.0]
 
-# RGBD Specific Parameters
 rgbd:
   # Depth sensor configuration
   depth_scale: 1000.0           # Depth conversion scale (e.g., 1000.0 for mm->m conversion)
   
   # Dense point cloud visualization
   enable_dense_cloud: true      # Enable dense point cloud generation and visualization
-  dense_cloud_stride: 1         # Pixel sampling stride (1=all pixels, 2=every 2nd pixel, etc.)
+  dense_cloud_stride: 1         # Pixel sampling stride (1=all pixels, 4=every 4th pixel -> 1/16 memory)
   vis_min_depth: 0.0            # Minimum depth for heatmap visualization (meters, for color normalization)
   vis_max_depth: 5.0            # Maximum depth for heatmap visualization (meters, for color normalization)
 
@@ -83,7 +83,7 @@ optical_flow:
 # Controls depth validation throughout the entire VIO system
 depth:
   min_depth: 0.1              # Minimum depth for valid 3D points (meters) - used in all depth validation
-  max_depth: 100.0            # Maximum depth for valid 3D points (meters) - used in all depth validation
+  max_depth: 10.0            # Maximum depth for valid 3D points (meters) - used in all depth validation
 
 # Optimization Parameters
 # Controls Ceres-based optimization behavior for both PnP and Sliding Window

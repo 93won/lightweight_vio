@@ -778,7 +778,7 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
                                        accel_bias_params, gyro_bias_params);
         }
         
-        // if (Config::getInstance().m_enable_debug_output) 
+        if (Config::getInstance().m_enable_debug_output) 
         {
             spdlog::info("[SlidingWindowOptimizer] ✅ Optimization successful: {} poses, {} points, {} visual obs, {} IMU factors, {} inliers, {} outliers, cost: {:.10e} -> {:.10e}",
                         result.num_poses_optimized, result.num_points_optimized, 
@@ -1157,7 +1157,6 @@ void SlidingWindowOptimizer::apply_marginalization_strategy(
         } 
     }
 
-    spdlog::info("Total and fixed map points: {} , {} ", map_points.size(), fixed_points);
 
 }
 

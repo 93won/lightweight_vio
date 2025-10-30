@@ -188,6 +188,7 @@ private:
     // ⭐ Dense point cloud data (RGBD only)
     std::vector<Eigen::Vector3f> m_dense_point_cloud;
     std::vector<Eigen::Vector3f> m_dense_point_colors_rgb;   // RGB colors
+    std::vector<Eigen::Vector3f> m_dense_point_colors_depth; // Depth heatmap colors
     std::vector<float> m_dense_point_depths;                  // Depth values for heatmap
     
     // Thread safety
@@ -237,6 +238,7 @@ private:
     pangolin::Var<bool> m_toggle_dense_color_mode;  // Toggle between RGB and Depth Heatmap
     mutable bool m_step_forward_pressed;
     mutable bool m_finish_pressed;
+    mutable bool m_dense_color_mode_rgb;  // true=RGB, false=Depth heatmap
     
     // Follow frame state tracking
     mutable bool m_previous_follow_frame_state;

@@ -1,5 +1,5 @@
 /**
- * @file      euroc_depth.cpp
+ * @file      gemin_depth.cpp
  * @brief     Main application entry point for the RGBD pipeline (VO mode, VIO support planned).
  * @author    Seungwon Choi (csw3575@snu.ac.kr)
  * @date      2025-10-28
