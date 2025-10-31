@@ -1,5 +1,7 @@
 # Lightweight Stereo VIO
 
+This is a lightweight stereo visual-inertial odometry (VIO) project designed for real-time performance. It utilizes feature tracking, IMU pre-integration, sliding window optimization with Ceres Solver, and Pangolin for visualization.
+
 This project implements the **statistical uncertainty learning** method proposed in:
 
 **Statistical Uncertainty Learning for Robust Visual-Inertial State Estimation**  
