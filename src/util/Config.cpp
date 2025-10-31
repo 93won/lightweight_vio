@@ -10,6 +10,7 @@
  */
 
 #include "util/Config.h"
+#include "camera/CameraFactory.h"
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <spdlog/spdlog.h>
@@ -423,6 +424,50 @@ bool Config::load(const std::string& config_file) {
     
     fs.release();
     return true;
+}
+
+std::shared_ptr<Camera> Config::create_left_camera() const {
+    // Extract camera parameters from left camera matrix
+    double fx = m_left_camera_matrix.at<double>(0, 0);
+    double fy = m_left_camera_matrix.at<double>(1, 1);
+    double cx = m_left_camera_matrix.at<double>(0, 2);
+    double cy = m_left_camera_matrix.at<double>(1, 2);
+    
+    // Extract distortion coefficients as vector (flexible for different models)
+    std::vector<double> distortion_coeffs;
+    for (int i = 0; i < m_left_dist_coeffs.rows; ++i) {
+        distortion_coeffs.push_back(m_left_dist_coeffs.at<double>(i));
+    }
+    
+    // Use CameraFactory to create the appropriate camera type
+    return CameraFactory::create(
+        m_camera_model,
+        fx, fy, cx, cy,
+        distortion_coeffs,
+        m_image_width, m_image_height
+    );
+}
+
+std::shared_ptr<Camera> Config::create_right_camera() const {
+    // Extract camera parameters from right camera matrix
+    double fx = m_right_camera_matrix.at<double>(0, 0);
+    double fy = m_right_camera_matrix.at<double>(1, 1);
+    double cx = m_right_camera_matrix.at<double>(0, 2);
+    double cy = m_right_camera_matrix.at<double>(1, 2);
+    
+    // Extract distortion coefficients as vector (flexible for different models)
+    std::vector<double> distortion_coeffs;
+    for (int i = 0; i < m_right_dist_coeffs.rows; ++i) {
+        distortion_coeffs.push_back(m_right_dist_coeffs.at<double>(i));
+    }
+    
+    // Use CameraFactory to create the appropriate camera type
+    return CameraFactory::create(
+        m_camera_model,
+        fx, fy, cx, cy,
+        distortion_coeffs,
+        m_image_width, m_image_height
+    );
 }
 
 } // namespace lightweight_vio

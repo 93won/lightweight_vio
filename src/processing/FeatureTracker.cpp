@@ -883,7 +883,7 @@ int FeatureTracker::compute_rgbd_3d(std::shared_ptr<Frame> frame) {
     
     // Get camera intrinsics
     double fx, fy, cx, cy;
-    frame->get_camera_intrinsics(fx, fy, cx, cy);
+    fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
     
     int valid_3d_count = 0;
     auto& features = frame->get_features_mutable();

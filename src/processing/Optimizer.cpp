@@ -58,7 +58,7 @@ namespace lightweight_vio
 
         // Get camera parameters from frame
         double fx, fy, cx, cy;
-        frame->get_camera_intrinsics(fx, fy, cx, cy);
+        fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
         
 
         
@@ -456,7 +456,7 @@ namespace lightweight_vio
                 
         //         // Project to image plane
         //         double fx, fy, cx, cy;
-        //         frame->get_camera_intrinsics(fx, fy, cx, cy);
+        //         fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
                 
         //         if (point_camera.z() > 0) {
         //             double u_proj = fx * point_camera.x() / point_camera.z() + cx;
