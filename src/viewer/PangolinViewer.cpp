@@ -130,16 +130,19 @@ void PangolinViewer::setup_panels() {
     // Set UI panel width to 1/4 of window width
     int ui_panel_width = m_window_width / 4;
     
-    // Get actual image size from config
+    // Get actual image size and camera type from config
     float image_width, image_height;
+    bool is_rgbd = false;
     try {
         const auto& config = Config::getInstance();
         image_width = static_cast<float>(config.m_image_width);
         image_height = static_cast<float>(config.m_image_height);
+        is_rgbd = (config.m_camera_type == CameraType::RGBD);
     } catch (const std::exception& e) {
         // Fallback to default values (EuRoC standard)
         image_width = 752.0f;
         image_height = 480.0f;
+        is_rgbd = false;
     }
 
     // 2. Feature tracking image (bottom position - always at bottom)
@@ -148,21 +151,28 @@ void PangolinViewer::setup_panels() {
     float tracking_height = display_width / tracking_aspect;
     float tracking_normalized_height = tracking_height / static_cast<float>(m_window_height);
     
-    // 3. Depth heatmap image (above tracking image)
+    // 3. Depth heatmap image (above tracking image) - ONLY for RGBD
     float depth_aspect = image_width / image_height;  // Same aspect ratio
     float depth_height = display_width / depth_aspect;
     float depth_normalized_height = depth_height / static_cast<float>(m_window_height);
     
-    // Layout from TOP to BOTTOM: UI panel -> depth image -> tracking image
+    // Layout from TOP to BOTTOM: UI panel -> [depth image (RGBD only)] -> tracking image
     // Tracking image at the very bottom (always)
     m_tracking_image_bottom = 0.0f;
     float tracking_image_top = m_tracking_image_bottom + tracking_normalized_height;
     
-    // Depth image above tracking image
-    m_depth_image_bottom = tracking_image_top;
-    float depth_image_top = m_depth_image_bottom + depth_normalized_height;
+    // Depth image above tracking image (ONLY for RGBD)
+    float depth_image_top;
+    if (is_rgbd) {
+        m_depth_image_bottom = tracking_image_top;
+        depth_image_top = m_depth_image_bottom + depth_normalized_height;
+    } else {
+        // No depth image for stereo/monocular
+        m_depth_image_bottom = 0.0f;
+        depth_image_top = tracking_image_top;
+    }
     
-    // UI panel takes the rest of the space above depth image
+    // UI panel takes the rest of the space above depth image (or tracking image if no depth)
     float ui_panel_bottom = depth_image_top;
     float ui_panel_top = 1.0f;
     
@@ -181,13 +191,15 @@ void PangolinViewer::setup_panels() {
             .SetBounds(0.0, 1.0, pangolin::Attach::Frac(ui_panel_ratio), pangolin::Attach::Frac(1.0f))
             .SetHandler(new pangolin::Handler3D(s_cam));
 
-        // 1. UI panel - above depth image
+        // 1. UI panel - above depth image (or tracking image if no depth)
         d_panel = pangolin::CreatePanel("ui")
             .SetBounds(ui_panel_bottom, ui_panel_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio));
         
-        // 2. Depth heatmap image in the middle
-        d_img_right = pangolin::CreateDisplay()
-            .SetBounds(m_depth_image_bottom, depth_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -depth_aspect);
+        // 2. Depth heatmap image in the middle (ONLY for RGBD)
+        if (is_rgbd) {
+            d_img_right = pangolin::CreateDisplay()
+                .SetBounds(m_depth_image_bottom, depth_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -depth_aspect);
+        }
             
         // 3. Feature tracking image at the bottom (always)
         d_img_left = pangolin::CreateDisplay()
@@ -206,16 +218,22 @@ void PangolinViewer::setup_panels() {
         float new_depth_height = new_display_width / depth_aspect;
         float new_depth_normalized_height = new_depth_height / static_cast<float>(m_window_height);
         
-        // Layout from TOP to BOTTOM: UI panel -> depth image -> tracking image
+        // Layout from TOP to BOTTOM: UI panel -> [depth image (RGBD only)] -> tracking image
         // Tracking at bottom
         m_tracking_image_bottom = 0.0f;
         float new_tracking_image_top = m_tracking_image_bottom + new_tracking_normalized_height;
         
-        // Depth above tracking
-        m_depth_image_bottom = new_tracking_image_top;
-        float new_depth_image_top = m_depth_image_bottom + new_depth_normalized_height;
+        // Depth above tracking (ONLY for RGBD)
+        float new_depth_image_top;
+        if (is_rgbd) {
+            m_depth_image_bottom = new_tracking_image_top;
+            new_depth_image_top = m_depth_image_bottom + new_depth_normalized_height;
+        } else {
+            m_depth_image_bottom = 0.0f;
+            new_depth_image_top = new_tracking_image_top;
+        }
         
-        // UI panel takes the rest of the space above depth image
+        // UI panel takes the rest of the space above depth image (or tracking image if no depth)
         float new_ui_panel_bottom = new_depth_image_top;
         float new_ui_panel_top = 1.0f;
         
@@ -226,8 +244,10 @@ void PangolinViewer::setup_panels() {
         d_cam.SetBounds(0.0, 1.0, pangolin::Attach::Frac(ui_panel_ratio), pangolin::Attach::Frac(1.0f));
         d_panel.SetBounds(new_ui_panel_bottom, new_ui_panel_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio));
         
-        // Update depth image bounds (middle)
-        d_img_right.SetBounds(m_depth_image_bottom, new_depth_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -depth_aspect);
+        // Update depth image bounds (middle) - ONLY for RGBD
+        if (is_rgbd) {
+            d_img_right.SetBounds(m_depth_image_bottom, new_depth_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -depth_aspect);
+        }
         
         // Update tracking image bounds (bottom)
         d_img_left.SetBounds(m_tracking_image_bottom, new_tracking_image_top, 0.0, pangolin::Attach::Frac(ui_panel_ratio), -tracking_aspect);
