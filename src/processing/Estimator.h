@@ -32,6 +32,7 @@ namespace lightweight_vio {
     class InertialOptimizer;
     class PnPOptimizer;
     class SlidingWindowOptimizer;
+    class Camera;
 
     struct OptimizationResult;
     struct IMUData;
@@ -197,6 +198,10 @@ private:
     std::unique_ptr<SlidingWindowOptimizer> m_sliding_window_optimizer;
     std::unique_ptr<IMUHandler> m_imu_handler;  // IMU processing and preintegration
     std::unique_ptr<InertialOptimizer> m_inertial_optimizer;  // VIO optimization
+    
+    // Camera models (cached from Config)
+    std::shared_ptr<Camera> m_left_camera;
+    std::shared_ptr<Camera> m_right_camera;
     
     // State
     std::shared_ptr<Frame> m_current_frame;
