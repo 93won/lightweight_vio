@@ -1,7 +1,5 @@
 # Lightweight Stereo VIO
 
-This is a lig### Supported Datasets
-
 This project implements the **statistical uncertainty learning** method proposed in:
 
 **Statistical Uncertainty Learning for Robust Visual-Inertial State Estimation**  
