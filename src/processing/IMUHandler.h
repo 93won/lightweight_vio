@@ -178,12 +178,16 @@ public:
      * @param frames Vector of frames with pose estimates
      * @param all_imu_data All available IMU measurements  
      * @param gravity_magnitude Expected gravity magnitude (default: 9.81)
+     * @param[out] initial_cost Optional output for initial cost before optimization
+     * @param[out] final_cost Optional output for final cost after optimization
      * @return Success flag
      */
     bool estimate_gravity_with_stereo_constraints(
         const std::vector<Frame*>& frames,
         const std::vector<IMUData>& all_imu_data,
-        float gravity_magnitude = 9.81f
+        float gravity_magnitude = 9.81f,
+        double* initial_cost = nullptr,
+        double* final_cost = nullptr
     );
     
 

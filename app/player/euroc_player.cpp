@@ -41,9 +41,8 @@ EurocPlayerResult EurocPlayer::run(const EurocPlayerConfig& config) {
     EurocPlayerResult result;
     
     try {
-        // 1. Load configuration
-        Config::getInstance().load(config.config_path);
-        // spdlog::info("[EurocPlayer] Successfully loaded configuration from: {}", config.config_path);
+        // Note: Configuration is already loaded in main(), so we skip loading here
+        // Config::getInstance().load(config.config_path);
         
         // Override viewer settings with config values (to respect caller's settings)
         Config::getInstance().m_viewer_enable = config.enable_viewer;

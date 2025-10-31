@@ -415,7 +415,9 @@ void IMUHandler::estimate_initial_bias(
 bool IMUHandler::estimate_gravity_with_stereo_constraints(
     const std::vector<Frame*>& frames,
     const std::vector<IMUData>& all_imu_data,
-    float gravity_magnitude) {
+    float gravity_magnitude,
+    double* initial_cost,
+    double* final_cost) {
     
     if (frames.size() < 3) {
         spdlog::warn("[IMU_HANDLER] Need at least 3 frames for gravity estimation");
@@ -507,6 +509,13 @@ bool IMUHandler::estimate_gravity_with_stereo_constraints(
         eq_idx += 3;
     }
     
+    // Calculate initial cost (before optimization) using zero gravity assumption
+    if (initial_cost != nullptr) {
+        Eigen::VectorXf zero_solution = Eigen::VectorXf::Zero(num_unknowns);
+        Eigen::VectorXf residuals = A * zero_solution - b;
+        *initial_cost = static_cast<double>(residuals.squaredNorm());
+    }
+    
     // Step 3: Solve the linear system using least squares
     Eigen::MatrixXf AtA = A.transpose() * A;
     Eigen::VectorXf Atb = A.transpose() * b;
@@ -515,6 +524,12 @@ bool IMUHandler::estimate_gravity_with_stereo_constraints(
     
     Eigen::VectorXf solution = AtA.lu().solve(Atb);
     Eigen::Vector3f estimated_gravity = solution.segment<3>(0);
+    
+    // Calculate final cost (after optimization)
+    if (final_cost != nullptr) {
+        Eigen::VectorXf residuals = A * solution - b;
+        *final_cost = static_cast<double>(residuals.squaredNorm());
+    }
     
     // Step 4: Normalize the estimated gravity and apply the known magnitude
     if (estimated_gravity.norm() < 1.0f) {

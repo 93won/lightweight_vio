@@ -21,6 +21,7 @@ performance:
 # Image dimensions and processing parameters
 camera:
   model: "pinhole"            # Camera model: "pinhole" or "fisheye"
+  type: "stereo"                # ⭐ Camera type: "stereo" or "rgbd" or "monocular"
   image_width: 752            # Image width in pixels (EuRoC standard)
   image_height: 480           # Image height in pixels (EuRoC standard)  
   border_size: 1              # Border size to exclude from feature detection (pixels)

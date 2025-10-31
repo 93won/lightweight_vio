@@ -194,7 +194,6 @@ bool Config::load(const std::string& config_file) {
         m_image_height = (int)camera["image_height"];
         m_border_size = (int)camera["border_size"];
         
-        spdlog::info("[CONFIG] Loaded border_size from YAML: {}", m_border_size);
         
         // Load camera intrinsics based on camera type
         if (m_camera_type == CameraType::RGBD) {
@@ -207,18 +206,12 @@ bool Config::load(const std::string& config_file) {
                     (double)rgb_intrinsics[0], 0, (double)rgb_intrinsics[2],
                     0, (double)rgb_intrinsics[1], (double)rgb_intrinsics[3],
                     0, 0, 1);
-                spdlog::info("[CONFIG] Loaded RGBD camera intrinsics: fx={}, fy={}, cx={}, cy={}",
-                            (double)rgb_intrinsics[0], (double)rgb_intrinsics[1],
-                            (double)rgb_intrinsics[2], (double)rgb_intrinsics[3]);
             }
             
             if (!rgb_distortion.empty() && rgb_distortion.size() == 4) {
                 m_left_dist_coeffs = (cv::Mat_<double>(1, 4) << 
                     (double)rgb_distortion[0], (double)rgb_distortion[1],
                     (double)rgb_distortion[2], (double)rgb_distortion[3]);
-                spdlog::info("[CONFIG] Loaded RGBD distortion coeffs: k1={}, k2={}, p1={}, p2={}",
-                            (double)rgb_distortion[0], (double)rgb_distortion[1],
-                            (double)rgb_distortion[2], (double)rgb_distortion[3]);
             }
         } else {
             // For stereo, use left_intrinsics and right_intrinsics
@@ -265,17 +258,6 @@ bool Config::load(const std::string& config_file) {
                     (double)left_T_BC[0], (double)left_T_BC[1], (double)left_T_BC[2], (double)left_T_BC[3],
                     (double)left_T_BC[4], (double)left_T_BC[5], (double)left_T_BC[6], (double)left_T_BC[7],
                     (double)left_T_BC[8], (double)left_T_BC[9], (double)left_T_BC[10], (double)left_T_BC[11],
-                    (double)left_T_BC[12], (double)left_T_BC[13], (double)left_T_BC[14], (double)left_T_BC[15]);
-                
-                spdlog::info("[CONFIG] Loaded RGBD camera extrinsics (rgb_T_BC)");
-                spdlog::info("[CONFIG] rgb_T_BC matrix:");
-                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", 
-                    (double)left_T_BC[0], (double)left_T_BC[1], (double)left_T_BC[2], (double)left_T_BC[3]);
-                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", 
-                    (double)left_T_BC[4], (double)left_T_BC[5], (double)left_T_BC[6], (double)left_T_BC[7]);
-                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", 
-                    (double)left_T_BC[8], (double)left_T_BC[9], (double)left_T_BC[10], (double)left_T_BC[11]);
-                spdlog::info("  [{:.3f}, {:.3f}, {:.3f}, {:.3f}]", 
                     (double)left_T_BC[12], (double)left_T_BC[13], (double)left_T_BC[14], (double)left_T_BC[15]);
             }
         } else {

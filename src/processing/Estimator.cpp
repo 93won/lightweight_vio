@@ -135,14 +135,14 @@ Estimator::EstimationResult Estimator::process_rgbd_frame(const cv::Mat& rgb_ima
 
                 if (Config::getInstance().m_enable_debug_output)
                 {
-                    spdlog::info("[POSE_OPT] ✅ Optimization successful: {} inliers, {} outliers", opt_result.num_inliers, opt_result.num_outliers);
+                    spdlog::info("[POSE_OPT] Optimization successful: {} inliers, {} outliers", opt_result.num_inliers, opt_result.num_outliers);
                 }
             }
             else
             {
                 if (Config::getInstance().m_enable_debug_output)
                 {
-                    spdlog::warn("[POSE_OPT] ❌ Optimization failed - keeping previous pose");
+                    spdlog::warn("[POSE_OPT] Optimization failed - keeping previous pose");
                 }
             }
 
@@ -181,28 +181,14 @@ Estimator::EstimationResult Estimator::process_rgbd_frame(const cv::Mat& rgb_ima
     }
     else
     {
-        // Initial frame
-        m_feature_tracker->track_features(m_current_frame, nullptr);
-        result.num_features = m_current_frame->get_feature_count();
-        // Compute depth using depth map
-        m_current_frame->compute_depth();
-        // First frame - keep identity pose (already set in create_frame)
-        m_current_pose = m_current_frame->get_Twb();
-        // Increment frame counter (first frame processing)
-        m_frames_since_last_keyframe++;
-
-        // Create initial map points (first frame is always considered keyframe)
-        int initial_map_points = create_initial_map_points(m_current_frame);
-        result.num_new_map_points = initial_map_points;
-
-        create_keyframe(m_current_frame);
-
-        m_frames_since_last_keyframe = 0;  // Reset after creating first keyframe
-
-        // Count features for first frame
+        // ✅ Use unified initialization function
+        auto vo_result = initialize_rgbd(m_current_frame);
+        
+        result.success = vo_result.success;
+        result.num_features = vo_result.num_features;
+        result.num_new_map_points = vo_result.num_map_points;
         result.num_tracked_features = m_current_frame->get_feature_count();
         result.num_features_with_map_points = count_features_with_map_points(m_current_frame);
-        result.success = true;
     }
 
     // Add processed frame to all frames vector for trajectory export
@@ -378,44 +364,14 @@ Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, 
         
       
     } else {
-        // First frame - extract features using FeatureTracker
-        m_feature_tracker->track_features(m_current_frame, nullptr);
+        // ✅ Use unified initialization function
+        auto vo_result = initialize_stereo(m_current_frame);
         
-        result.num_features = m_current_frame->get_feature_count();
-        
-        // Compute stereo depth for all features
-        auto stereo_start = std::chrono::high_resolution_clock::now();
-        m_current_frame->compute_stereo_depth();
-        auto stereo_end = std::chrono::high_resolution_clock::now();
-        auto stereo_time = std::chrono::duration_cast<std::chrono::microseconds>(stereo_end - stereo_start).count() / 1000.0;
-        
-        // First frame - keep identity pose (already set in create_frame)
-        m_current_pose = m_current_frame->get_Twb();
-        
-        // Increment frame counter (first frame processing)
-        m_frames_since_last_keyframe++;
-        
-        // Create initial map points (first frame is always considered keyframe)
-        auto initial_map_points_start = std::chrono::high_resolution_clock::now();
-        int initial_map_points = create_initial_map_points(m_current_frame);
-        auto initial_map_points_end = std::chrono::high_resolution_clock::now();
-        auto initial_map_points_time = std::chrono::duration_cast<std::chrono::microseconds>(initial_map_points_end - initial_map_points_start).count() / 1000.0;
-        
-        result.num_new_map_points = initial_map_points;
-        
-        auto first_keyframe_start = std::chrono::high_resolution_clock::now();
-        create_keyframe(m_current_frame);
-        auto first_keyframe_end = std::chrono::high_resolution_clock::now();
-        auto first_keyframe_time = std::chrono::duration_cast<std::chrono::microseconds>(first_keyframe_end - first_keyframe_start).count() / 1000.0;
-        
-        m_frames_since_last_keyframe = 0;  // Reset after creating first keyframe
-        
-        
-        // Count features for first frame
+        result.success = vo_result.success;
+        result.num_features = vo_result.num_features;
+        result.num_new_map_points = vo_result.num_map_points;
         result.num_tracked_features = m_current_frame->get_feature_count();
         result.num_features_with_map_points = count_features_with_map_points(m_current_frame);
-        
-        result.success = true;
     }
     
     // Add processed frame to all frames vector for trajectory export
@@ -1025,45 +981,14 @@ Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, 
         
       
     } else {
-        // First frame - extract features using FeatureTracker
-        m_feature_tracker->track_features(m_current_frame, nullptr);
+        // ✅ Use unified initialization function
+        auto vo_result = initialize_stereo(m_current_frame);
         
-        result.num_features = m_current_frame->get_feature_count();
-        
-        // Compute stereo depth for all features
-        auto stereo_start = std::chrono::high_resolution_clock::now();
-        m_current_frame->compute_stereo_depth();
-        auto stereo_end = std::chrono::high_resolution_clock::now();
-        auto stereo_time = std::chrono::duration_cast<std::chrono::microseconds>(stereo_end - stereo_start).count() / 1000.0;
-        
-        // First frame - keep identity pose (already set in create_frame)
-        m_current_pose = m_current_frame->get_Twb();
-        
-        // Increment frame counter (first frame processing)
-        m_frames_since_last_keyframe++;
-        
-        // Create initial map points (first frame is always considered keyframe)
-        auto initial_map_points_start = std::chrono::high_resolution_clock::now();
-        int initial_map_points = create_initial_map_points(m_current_frame);
-        auto initial_map_points_end = std::chrono::high_resolution_clock::now();
-        auto initial_map_points_time = std::chrono::duration_cast<std::chrono::microseconds>(initial_map_points_end - initial_map_points_start).count() / 1000.0;
-        
-        result.num_new_map_points = initial_map_points;
-        spdlog::info("[MAP_POINTS] Created {} initial map points", initial_map_points);
-        
-        auto first_keyframe_start = std::chrono::high_resolution_clock::now();
-        create_keyframe(m_current_frame);
-        auto first_keyframe_end = std::chrono::high_resolution_clock::now();
-        auto first_keyframe_time = std::chrono::duration_cast<std::chrono::microseconds>(first_keyframe_end - first_keyframe_start).count() / 1000.0;
-        
-        m_frames_since_last_keyframe = 0;  // Reset after creating first keyframe
-        
-        
-        // Count features for first frame
+        result.success = vo_result.success;
+        result.num_features = vo_result.num_features;
+        result.num_new_map_points = vo_result.num_map_points;
         result.num_tracked_features = m_current_frame->get_feature_count();
         result.num_features_with_map_points = count_features_with_map_points(m_current_frame);
-        
-        result.success = true;
     }
     
     // Update result
@@ -1105,23 +1030,10 @@ Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, 
         }
     }
 
-    // 🎯 Attempt gravity estimation if conditions are met (already in VIO mode since IMU data is available)
+    // 🎯 Attempt IMU initialization if conditions are met
     const auto& config = Config::getInstance();
-    if (!m_success_imu_init && m_keyframes.size() >= 5) {  // Unified condition: keyframes >= 5
-
-        m_success_imu_init = try_initialize_imu();
-
-        if (m_success_imu_init) {
-            m_gravity_initialized = true;
-            m_enable_imu_optimization = true;  // Enable bias logging
-            
-            // Enable IMU optimization in sliding window optimizer
-            Eigen::Vector3f gravity_vector = m_imu_handler->get_gravity();
-            std::shared_ptr<IMUHandler> shared_imu_handler = std::shared_ptr<IMUHandler>(m_imu_handler.get(), [](IMUHandler*){});
-            m_sliding_window_optimizer->enable_imu_optimization(shared_imu_handler, gravity_vector.cast<double>());
-           
-        } 
-
+    if (should_initialize_imu()) {
+        initialize_imu();
     }
     
     return result;
@@ -1266,12 +1178,8 @@ std::shared_ptr<Frame> Estimator::create_rgbd_frame(const cv::Mat& rgb_image, co
         // First frame - use ground truth pose if available, otherwise identity
         if (m_has_initial_gt_pose) {
             frame->set_Twb(m_initial_gt_pose);
-            Eigen::Vector3f gt_pos = m_initial_gt_pose.block<3,1>(0,3);
-            spdlog::info("[ESTIMATOR] First RGBD frame initialized with GT pose at [{:.3f}, {:.3f}, {:.3f}]",
-                        gt_pos.x(), gt_pos.y(), gt_pos.z());
         } else {
             frame->set_Twb(Eigen::Matrix4f::Identity());
-            spdlog::info("[ESTIMATOR] First RGBD frame initialized at origin (Identity)");
         }
         
         // First frame velocity is zero
@@ -1286,6 +1194,87 @@ std::shared_ptr<Frame> Estimator::create_rgbd_frame(const cv::Mat& rgb_image, co
     return frame;
 }
 
+// ========================================================================
+// VO Initialization Functions
+// ========================================================================
+
+Estimator::VOInitializationResult lightweight_vio::Estimator::initialize_rgbd(std::shared_ptr<Frame> frame) {
+    VOInitializationResult result;
+    
+    if (!frame) {
+        spdlog::error("[INIT_RGBD] Invalid frame provided");
+        result.success = false;
+        return result;
+    }
+    
+    // 1. Feature extraction
+    m_feature_tracker->track_features(frame, nullptr);
+    result.num_features = frame->get_feature_count();
+    
+    // 2. Depth computation (direct reading from depth map)
+    frame->compute_depth();
+    
+    // 3. Identity pose (first frame starts at origin)
+    m_current_pose = frame->get_Twb();
+    
+    // 4. Create initial map points
+    int num_map_points = create_initial_map_points(frame);
+    result.num_map_points = num_map_points;
+    
+    // 5. Create keyframe
+    create_keyframe(frame);
+    m_frames_since_last_keyframe = 0;
+    
+    result.success = true;
+    
+    if (Config::getInstance().m_enable_debug_output) {
+        spdlog::info("[INIT_RGBD] ✅ Initialized with {} features, {} map points", 
+                    result.num_features, result.num_map_points);
+    }
+    
+    return result;
+}
+
+Estimator::VOInitializationResult lightweight_vio::Estimator::initialize_stereo(std::shared_ptr<Frame> frame) {
+    VOInitializationResult result;
+    
+    if (!frame) {
+        spdlog::error("[INIT_STEREO] Invalid frame provided");
+        result.success = false;
+        return result;
+    }
+    
+    // 1. Feature extraction
+    m_feature_tracker->track_features(frame, nullptr);
+    result.num_features = frame->get_feature_count();
+    
+    // 2. Stereo matching + triangulation
+    frame->compute_stereo_depth();
+    
+    // 3. Identity pose (first frame starts at origin)
+    m_current_pose = frame->get_Twb();
+    
+    // 4. Create initial map points
+    int num_map_points = create_initial_map_points(frame);
+    result.num_map_points = num_map_points;
+    
+    // 5. Create keyframe
+    create_keyframe(frame);
+    m_frames_since_last_keyframe = 0;
+    
+    result.success = true;
+    
+    if (Config::getInstance().m_enable_debug_output) {
+        spdlog::info("[INIT_STEREO] ✅ Initialized with {} features, {} map points", 
+                    result.num_features, result.num_map_points);
+    }
+    
+    return result;
+}
+
+// ========================================================================
+// Map Point Creation Functions
+// ========================================================================
 
 
 int lightweight_vio::Estimator::create_initial_map_points(std::shared_ptr<Frame> frame) {
@@ -1369,6 +1358,88 @@ int lightweight_vio::Estimator::create_initial_map_points(std::shared_ptr<Frame>
     return num_created;
 }
 
+// ========================================================================
+// IMU Initialization Functions
+// ========================================================================
+
+bool lightweight_vio::Estimator::should_initialize_imu() const {
+    // IMU initialization conditions:
+    // 1. Not already initialized
+    // 2. Have at least 5 keyframes for reliable gravity estimation
+    return !m_success_imu_init && m_keyframes.size() >= 5;
+}
+
+bool lightweight_vio::Estimator::initialize_imu() {
+    if (!should_initialize_imu()) {
+        return false;
+    }
+    
+    spdlog::info("================================================================================");
+    spdlog::info("[INIT_IMU] Starting IMU Initialization");
+    spdlog::info("[INIT_IMU] Keyframes available: {}", m_keyframes.size());
+    spdlog::info("================================================================================");
+    
+    // Variables to capture optimization costs
+    double initial_cost = 0.0;
+    double final_cost = 0.0;
+    
+    // Attempt gravity estimation and bias optimization
+    m_success_imu_init = try_initialize_imu();
+    
+    if (m_success_imu_init) {
+        // Update initialization flags
+        m_gravity_initialized = true;
+        m_enable_imu_optimization = true;
+        
+        // Get IMU parameters
+        Eigen::Vector3f gravity_vector = m_imu_handler->get_gravity();
+        Eigen::Vector3f accel_bias = m_imu_handler->get_accel_bias();
+        Eigen::Vector3f gyro_bias = m_imu_handler->get_gyro_bias();
+        
+        // Enable IMU optimization in sliding window optimizer
+        std::shared_ptr<IMUHandler> shared_imu_handler = std::shared_ptr<IMUHandler>(
+            m_imu_handler.get(), 
+            [](IMUHandler*){}  // Non-owning shared_ptr
+        );
+        m_sliding_window_optimizer->enable_imu_optimization(
+            shared_imu_handler, 
+            gravity_vector.cast<double>()
+        );
+        
+        // Log success with detailed information
+        spdlog::info("================================================================================");
+        spdlog::info("[INIT_IMU] IMU Initialization SUCCESSFUL!");
+        spdlog::info("================================================================================");
+        spdlog::info("[INIT_IMU] Estimated Parameters:");
+        spdlog::info("[INIT_IMU]   Gravity Vector:");
+        spdlog::info("[INIT_IMU]     - X: {:.6f} m/s²", gravity_vector.x());
+        spdlog::info("[INIT_IMU]     - Y: {:.6f} m/s²", gravity_vector.y());
+        spdlog::info("[INIT_IMU]     - Z: {:.6f} m/s²", gravity_vector.z());
+        spdlog::info("[INIT_IMU]     - Magnitude: {:.6f} m/s²", gravity_vector.norm());
+        spdlog::info("[INIT_IMU]   Accelerometer Bias:");
+        spdlog::info("[INIT_IMU]     - X: {:.8f} m/s²", accel_bias.x());
+        spdlog::info("[INIT_IMU]     - Y: {:.8f} m/s²", accel_bias.y());
+        spdlog::info("[INIT_IMU]     - Z: {:.8f} m/s²", accel_bias.z());
+        spdlog::info("[INIT_IMU]   Gyroscope Bias:");
+        spdlog::info("[INIT_IMU]     - X: {:.8f} rad/s", gyro_bias.x());
+        spdlog::info("[INIT_IMU]     - Y: {:.8f} rad/s", gyro_bias.y());
+        spdlog::info("[INIT_IMU]     - Z: {:.8f} rad/s", gyro_bias.z());
+        spdlog::info("[INIT_IMU]   IMU optimization enabled in sliding window");
+        spdlog::info("================================================================================\n");
+        
+    } else {
+        spdlog::warn("================================================================================");
+        spdlog::warn("[INIT_IMU] IMU Initialization FAILED");
+        spdlog::warn("[INIT_IMU] Will retry with more keyframes");
+        spdlog::warn("================================================================================\n");
+    }
+    
+    return m_success_imu_init;
+}
+
+// ========================================================================
+// Map Point Creation Functions (continued)
+// ========================================================================
 
 
 int lightweight_vio::Estimator::create_new_map_points(std::shared_ptr<Frame> frame) {
@@ -2104,8 +2175,24 @@ bool lightweight_vio::Estimator::try_initialize_imu() {
         return false;
     }
     
+    // Variables to capture optimization costs
+    double initial_cost = 0.0;
+    double final_cost = 0.0;
+    
     // First estimate gravity, then debug velocity comparison
-    bool gravity_success = m_imu_handler->estimate_gravity_with_stereo_constraints(keyframe_ptrs, all_imu_data);
+    bool gravity_success = m_imu_handler->estimate_gravity_with_stereo_constraints(
+        keyframe_ptrs, all_imu_data, 9.81f, &initial_cost, &final_cost);
+    
+    // Store cost information for logging in initialize_imu()
+    if (gravity_success && Config::getInstance().m_enable_debug_output) {
+        double cost_reduction = initial_cost - final_cost;
+        double cost_reduction_percentage = (initial_cost > 0.0) ? (cost_reduction / initial_cost * 100.0) : 0.0;
+        
+        spdlog::info("[GRAVITY_EST] 📉 Optimization Cost:");
+        spdlog::info("  Initial Cost:  {:.6e}", initial_cost);
+        spdlog::info("  Final Cost:    {:.6e}", final_cost);
+        spdlog::info("  Cost Reduction: {:.6e} ({:.2f}%)", cost_reduction, cost_reduction_percentage);
+    }
 
     m_Rgw_init = m_imu_handler->get_Rgw();
 

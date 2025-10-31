@@ -61,17 +61,6 @@ int main(int argc, char* argv[]) {
     config.viewer_width = Config::getInstance().m_viewer_width;
     config.viewer_height = Config::getInstance().m_viewer_height;
     
-    spdlog::info("[Main] RGBD Player settings:");
-    spdlog::info("  camera_type: RGBD");
-    spdlog::info("  mode: VO (Visual Odometry)");
-    spdlog::info("  enable_viewer: {}", config.enable_viewer);
-    spdlog::info("  viewer_width: {}", config.viewer_width);
-    spdlog::info("  viewer_height: {}", config.viewer_height);
-    spdlog::info("  depth_scale: {}", Config::getInstance().m_rgbd_depth_scale);
-    spdlog::info("  depth_range: [{}, {}] m", 
-                 Config::getInstance().m_min_depth,
-                 Config::getInstance().m_max_depth);
-    
     // Create and run RGBD player
     RGBDPlayer player;
     auto result = player.run(config);

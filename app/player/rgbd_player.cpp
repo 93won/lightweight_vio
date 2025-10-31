@@ -37,9 +37,8 @@ RGBDPlayerResult RGBDPlayer::run(const RGBDPlayerConfig& config) {
     RGBDPlayerResult result;
     
     try {
-        // 1. Load configuration
-        Config::getInstance().load(config.config_path);
-        spdlog::info("[RGBDPlayer] Successfully loaded configuration from: {}", config.config_path);
+        // Note: Configuration is already loaded in main(), so we skip loading here
+        // Config::getInstance().load(config.config_path);
         
         // Verify RGBD camera type
         if (Config::getInstance().m_camera_type != CameraType::RGBD) {
@@ -79,14 +78,9 @@ RGBDPlayerResult RGBDPlayer::run(const RGBDPlayerConfig& config) {
         
         // Initial render to make sure window is visible
         if (viewer) {
-            spdlog::info("[RGBDPlayer] Performing initial render to activate window");
             viewer->render();
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            spdlog::info("[RGBDPlayer] Initial render complete, window should be visible now");
         }
-        
-        spdlog::info("[RGBDPlayer] Processing frames {} to {} (VO mode)", 
-                    start_frame_idx, end_frame_idx);
         
         context.current_idx = start_frame_idx;
         while (context.current_idx < end_frame_idx) {
@@ -200,8 +194,6 @@ std::vector<RGBDImageData> RGBDPlayer::load_rgbd_timestamps(const std::string& d
     std::ifstream ts_stream(timestamps_file);
     
     if (ts_stream.is_open()) {
-        spdlog::info("[RGBDPlayer] Loading HWASHIN format (timestamps.txt with color/ and depth/ folders)");
-        
         std::string line;
         int frame_idx = 0;
         while (std::getline(ts_stream, line)) {
@@ -226,7 +218,7 @@ std::vector<RGBDImageData> RGBDPlayer::load_rgbd_timestamps(const std::string& d
             }
         }
         ts_stream.close();
-        spdlog::info("[RGBDPlayer] Loaded {} RGBD image pairs (HWASHIN format)", image_data.size());
+        spdlog::info("Loaded {} RGBD frames", image_data.size());
         return image_data;
     }
     
@@ -355,7 +347,6 @@ bool RGBDPlayer::setup_ground_truth_matching(const std::string& dataset_path,
         spdlog::info("[RGBDPlayer] Using EuRoC format ground truth (gt.csv)");
     }
     else {
-        spdlog::warn("[RGBDPlayer] Failed to load ground truth data, continuing without it");
         return false;
     }
     
@@ -372,13 +363,13 @@ bool RGBDPlayer::setup_ground_truth_matching(const std::string& dataset_path,
     
     // Match with ground truth
     if (!match_image_timestamps_with_gt(image_timestamps)) {
-        spdlog::warn("[RGBDPlayer] Failed to match image timestamps with ground truth");
+        spdlog::debug("[RGBDPlayer] Failed to match image timestamps with ground truth");
         return false;
     }
     
     size_t matched_count = matched_gt_poses_.size();
     if (matched_count == 0) {
-        spdlog::warn("[RGBDPlayer] No matched timestamps found");
+        spdlog::debug("[RGBDPlayer] No matched timestamps found");
         return false;
     }
     
@@ -418,14 +409,13 @@ bool RGBDPlayer::load_ground_truth_euroc_format(const std::string& dataset_path)
     
     std::ifstream file(gt_file_path);
     if (!file.is_open()) {
-        spdlog::error("[RGBDPlayer] Failed to open ground truth file: {}", gt_file_path);
         return false;
     }
     
     std::string line;
     // Skip header line
     if (!std::getline(file, line)) {
-        spdlog::error("[RGBDPlayer] Ground truth file is empty");
+        spdlog::debug("[RGBDPlayer] Ground truth file is empty");
         return false;
     }
     
@@ -609,17 +599,14 @@ std::unique_ptr<PangolinViewer> RGBDPlayer::initialize_viewer(const RGBDPlayerCo
     
     auto viewer = std::make_unique<PangolinViewer>();
     if (viewer->initialize(config.viewer_width, config.viewer_height)) {
-        spdlog::info("[RGBDPlayer] Viewer initialized successfully");
-        
         // Wait for viewer to be ready
         while (!viewer->is_ready()) {
             viewer->render();
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
-        spdlog::info("[RGBDPlayer] Viewer is ready!");
         return viewer;
     } else {
-        spdlog::warn("[RGBDPlayer] Failed to initialize viewer");
+        spdlog::warn("Failed to initialize viewer");
         return nullptr;
     }
 }
@@ -633,8 +620,6 @@ void RGBDPlayer::initialize_estimator(Estimator& estimator, const RGBDFrameConte
         Eigen::Vector3f gt_pos = first_matched_gt_pose_.block<3,1>(0,3);
         spdlog::info("[RGBDPlayer] Set initial ground truth pose at position: [{:.3f}, {:.3f}, {:.3f}]", 
                     gt_pos.x(), gt_pos.y(), gt_pos.z());
-    } else {
-        spdlog::warn("[RGBDPlayer] No matched ground truth pose found for initialization");
     }
 }
 

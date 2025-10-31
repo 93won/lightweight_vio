@@ -21,6 +21,7 @@ performance:
 # Image dimensions and processing parameters
 camera:
   model: "fisheye"            # Camera model: "pinhole" or "fisheye"
+  type: "stereo"                # ⭐ Camera type: "stereo" or "rgbd" or "monocular"
   image_width: 512            # Image width in pixels (TUM VI standard)
   image_height: 512           # Image height in pixels (TUM VI standard)  
   border_size: 0             # Border size to exclude from feature detection (pixels)

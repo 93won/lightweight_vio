@@ -67,6 +67,18 @@ public:
     };
 
     /**
+     * @brief VO initialization result
+     */
+    struct VOInitializationResult {
+        bool success;
+        int num_map_points;
+        int num_features;
+        
+        VOInitializationResult() 
+            : success(false), num_map_points(0), num_features(0) {}
+    };
+
+    /**
      * @brief Constructor
      */
     Estimator();
@@ -273,6 +285,32 @@ private:
      * @brief Update transform from last frame for velocity estimation
      */
     void update_transform_from_last();
+    
+    /**
+     * @brief Initialize VO with RGBD camera (first frame)
+     * @param frame Frame to initialize
+     * @return Initialization result
+     */
+    VOInitializationResult initialize_rgbd(std::shared_ptr<Frame> frame);
+    
+    /**
+     * @brief Initialize VO with Stereo camera (first frame)
+     * @param frame Frame to initialize
+     * @return Initialization result
+     */
+    VOInitializationResult initialize_stereo(std::shared_ptr<Frame> frame);
+    
+    /**
+     * @brief Check if IMU initialization should be attempted
+     * @return True if conditions are met (≥5 keyframes and not yet initialized)
+     */
+    bool should_initialize_imu() const;
+    
+    /**
+     * @brief Initialize IMU system (gravity estimation and bias optimization)
+     * @return True if IMU initialization successful
+     */
+    bool initialize_imu();
     
     /**
      * @brief Create initial map points from stereo or motion
