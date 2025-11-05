@@ -13,12 +13,9 @@
 
 #include <opencv2/opencv.hpp>
 #include <string>
-#include <memory>
 
 namespace lightweight_vio
 {
-    // Forward declaration
-    class Camera;
     enum class CameraModel {
         PINHOLE,
         FISHEYE
@@ -68,10 +65,6 @@ namespace lightweight_vio
         CameraType get_camera_type() const { return m_camera_type; }
         bool is_stereo() const { return m_camera_type == CameraType::STEREO; }
         bool is_rgbd() const { return m_camera_type == CameraType::RGBD; }
-
-        // Camera factory methods
-        std::shared_ptr<Camera> create_left_camera() const;
-        std::shared_ptr<Camera> create_right_camera() const;
 
         // Public member variables for simple access
 

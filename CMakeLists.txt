@@ -80,9 +80,6 @@ file(GLOB_RECURSE SOURCES
 # Add unified stereo pipeline (VO/VIO configurable via YAML)
 add_executable(euroc_stereo app/euroc_stereo.cpp 
     app/player/euroc_player.cpp
-    src/camera/Camera.cpp
-    src/camera/PinholeCamera.cpp
-    src/camera/FisheyeCamera.cpp
     src/database/Frame.cpp
     src/database/Feature.cpp
     src/database/MapPoint.cpp
@@ -100,9 +97,6 @@ add_executable(euroc_stereo app/euroc_stereo.cpp
 # Add TUM stereo pipeline (Fisheye support)
 add_executable(tum_stereo app/tum_stereo.cpp 
     app/player/tum_player.cpp
-    src/camera/Camera.cpp
-    src/camera/PinholeCamera.cpp
-    src/camera/FisheyeCamera.cpp
     src/database/Frame.cpp
     src/database/Feature.cpp
     src/database/MapPoint.cpp
@@ -120,9 +114,6 @@ add_executable(tum_stereo app/tum_stereo.cpp
 # Add RGBD pipeline (VO mode)
 add_executable(rgbd_example app/rgbd_example.cpp 
     app/player/rgbd_player.cpp
-    src/camera/Camera.cpp
-    src/camera/PinholeCamera.cpp
-    src/camera/FisheyeCamera.cpp
     src/database/Frame.cpp
     src/database/Feature.cpp
     src/database/MapPoint.cpp

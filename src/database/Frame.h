@@ -25,7 +25,6 @@ namespace lightweight_vio {
 
 class Feature; // Forward declaration
 class MapPoint;
-class Camera; // Forward declaration
 struct IMUPreintegration; // Forward declaration for IMU preintegration
 
 // ⭐ Frame type enumeration
@@ -165,24 +164,22 @@ public:
     void initialize_outlier_flags(); // Initialize outlier flags with false
 
     // Camera parameter management
-    void set_cameras(std::shared_ptr<Camera> left_camera, std::shared_ptr<Camera> right_camera = nullptr);
-    void set_distortion_coeffs(const std::vector<double>& distortion_coeffs);  // DEPRECATED
-    
-    // Camera access
-    std::shared_ptr<Camera> get_left_camera() const { return m_left_camera; }
-    std::shared_ptr<Camera> get_right_camera() const { return m_right_camera; }
+    void set_camera_intrinsics(double fx, double fy, double cx, double cy);
+    void get_camera_intrinsics(double& fx, double& fy, double& cx, double& cy) const;
+    void set_distortion_coeffs(const std::vector<double>& distortion_coeffs);
+    const std::vector<double>& get_distortion_coeffs() const { return m_distortion_coeffs; }
     
     // Individual camera parameter getters (float version for convenience)
-    float get_fx() const;
-    float get_fy() const;
-    float get_cx() const;
-    float get_cy() const;
+    float get_fx() const { return static_cast<float>(m_fx); }
     
     // Undistorted boundary getters
     double get_undist_x_min() const { return m_undist_x_min; }
     double get_undist_x_max() const { return m_undist_x_max; }
     double get_undist_y_min() const { return m_undist_y_min; }
     double get_undist_y_max() const { return m_undist_y_max; }
+    float get_fy() const { return static_cast<float>(m_fy); }
+    float get_cx() const { return static_cast<float>(m_cx); }
+    float get_cy() const { return static_cast<float>(m_cy); }
     
     // Camera extrinsics operations
     void set_T_CB(const Eigen::Matrix4d& T_CB) { m_T_CB = T_CB; }
@@ -293,9 +290,10 @@ private:
     // Outlier flags for map points (same indexing as m_features and m_map_points)
     std::vector<bool> m_outlier_flags;
 
-    // Camera models (replaces individual intrinsics)
-    std::shared_ptr<Camera> m_left_camera;   // Left/RGB/Mono camera
-    std::shared_ptr<Camera> m_right_camera;  // Right camera (nullptr for RGBD/Monocular)
+    // Camera intrinsic parameters
+    double m_fx, m_fy;           // Focal lengths
+    double m_cx, m_cy;           // Principal point
+    std::vector<double> m_distortion_coeffs; // Distortion coefficients [k1, k2, p1, p2, k3]
     
     // Undistorted image boundaries (computed from corner points)
     double m_undist_x_min, m_undist_x_max;

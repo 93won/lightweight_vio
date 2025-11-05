@@ -43,10 +43,6 @@ Estimator::Estimator()
     , m_sliding_window_thread_running(false)
     , m_keyframes_updated(false) {
     
-    // Create camera models once (cached for all frames)
-    m_left_camera = Config::getInstance().create_left_camera();
-    m_right_camera = Config::getInstance().create_right_camera();
-    
     // Initialize feature tracker
     m_feature_tracker = std::make_unique<FeatureTracker>();
     
@@ -68,8 +64,6 @@ Estimator::Estimator()
     m_sliding_window_thread = std::make_unique<std::thread>(&Estimator::sliding_window_thread_function, this);
     
     if (Config::getInstance().m_enable_debug_output) {
-        spdlog::info("[ESTIMATOR] Camera models created: {}", 
-                     (Config::getInstance().get_camera_model() == CameraModel::PINHOLE) ? "PINHOLE" : "FISHEYE");
         spdlog::info("[ESTIMATOR] Sliding window optimization thread started");
     }
 }
@@ -1119,9 +1113,6 @@ std::shared_ptr<Frame> Estimator::create_frame(const cv::Mat& left_image, const 
         global_config.left_dist_coeffs()
     );
     
-    // Set camera models (cached from constructor)
-    frame->set_cameras(m_left_camera, m_right_camera);
-    
     // Set initial pose and velocity
     if (m_previous_frame) {
         // For non-first frames, start with previous frame pose
@@ -1173,10 +1164,6 @@ std::shared_ptr<Frame> Estimator::create_rgbd_frame(const cv::Mat& rgb_image, co
         global_config.left_dist_coeffs(),
         true  // is_rgbd flag
     );
-
-    // Set camera models (cached from constructor)
-    // For RGBD, only left camera is used
-    frame->set_cameras(m_left_camera, m_left_camera);
 
     
     // Set initial pose and velocity
@@ -1340,7 +1327,7 @@ int lightweight_vio::Estimator::create_initial_map_points(std::shared_ptr<Frame>
             
             // Compute reprojection error for verification
             double fx, fy, cx, cy;
-            fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
+            frame->get_camera_intrinsics(fx, fy, cx, cy);
             
             // Project world point back to camera
             Eigen::Vector4f world_pos_h(world_pos.x(), world_pos.y(), world_pos.z(), 1.0f);
@@ -1554,7 +1541,7 @@ int lightweight_vio::Estimator::create_new_map_points(std::shared_ptr<Frame> fra
                 
                 // Get camera intrinsics from frame
                 double fx, fy, cx, cy;
-                fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
+                frame->get_camera_intrinsics(fx, fy, cx, cy);
                 
                 float projected_x = (fx * camera_projected.x() / camera_projected.z()) + cx;
                 float projected_y = (fy * camera_projected.y() / camera_projected.z()) + cy;
@@ -1774,7 +1761,7 @@ void lightweight_vio::Estimator::compute_reprojection_error_statistics(std::shar
     
     // Get camera parameters
     double fx, fy, cx, cy;
-    fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
+    frame->get_camera_intrinsics(fx, fy, cx, cy);
     
     // DEBUG: Print camera parameters
     // spdlog::debug("[REPROJ_DEBUG] Camera params: fx={:.2f}, fy={:.2f}, cx={:.2f}, cy={:.2f}", fx, fy, cx, cy);

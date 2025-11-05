@@ -12,7 +12,6 @@
 #include "database/Frame.h"
 #include "database/Feature.h" // Include Feature header
 #include "database/MapPoint.h"
-#include "camera/Camera.h"
 #include "util/Config.h"
 #include "processing/IMUHandler.h" // Include for IMUPreintegration
 #include <opencv2/features2d.hpp>
@@ -64,8 +63,11 @@ Frame::Frame(long long timestamp, int frame_id)
     , m_gyro_bias(Eigen::Vector3f::Zero())   // Initialize gyro bias as zero
     , m_dt_from_last_keyframe(0.0)          // Initialize dt as zero
     , m_T_relative_from_ref(Eigen::Matrix4f::Identity())
+    , m_fx(500.0), m_fy(500.0)  // Default focal lengths
+    , m_cx(320.0), m_cy(240.0)  // Default principal point
 {
-    // Note: Camera objects should be set via set_cameras() after construction
+    // Initialize default distortion coefficients (no distortion)
+    m_distortion_coeffs = {0.0, 0.0, 0.0, 0.0, 0.0};
     
     // Get T_BC from config and convert to T_CB (body to camera)
     const Config& config = Config::getInstance();
@@ -101,11 +103,10 @@ Frame::Frame(long long timestamp, int frame_id,
     , m_gyro_bias(Eigen::Vector3f::Zero())   // Initialize gyro bias as zero
     , m_dt_from_last_keyframe(0.0)          // Initialize dt as zero
     , m_T_relative_from_ref(Eigen::Matrix4f::Identity())
+    , m_fx(fx), m_fy(fy)
+    , m_cx(cx), m_cy(cy)
+    , m_distortion_coeffs(distortion_coeffs)
 {
-    // Note: Camera objects should be set via set_cameras() after construction
-    // Parameters fx, fy, cx, cy, distortion_coeffs are kept for backward compatibility
-    
-    // Get T_BC from config and convert to T_CB (body to camera)
     // Get T_BC from config and convert to T_CB (body to camera)
     const Config& config = Config::getInstance();
     cv::Mat T_BC_cv = config.left_T_BC();  // T_BC (camera to body)
@@ -142,11 +143,10 @@ Frame::Frame(long long timestamp, int frame_id,
     , m_gyro_bias(Eigen::Vector3f::Zero())   // Initialize gyro bias as zero
     , m_dt_from_last_keyframe(0.0)          // Initialize dt as zero
     , m_T_relative_from_ref(Eigen::Matrix4f::Identity())
+    , m_fx(fx), m_fy(fy)
+    , m_cx(cx), m_cy(cy)
+    , m_distortion_coeffs(distortion_coeffs)
 {
-    // Note: Camera objects should be set via set_cameras() after construction
-    // Parameters fx, fy, cx, cy, distortion_coeffs are kept for backward compatibility
-    
-    // Get T_BC from config and convert to T_CB (body to camera)
     // Get T_BC from config and convert to T_CB (body to camera)
     const Config& config = Config::getInstance();
     cv::Mat T_bc_cv = config.left_T_BC();  // T_BC (camera to body)
@@ -186,10 +186,11 @@ Frame::Frame(long long timestamp, int frame_id,
     , m_gyro_bias(Eigen::Vector3f::Zero())   // Initialize gyro
     , m_dt_from_last_keyframe(0.0)          // Initialize dt as zero
     , m_T_relative_from_ref(Eigen::Matrix4f::Identity())
+    , m_fx(fx), m_fy(fy)
+    , m_cx(cx), m_cy(cy)
     , m_depth_map(depth_map.clone())
+    , m_distortion_coeffs(distortion_coeffs)
 {
-    // Note: Camera objects should be set via set_cameras() after construction
-    // Parameters fx, fy, cx, cy, distortion_coeffs are kept for backward compatibility
 
     // Get T_BC from config and convert to T_CB (body to camera)
     const Config& config = Config::getInstance();
@@ -801,38 +802,82 @@ void Frame::undistort_features() {
     // Initialize outlier flags for all features
     initialize_outlier_flags();
     
-    if (!m_left_camera) {
-        std::cerr << "Left camera not available for undistortion" << std::endl;
+    const Config& config = Config::getInstance();
+    cv::Mat left_K = config.left_camera_matrix();
+    cv::Mat left_D = config.left_dist_coeffs();
+    cv::Mat right_K = config.right_camera_matrix();
+    cv::Mat right_D = config.right_dist_coeffs();
+    
+    if (left_K.empty() || left_D.empty()) {
+        std::cerr << "Camera calibration not available for undistortion" << std::endl;
         return;
     }
     
-    // Process all features - undistort using Camera objects
+    // Convert to Eigen for easier computation  
+    Eigen::Matrix3d K_left_eigen;
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            K_left_eigen(i, j) = left_K.at<double>(i, j);
+        }
+    }
+    
+    // Process all features - convert to normalized coordinates only
     for (auto& feature : m_features) {
         if (feature->is_valid()) {
             // Get original pixel coordinate
             cv::Point2f pixel_pt = feature->get_pixel_coord();
             
-            // Undistort using left camera
-            cv::Point2f undistorted_pixel = m_left_camera->undistort(pixel_pt);
+            // Method 1: Direct undistortion to normalized coordinates (no rectification)
+            std::vector<cv::Point2f> distorted_pts = {pixel_pt};
+            std::vector<cv::Point2f> undistorted_pts;
+            
+            // Undistort to normalized coordinates based on camera model
+            if (config.get_camera_model() == CameraModel::FISHEYE) {
+                // Use fisheye undistortion
+                cv::fisheye::undistortPoints(distorted_pts, undistorted_pts, left_K, left_D);
+            } else {
+                // Use standard pinhole undistortion (default)
+                cv::undistortPoints(distorted_pts, undistorted_pts, left_K, left_D);
+            }
+
+            
+            // Convert normalized coordinates back to pixel coordinates for set_undistorted_coord
+            cv::Point2f undistorted_pixel;
+            undistorted_pixel.x = undistorted_pts[0].x * m_fx + m_cx;
+            undistorted_pixel.y = undistorted_pts[0].y * m_fy + m_cy;
             feature->set_undistorted_coord(undistorted_pixel);
             
-            // Unproject to get normalized coordinate
-            Eigen::Vector3f ray = m_left_camera->unproject(pixel_pt);
-            Eigen::Vector2f normalized(ray.x() / ray.z(), ray.y() / ray.z());
+            // Store normalized coordinate (from cv::undistortPoints output)
+            Eigen::Vector2f normalized(undistorted_pts[0].x, undistorted_pts[0].y);
             feature->set_normalized_coord(normalized);
             
-            // For stereo matches, undistort right coordinate using right camera
-            if (feature->has_stereo_match() && m_right_camera) {
+            // For stereo matches, we don't need rectification anymore
+            // The triangulation will handle the geometric relationship directly
+            if (feature->has_stereo_match()) {
                 cv::Point2f right_pixel = feature->get_right_coord();
                 
                 // Check if stereo match is valid
                 if (right_pixel.x >= 0 && right_pixel.y >= 0) {
-                    // ⭐ Use RIGHT camera for undistortion (not left!)
-                    cv::Point2f right_undistorted_pixel = m_right_camera->undistort(right_pixel);
+                    // For right camera, undistort to normalized coordinates
+                    std::vector<cv::Point2f> right_distorted = {right_pixel};
+                    std::vector<cv::Point2f> right_undistorted;
                     
-                    // Unproject using RIGHT camera to get normalized coordinate
-                    Eigen::Vector3f right_ray = m_right_camera->unproject(right_pixel);
-                    Eigen::Vector2f right_normalized(right_ray.x() / right_ray.z(), right_ray.y() / right_ray.z());
+                    // For right camera, undistort to normalized coordinates based on camera model
+                    if (config.get_camera_model() == CameraModel::FISHEYE) {
+                        // Use fisheye undistortion
+                        cv::fisheye::undistortPoints(right_distorted, right_undistorted, right_K, right_D);
+                    } else {
+                        // Use standard pinhole undistortion (default)
+                        cv::undistortPoints(right_distorted, right_undistorted, right_K, right_D);
+                    }
+                    
+                    // Also calculate normalized coordinates for right camera
+                    Eigen::Vector2f right_normalized(right_undistorted[0].x, right_undistorted[0].y);
+                    
+                    // Convert normalized coordinates back to pixel coordinates for set_undistorted_stereo_match
+                    cv::Point2f right_undistorted_pixel;
+                    right_undistorted_pixel.x = right_undistorted[0].x * m_fx + m_cx; // Use left camera intrinsics for consistency
+                    right_undistorted_pixel.y = right_undistorted[0].y * m_fy + m_cy;
                     
                     // Store right undistorted coordinate and normalized coordinate
                     feature->set_undistorted_stereo_match(right_undistorted_pixel, right_normalized, -1.0f);
@@ -1153,42 +1198,101 @@ void Frame::initialize_outlier_flags() {
 }
 
 // Camera parameter management
-void Frame::set_cameras(std::shared_ptr<Camera> left_camera, std::shared_ptr<Camera> right_camera) {
-    m_left_camera = left_camera;
-    m_right_camera = right_camera;
+void Frame::set_camera_intrinsics(double fx, double fy, double cx, double cy) {
+    m_fx = fx;
+    m_fy = fy;
+    m_cx = cx;
+    m_cy = cy;
 }
 
-// Camera parameter getters (delegate to camera objects)
-float Frame::get_fx() const {
-    return m_left_camera ? static_cast<float>(m_left_camera->get_fx()) : 0.0f;
-}
-
-float Frame::get_fy() const {
-    return m_left_camera ? static_cast<float>(m_left_camera->get_fy()) : 0.0f;
-}
-
-float Frame::get_cx() const {
-    return m_left_camera ? static_cast<float>(m_left_camera->get_cx()) : 0.0f;
-}
-
-float Frame::get_cy() const {
-    return m_left_camera ? static_cast<float>(m_left_camera->get_cy()) : 0.0f;
+void Frame::get_camera_intrinsics(double& fx, double& fy, double& cx, double& cy) const {
+    fx = m_fx;
+    fy = m_fy;
+    cx = m_cx;
+    cy = m_cy;
 }
 
 void Frame::set_distortion_coeffs(const std::vector<double>& distortion_coeffs) {
-    // DEPRECATED: Camera objects handle distortion internally
-    // This function is kept for backward compatibility but does nothing
+    m_distortion_coeffs = distortion_coeffs;
 }
 
 cv::Point2f Frame::undistort_point(const cv::Point2f& distorted_point) const {
-    if (!m_left_camera) {
-        return distorted_point; // No camera model available
+    if (m_distortion_coeffs.empty() || 
+        (m_distortion_coeffs.size() >= 4 && 
+         std::abs(m_distortion_coeffs[0]) < 1e-6 && 
+         std::abs(m_distortion_coeffs[1]) < 1e-6)) {
+        return distorted_point; // No significant distortion correction needed
     }
+
+    // Check camera model from Config
+    const Config& config = Config::getInstance();
     
-    // Use left camera for undistortion
-    return m_left_camera->undistort(distorted_point);
+    if (config.get_camera_model() == CameraModel::FISHEYE) {
+        // Fisheye undistortion using OpenCV
+        std::vector<cv::Point2f> distorted_points = {distorted_point};
+        std::vector<cv::Point2f> undistorted_points;
+        
+        // Create camera matrix
+        cv::Mat K = (cv::Mat_<double>(3, 3) << m_fx, 0, m_cx,
+                                                0, m_fy, m_cy,
+                                                0, 0, 1);
+        
+        // Create distortion coefficients (fisheye uses 4 coefficients: k1, k2, k3, k4)
+        cv::Mat D = cv::Mat(m_distortion_coeffs).clone();
+        
+        // Undistort using fisheye model
+        cv::fisheye::undistortPoints(distorted_points, undistorted_points, K, D, cv::noArray(), K);
+        
+        return undistorted_points[0];
+    }
+    else {
+        // Pinhole model undistortion (existing code)
+        // Convert to normalized coordinates
+        double x = (distorted_point.x - m_cx) / m_fx;
+        double y = (distorted_point.y - m_cy) / m_fy;
+
+        // Iterative undistortion (Newton-Raphson method)
+        if (m_distortion_coeffs.size() >= 5) {
+            double k1 = m_distortion_coeffs[0];
+            double k2 = m_distortion_coeffs[1];
+            double p1 = m_distortion_coeffs[2];
+            double p2 = m_distortion_coeffs[3];
+            double k3 = m_distortion_coeffs[4];
+
+            // Initial guess
+            double x_u = x;
+            double y_u = y;
+
+            // Iterative correction (typically 5 iterations are enough)
+            for (int iter = 0; iter < 5; ++iter) {
+                double r2 = x_u*x_u + y_u*y_u;
+                double r4 = r2*r2;
+                double r6 = r4*r2;
+
+                // Radial distortion
+                double radial_factor = 1.0 + k1*r2 + k2*r4 + k3*r6;
+                
+                // Tangential distortion
+                double dx = 2.0*p1*x_u*y_u + p2*(r2 + 2.0*x_u*x_u);
+                double dy = p1*(r2 + 2.0*y_u*y_u) + 2.0*p2*x_u*y_u;
+
+                // Distorted coordinates
+                double x_d = x_u * radial_factor + dx;
+                double y_d = y_u * radial_factor + dy;
+
+                // Correction
+                x_u = x_u - (x_d - x);
+                y_u = y_u - (y_d - y);
+            }
+
+            x = x_u;
+            y = y_u;
+        }
+
+        // Convert back to pixel coordinates
+        return cv::Point2f(x * m_fx + m_cx, y * m_fy + m_cy);
+    }
 }
-    
 
 void Frame::extract_stereo_features(int max_features) {
     // Extract features only from left image
@@ -1255,8 +1359,8 @@ void Frame::compute_depth() {
                 // X = (u - cx) / fx * Z
                 // Y = (v - cy) / fy * Z
                 // Z = depth
-                float x_cam = (pixel.x - static_cast<float>(get_cx())) / static_cast<float>(get_fx()) * depth;
-                float y_cam = (pixel.y - static_cast<float>(get_cy())) / static_cast<float>(get_fy()) * depth;
+                float x_cam = (pixel.x - static_cast<float>(m_cx)) / static_cast<float>(m_fx) * depth;
+                float y_cam = (pixel.y - static_cast<float>(m_cy)) / static_cast<float>(m_fy) * depth;
                 float z_cam = depth;
                 
                 Eigen::Vector3f point_cam(x_cam, y_cam, z_cam);
@@ -1671,8 +1775,8 @@ std::vector<Eigen::Vector3f> Frame::generate_dense_point_cloud(
             }
             
             // Back-project pixel to 3D camera coordinates
-            float x_cam = (u - get_cx()) * depth / get_fx();
-            float y_cam = (v - get_cy()) * depth / get_fy();
+            float x_cam = (u - m_cx) * depth / m_fx;
+            float y_cam = (v - m_cy) * depth / m_fy;
             float z_cam = depth;
             
             Eigen::Vector3f P_cam(x_cam, y_cam, z_cam);
@@ -1723,8 +1827,8 @@ std::vector<Frame::ColoredPoint> Frame::generate_colored_point_cloud(
             }
             
             // Back-project to 3D camera coordinates
-            float x_cam = (u - get_cx()) * depth / get_fx();
-            float y_cam = (v - get_cy()) * depth / get_fy();
+            float x_cam = (u - m_cx) * depth / m_fx;
+            float y_cam = (v - m_cy) * depth / m_fy;
             float z_cam = depth;
             
             Eigen::Vector3f P_cam(x_cam, y_cam, z_cam);

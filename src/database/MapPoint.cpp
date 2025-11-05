@@ -208,7 +208,7 @@ Eigen::Matrix3f MapPoint::initial_unproject_pixel_uncertainty_to_world(const Eig
 {
     // Get camera intrinsics
     double fx, fy, cx, cy;
-    fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
+    frame->get_camera_intrinsics(fx, fy, cx, cy);
     
     // Get 3D point in camera coordinates
     Eigen::Vector3f world_pos = get_position();
@@ -359,7 +359,7 @@ Eigen::Matrix3f MapPoint::transform_uncertainty_pixel_to_camera(const Eigen::Mat
     
     // Get camera intrinsics
     double fx, fy, cx, cy;
-    fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
+    frame->get_camera_intrinsics(fx, fy, cx, cy);
     
     // Get 3D point in camera coordinates
     Eigen::Vector3f world_pos = get_position();
