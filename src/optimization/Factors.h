@@ -352,5 +352,6 @@ private:
     Eigen::MatrixXd information_;
 };
 
+
 } // namespace factor
 } // namespace lightweight_vio

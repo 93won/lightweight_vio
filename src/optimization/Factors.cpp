@@ -443,6 +443,11 @@ InertialGravityFactor::InertialGravityFactor(std::shared_ptr<IMUPreintegration> 
     // Compute regularized inverse: A^(-1) = V * S^(-1) * U^T
     Eigen::Matrix<double, 9, 9> information = svd.matrixV() * singular_values.cwiseInverse().asDiagonal() * svd.matrixU().transpose();
     
+    // ⭐ Scale down information matrix for better numerical conditioning
+    // IMU preintegration covariance is often too optimistic (too small)
+    // Scale by 1e-6 to make information ~1.0 instead of ~1e6
+    information *= 1e-6;
+    
     // Compute square root information matrix using Cholesky decomposition
     Eigen::LLT<Eigen::Matrix<double, 9, 9>> llt(information);
     if (llt.info() == Eigen::Success) {
@@ -452,6 +457,7 @@ InertialGravityFactor::InertialGravityFactor(std::shared_ptr<IMUPreintegration> 
         m_sqrt_information = Eigen::Matrix<double, 9, 9>::Identity();
         spdlog::warn("[InertialGravityFactor] Cholesky decomposition failed, using identity weighting");
     }
+    
 }
 
 bool InertialGravityFactor::Evaluate(double const* const* parameters,
@@ -502,6 +508,9 @@ bool InertialGravityFactor::Evaluate(double const* const* parameters,
     Eigen::Vector3d g_I(0, 0, -m_gravity_magnitude);
     Eigen::Vector3d g = R_wg * g_I;  // gravity in world frame
     
+    // std::cout << "[InertialGravityFactor] g_I: " << g_I.transpose() << std::endl;
+    // std::cout << "[InertialGravityFactor] g (world): " << g.transpose() << std::endl;
+    
     // ===============================================================================
     // STEP 3: Get bias-corrected preintegration values
     // ===============================================================================
@@ -551,7 +560,7 @@ bool InertialGravityFactor::Evaluate(double const* const* parameters,
     
     // Position residual: ep = Ri^T * ((tj - ti - vi*dt) - g*dt²/2) - delta_P  
     ep = R_bwi * ((t_wbj - t_wbi - vi * dt) - 0.5 * g * dt * dt) - delta_P;
-    
+
     // ===============================================================================
     // STEP 5: Compute Jacobians 
     // ===============================================================================
@@ -690,17 +699,35 @@ Eigen::Vector3d InertialGravityFactor::log_SO3(const Eigen::Matrix3d& R) const {
 }
 
 Eigen::Matrix3d InertialGravityFactor::gravity_dir_to_rotation(const Eigen::Vector2d& gravity_dir) const {
-    // Convert 2D gravity direction parameterization to rotation matrix
-    // theta[0] affects rotation around Y axis (pitch)
-    // theta[1] affects rotation around X axis (roll)
-    double theta_x = gravity_dir[0];  // rotation around Y axis (pitch)
-    double theta_y = gravity_dir[1];  // rotation around X axis (roll)
+    // ⭐ ORB-SLAM3 compatible implementation
+    // Convert 2D perturbation to rotation matrix using SO(3) exponential map
+    // Rwg = ExpSO3(theta[0], theta[1], 0.0)
+    // where theta[0], theta[1] are small angles around Y and X axes respectively
     
-    // Create rotation matrix: R = Rx(theta_y) * Ry(theta_x)
-    Eigen::Matrix3d R_x = Eigen::AngleAxisd(theta_y, Eigen::Vector3d::UnitX()).toRotationMatrix();
-    Eigen::Matrix3d R_y = Eigen::AngleAxisd(theta_x, Eigen::Vector3d::UnitY()).toRotationMatrix();
+    double theta_x = gravity_dir[0];  // rotation around Y axis
+    double theta_y = gravity_dir[1];  // rotation around X axis
     
-    return R_x * R_y;
+    // Use Rodrigues formula: ExpSO3([theta_x, theta_y, 0])
+    Eigen::Vector3d w(theta_x, theta_y, 0.0);
+    const double d2 = w.dot(w);
+    const double d = std::sqrt(d2);
+    
+    // Skew-symmetric matrix [w]×
+    Eigen::Matrix3d W;
+    W << 0.0,      -w(2),    w(1),
+         w(2),      0.0,    -w(0),
+        -w(1),      w(0),     0.0;
+    
+    Eigen::Matrix3d Rwg;
+    if (d < 1e-5) {
+        // Small angle approximation
+        Rwg = Eigen::Matrix3d::Identity() + W + 0.5*W*W;
+    } else {
+        // Full Rodrigues formula
+        Rwg = Eigen::Matrix3d::Identity() + W*std::sin(d)/d + W*W*(1.0 - std::cos(d))/d2;
+    }
+    
+    return Rwg;
 }
 } // namespace factor
 } // namespace lightweight_vio

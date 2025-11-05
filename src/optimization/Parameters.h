@@ -269,5 +269,98 @@ private:
     bool m_is_fixed;  // Flag to prevent parameter updates when true
 };
 
+/**
+ * @brief Gravity Direction Parameterization using SO(3) manifold (ORB-SLAM3 style)
+ * 
+ * Represents gravity direction using 3x3 rotation matrix Rwg (world to gravity-aligned frame)
+ * The 2D perturbation [pu[0], pu[1]] is applied as:
+ *   Rwg_new = Rwg * ExpSO3(pu[0], pu[1], 0.0)
+ * 
+ * This follows ORB-SLAM3's approach where:
+ * - Global size: 9 (3x3 rotation matrix stored as column-major)
+ * - Local size: 2 (only 2 DoF for gravity direction, z-axis rotation is constrained)
+ * 
+ * The gravity vector in world frame is computed as:
+ *   g_world = Rwg * g_gravity_frame
+ * where g_gravity_frame = [0, 0, -9.81]^T
+ */
+class GravityParameterization : public ceres::LocalParameterization {
+public:
+    GravityParameterization() : m_is_fixed(false) {}
+    virtual ~GravityParameterization() = default;
+
+    /**
+     * @brief Set parameter as fixed
+     */
+    void set_fixed(bool is_fixed) { m_is_fixed = is_fixed; }
+    
+    /**
+     * @brief Check if parameter is fixed
+     */
+    bool is_fixed() const { return m_is_fixed; }
+
+    /**
+     * @brief Apply perturbation to Rwg rotation matrix
+     * 
+     * Implements: Rwg_new = Rwg * ExpSO3(delta[0], delta[1], 0.0)
+     * 
+     * @param x Current Rwg matrix stored as 9 values [column-major]
+     * @param delta 2D perturbation [pu[0], pu[1]]
+     * @param x_plus_delta Output Rwg_new [9 values column-major]
+     * @return true if successful
+     */
+    virtual bool Plus(const double* x,
+                     const double* delta,
+                     double* x_plus_delta) const override;
+
+    /**
+     * @brief Compute Jacobian of Plus operation
+     * 
+     * For SO(3) left perturbation, the Jacobian relates the perturbation
+     * in the 2D tangent space to changes in the 9D rotation matrix representation.
+     * 
+     * @param x Current Rwg matrix [9 values]
+     * @param jacobian Output Jacobian [9x2 matrix in row-major]
+     * @return true if successful
+     */
+    virtual bool ComputeJacobian(const double* x,
+                                double* jacobian) const override;
+    
+    /**
+     * @brief Global size = 9 (3x3 rotation matrix in column-major)
+     */
+    virtual int GlobalSize() const override { return 9; }
+    
+    /**
+     * @brief Local size = 2 (only 2 DoF for gravity direction)
+     */
+    virtual int LocalSize() const override { return 2; }
+
+    /**
+     * @brief SO(3) Exponential Map (Rodrigues formula)
+     * 
+     * Converts axis-angle vector to rotation matrix:
+     *   R = I + sin(theta)/theta * [w]× + (1-cos(theta))/theta² * [w]×²
+     * 
+     * @param w Axis-angle vector [wx, wy, wz]
+     * @return 3x3 rotation matrix
+     */
+    static Eigen::Matrix3d ExpSO3(const Eigen::Vector3d& w);
+    
+    /**
+     * @brief SO(3) Exponential Map (scalar version)
+     */
+    static Eigen::Matrix3d ExpSO3(double x, double y, double z);
+
+private:
+    bool m_is_fixed;
+    
+    /**
+     * @brief Normalize rotation matrix using SVD
+     */
+    static Eigen::Matrix3d NormalizeRotation(const Eigen::Matrix3d& R);
+};
+
+
 } // namespace factor
 } // namespace lightweight_vio

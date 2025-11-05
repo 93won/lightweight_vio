@@ -10,6 +10,7 @@
  */
 
 #include "optimization/Parameters.h"
+#include <iostream>
 
 namespace lightweight_vio {
 namespace factor {
@@ -175,6 +176,132 @@ bool BiasParameterization::ComputeJacobian(const double* x,
     // d(x + delta)/d(delta) = I (3x3 identity matrix)
     Eigen::Map<Eigen::Matrix<double, 3, 3, Eigen::RowMajor>> jac(jacobian);
     jac.setIdentity();
+    return true;
+}
+
+// ===============================================================================
+// GRAVITY PARAMETERIZATION IMPLEMENTATION (ORB-SLAM3 Style)
+// ===============================================================================
+
+Eigen::Matrix3d GravityParameterization::ExpSO3(const Eigen::Vector3d& w) {
+    return ExpSO3(w[0], w[1], w[2]);
+}
+
+Eigen::Matrix3d GravityParameterization::ExpSO3(double x, double y, double z) {
+    // Rodrigues formula: exp([w]×) = I + sin(θ)/θ [w]× + (1-cos(θ))/θ² [w]×²
+    // where θ = ||w|| and [w]× is the skew-symmetric matrix
+    
+    const double d2 = x*x + y*y + z*z;
+    const double d = std::sqrt(d2);
+    
+    // Skew-symmetric matrix [w]×
+    Eigen::Matrix3d W;
+    W << 0.0, -z,   y,
+         z,   0.0, -x,
+        -y,   x,   0.0;
+    
+    Eigen::Matrix3d res;
+    if (d < 1e-5) {
+        // Small angle approximation: exp([w]×) ≈ I + [w]× + 0.5*[w]×²
+        res = Eigen::Matrix3d::Identity() + W + 0.5*W*W;
+    } else {
+        // Full Rodrigues formula
+        res = Eigen::Matrix3d::Identity() + W*std::sin(d)/d + W*W*(1.0 - std::cos(d))/d2;
+    }
+    
+    return NormalizeRotation(res);
+}
+
+Eigen::Matrix3d GravityParameterization::NormalizeRotation(const Eigen::Matrix3d& R) {
+    // Normalize rotation matrix using SVD to ensure orthogonality
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(R, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Matrix3d R_normalized = svd.matrixU() * svd.matrixV().transpose();
+    
+    // Ensure det(R) = +1 (proper rotation, not reflection)
+    if (R_normalized.determinant() < 0) {
+        Eigen::Matrix3d V_corrected = svd.matrixV();
+        V_corrected.col(2) *= -1;  // Flip last column
+        R_normalized = svd.matrixU() * V_corrected.transpose();
+    }
+    
+    return R_normalized;
+}
+
+bool GravityParameterization::Plus(const double* x,
+                                   const double* delta,
+                                   double* x_plus_delta) const {
+    try {
+        // If parameter is fixed, don't apply any updates
+        if (m_is_fixed) {
+            for (int i = 0; i < 9; ++i) {
+                x_plus_delta[i] = x[i];
+            }
+            return true;
+        }
+        
+        // Reconstruct Rwg from column-major array [9 values]
+        Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::ColMajor>> Rwg(x);
+        
+        // Apply perturbation: Rwg_new = Rwg * ExpSO3(delta[0], delta[1], 0.0)
+        // Note: Z-axis rotation is constrained to 0 for gravity direction
+        Eigen::Vector3d perturbation(delta[0], delta[1], 0.0);
+        Eigen::Matrix3d dR = ExpSO3(perturbation);
+        
+        Eigen::Matrix3d Rwg_new = Rwg * dR;
+        
+        // Store result in column-major order
+        Eigen::Map<Eigen::Matrix<double, 3, 3, Eigen::ColMajor>> result(x_plus_delta);
+        result = Rwg_new;
+        
+        return true;
+    } catch (const std::exception& e) {
+        return false;
+    }
+}
+
+bool GravityParameterization::ComputeJacobian(const double* x,
+                                              double* jacobian) const {
+    // Jacobian of Rwg_new = Rwg * ExpSO3(delta[0], delta[1], 0) w.r.t delta
+    // 
+    // For small perturbations, ExpSO3(ε) ≈ I + [ε]×
+    // So: Rwg_new ≈ Rwg * (I + [ε]×) = Rwg + Rwg*[ε]×
+    //
+    // The Jacobian ∂(Rwg_new)/∂ε has size [9 x 2]
+    // Each column corresponds to derivative w.r.t delta[0] and delta[1]
+    
+    Eigen::Map<const Eigen::Matrix<double, 3, 3, Eigen::ColMajor>> Rwg(x);
+    Eigen::Map<Eigen::Matrix<double, 9, 2, Eigen::RowMajor>> jac(jacobian);
+    
+    // ∂(Rwg * ExpSO3(e1, e2, 0))/∂e1 evaluated at e1=e2=0
+    // = Rwg * ∂(ExpSO3(e1, e2, 0))/∂e1
+    // = Rwg * [∂([e]×)/∂e1] at e=[e1, e2, 0]
+    //
+    // [e]× = [ 0  -0   e2 ]     ∂([e]×)/∂e1 = [ 0  0  0 ]
+    //        [ 0   0  -e1 ]                     [ 0  0 -1 ]
+    //        [-e2  e1  0  ]                     [ 0  1  0 ]
+    //
+    // So: ∂(Rwg*ExpSO3)/∂e1 = Rwg * G1 where G1 is the generator for e1
+    
+    // Generator for delta[0] (perturbation around Y-axis)
+    Eigen::Matrix3d G1;
+    G1 << 0, 0,  0,
+          0, 0, -1,
+          0, 1,  0;
+    
+    // Generator for delta[1] (perturbation around X-axis)
+    Eigen::Matrix3d G2;
+    G2 << 0,  0, 1,
+          0,  0, 0,
+         -1,  0, 0;
+    
+    // Jacobian columns: vectorize(Rwg * G1) and vectorize(Rwg * G2)
+    Eigen::Matrix3d J1 = Rwg * G1;
+    Eigen::Matrix3d J2 = Rwg * G2;
+    
+    // Store in row-major format [9x2]
+    jac.col(0) = Eigen::Map<Eigen::VectorXd>(J1.data(), 9);
+    jac.col(1) = Eigen::Map<Eigen::VectorXd>(J2.data(), 9);
+    
     return true;
 }
 

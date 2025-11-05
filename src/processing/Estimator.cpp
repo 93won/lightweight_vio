@@ -1437,22 +1437,6 @@ bool lightweight_vio::Estimator::initialize_imu() {
     // Log success with detailed information
     spdlog::info("================================================================================");
     spdlog::info("[INIT_IMU] IMU Initialization SUCCESSFUL!");
-    spdlog::info("================================================================================");
-    spdlog::info("[INIT_IMU] Estimated Parameters:");
-    spdlog::info("[INIT_IMU]   Gravity Vector (BEFORE Tgw transform):");
-    spdlog::info("[INIT_IMU]     - X: {:.6f} m/s²", imu_init_result.g_world_before_transform.x());
-    spdlog::info("[INIT_IMU]     - Y: {:.6f} m/s²", imu_init_result.g_world_before_transform.y());
-    spdlog::info("[INIT_IMU]     - Z: {:.6f} m/s²", imu_init_result.g_world_before_transform.z());
-    spdlog::info("[INIT_IMU]     - Magnitude: {:.6f} m/s²", imu_init_result.g_world_before_transform.norm());
-    spdlog::info("[INIT_IMU]   Accelerometer Bias:");
-    spdlog::info("[INIT_IMU]     - X: {:.8f} m/s²", imu_init_result.optimized_accel_bias.x());
-    spdlog::info("[INIT_IMU]     - Y: {:.8f} m/s²", imu_init_result.optimized_accel_bias.y());
-    spdlog::info("[INIT_IMU]     - Z: {:.8f} m/s²", imu_init_result.optimized_accel_bias.z());
-    spdlog::info("[INIT_IMU]   Gyroscope Bias:");
-    spdlog::info("[INIT_IMU]     - X: {:.8f} rad/s", imu_init_result.optimized_gyro_bias.x());
-    spdlog::info("[INIT_IMU]     - Y: {:.8f} rad/s", imu_init_result.optimized_gyro_bias.y());
-    spdlog::info("[INIT_IMU]     - Z: {:.8f} rad/s", imu_init_result.optimized_gyro_bias.z());
-    spdlog::info("[INIT_IMU]   IMU optimization enabled in sliding window");
     spdlog::info("================================================================================\n");
     
     return true;
@@ -2419,22 +2403,6 @@ void lightweight_vio::Estimator::update_gravity_visualization_after_transform() 
     
     // Get current gravity from IMUHandler for verification
     Eigen::Vector3f g_imu_handler = m_imu_handler->get_gravity();
-    
-    spdlog::info("");
-    spdlog::info("🎨 [VISUALIZATION] Gravity arrow transformed:");
-    spdlog::info("   📍 g_world (ORIGINAL):           [{:8.5f}, {:8.5f}, {:8.5f}] m/s²",
-                 g_world_original.x(), g_world_original.y(), g_world_original.z());
-    spdlog::info("   📍 g (AFTER Tgw transform):      [{:8.5f}, {:8.5f}, {:8.5f}] m/s²",
-                 m_g_world_before_transform.x(),
-                 m_g_world_before_transform.y(),
-                 m_g_world_before_transform.z());
-    spdlog::info("   📍 g (IMU handler):              [{:8.5f}, {:8.5f}, {:8.5f}] m/s²",
-                 g_imu_handler.x(), g_imu_handler.y(), g_imu_handler.z());
-    spdlog::info("   📍 Arrow origin (gravity-aligned): [{:.3f}, {:.3f}, {:.3f}]",
-                 m_gravity_arrow_origin.x(),
-                 m_gravity_arrow_origin.y(),
-                 m_gravity_arrow_origin.z());
-    spdlog::info("   🔵 Viewer now shows gravity pointing down -Z axis");
 }
 
 void lightweight_vio::Estimator::apply_gravity_alignment_transform(const Eigen::Matrix4f& Tgw) {

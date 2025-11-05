@@ -67,7 +67,7 @@ PangolinViewer::PangolinViewer()
     , m_min_uncertainty_size(0.01f)
     , m_frame_id("ui.Frame ID", 0)
     , m_successful_matches("ui.Num Tracked Map Points", 0, 0, get_max_features_from_config())
-    , m_auto_mode_checkbox("ui.1. Auto Mode", true, true)
+    , m_auto_mode_checkbox("ui.1. Auto Mode", false, true)
     , m_show_map_point_indices("ui.2. Show Map Point IDs", true, true)
     , m_show_accumulated_map_points("ui.3. Show Local Map Points", true, true)
     , m_show_current_map_points("ui.4. Show Current Map Points", true, true)
@@ -353,10 +353,7 @@ void PangolinViewer::render() {
         }
     }
     
-    // ⭐ Draw gravity arrow if set (BEFORE transformation visualization)
-    if (m_show_gravity_arrow) {
-        draw_gravity_arrow();
-    }
+   
 
     // Render tracking image at the bottom (always)
     if (m_has_tracking_image) {
@@ -1991,22 +1988,6 @@ void PangolinViewer::clear_gravity_arrow() {
     m_show_gravity_arrow = false;
 }
 
-void PangolinViewer::draw_gravity_arrow() {
-    std::lock_guard<std::mutex> lock(m_data_mutex);
-    
-    if (!m_show_gravity_arrow) return;
-    
-    // Scale arrow to be visually prominent
-    float arrow_length = 2.0f;  // 2 meters
-    Eigen::Vector3f normalized_direction = m_gravity_vector.normalized();
-    
-    // Draw RED arrow for gravity direction
-    draw_arrow_3d(m_gravity_arrow_origin, normalized_direction, arrow_length, Eigen::Vector3f(1.0f, 0.0f, 0.0f), 0.05f);
-    
-    // Note: Text rendering removed (pangolin::GlFont API varies by version)
-    // Arrow tip location for reference:
-    Eigen::Vector3f arrow_tip = m_gravity_arrow_origin + normalized_direction * arrow_length;
-}
 
 void PangolinViewer::draw_arrow_3d(const Eigen::Vector3f& start, const Eigen::Vector3f& direction, 
                                   float length, const Eigen::Vector3f& color, float shaft_radius) {

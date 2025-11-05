@@ -1481,8 +1481,17 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     options_stage1.max_num_iterations = 50;
     options_stage1.linear_solver_type = ceres::SPARSE_SCHUR;
     options_stage1.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
-    options_stage1.minimizer_progress_to_stdout = false;
-    options_stage1.logging_type = ceres::SILENT;
+    options_stage1.minimizer_progress_to_stdout = true;  // ⭐ Enable to see what's happening
+    options_stage1.logging_type = ceres::PER_MINIMIZER_ITERATION;
+    
+    // ⭐ Accept first improvement without being too strict
+    options_stage1.function_tolerance = 1e-3;   // Accept 0.1% cost reduction
+    options_stage1.gradient_tolerance = 1e-6;   
+    options_stage1.parameter_tolerance = 1e-6;
+    
+    // ⭐ Constrain trust region to prevent too large steps
+    options_stage1.max_trust_region_radius = 1e2;  // Limit maximum step size
+    options_stage1.initial_trust_region_radius = 1e1;  // Start with moderate steps
     
     // Add parameter blocks - FIX poses, velocities, biases
     for (size_t i = 0; i < pose_params_vec.size(); ++i) {
@@ -1507,7 +1516,10 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         problem_stage1.SetParameterBlockConstant(gyro_bias_params_vec[i].data());
     }
     
+    // Add gravity direction parameter block (2D Euclidean - NO parameterization needed!)
+    // Gravity is already in tangent space, so Ceres can directly update it
     problem_stage1.AddParameterBlock(gravity_dir_params.data(), 2);
+    // NO SetParameterization() - Ceres will update gravity_dir_params directly!
     
     // Add InertialGravityFactor
     int stage1_factors = add_inertial_gravity_factors(
@@ -1532,6 +1544,10 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
                  summary_stage1.iterations.size(),
                  (1.0 - summary_stage1.final_cost / summary_stage1.initial_cost) * 100.0,
                  stage1_duration.count());
+    
+    // ⭐ DEBUG: Check gravity_dir after Stage 1
+    spdlog::info("🔍 [DEBUG] After STAGE 1 - gravity_dir_params: [{}, {}]", 
+                 gravity_dir_params[0], gravity_dir_params[1]);
     
     // ===============================================================================
     // STAGE 2: Optimize Velocities + Biases (Rwg FIXED)
@@ -1567,8 +1583,10 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         problem_stage2.AddParameterBlock(gyro_bias_params_vec[i].data(), 3);
     }
     
+    // Add gravity direction parameter block (2D Euclidean - fixed in Stage 2)
     problem_stage2.AddParameterBlock(gravity_dir_params.data(), 2);
     problem_stage2.SetParameterBlockConstant(gravity_dir_params.data());
+    // NO SetParameterization() needed!
     
     // Add InertialGravityFactor again
     int stage2_factors = add_inertial_gravity_factors(
@@ -1633,16 +1651,29 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
                      gyro_bias_params_vec[i][0], gyro_bias_params_vec[i][1], gyro_bias_params_vec[i][2]);
     }   
     
-    // Convert to rotation matrix and gravity vector
-    Eigen::Matrix3d R_x = Eigen::AngleAxisd(gravity_dir_params[1], Eigen::Vector3d::UnitX()).toRotationMatrix();
-    Eigen::Matrix3d R_y = Eigen::AngleAxisd(gravity_dir_params[0], Eigen::Vector3d::UnitY()).toRotationMatrix();
-    Eigen::Matrix3d R_gw = R_x * R_y;
-    Eigen::Vector3d g_initial(0.0, 0.0, 9.81);
-    Eigen::Vector3d g_optimized = R_gw * g_initial;
-    spdlog::info("  Optimized gravity: [{:.6f}, {:.6f}, {:.6f}] m/s²", g_optimized.x(), g_optimized.y(), g_optimized.z());
+    // Convert gravity_dir to rotation matrix using ExpSO3 (matching ORB-SLAM3)
+    // ExpSO3(x, y, 0) converts 2D gravity direction to SO(3) rotation matrix
+    Eigen::Vector3d omega(gravity_dir_params[0], gravity_dir_params[1], 0.0);
+    double theta = omega.norm();
+    Eigen::Matrix3d Rwg;
     
-    spdlog::info("📊 [IMU_INIT] Residual Analysis:");
-    
+    if (theta < 1e-5) {
+        // Small angle approximation
+        Eigen::Matrix3d omega_hat;
+        omega_hat << 0.0, -omega(2), omega(1),
+                     omega(2), 0.0, -omega(0),
+                    -omega(1), omega(0), 0.0;
+        Rwg = Eigen::Matrix3d::Identity() + omega_hat + 0.5 * omega_hat * omega_hat;
+    } else {
+        // Rodrigues formula
+        Eigen::Matrix3d omega_hat;
+        omega_hat << 0.0, -omega(2), omega(1),
+                     omega(2), 0.0, -omega(0),
+                    -omega(1), omega(0), 0.0;
+        Rwg = Eigen::Matrix3d::Identity() + (std::sin(theta) / theta) * omega_hat 
+              + ((1.0 - std::cos(theta)) / (theta * theta)) * omega_hat * omega_hat;
+    }
+ 
     std::vector<double> rotation_residuals;
     std::vector<double> velocity_residuals;
     std::vector<double> position_residuals;
@@ -1721,24 +1752,9 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         // Extract optimization results - NO frame modification!
         // ===============================================================================
         
-        double theta_x = gravity_dir_params[0];
-        double theta_y = gravity_dir_params[1];
-        
-        // Compute rotation matrices
-        Eigen::Matrix3d R_x = Eigen::AngleAxisd(theta_y, Eigen::Vector3d::UnitX()).toRotationMatrix();
-        Eigen::Matrix3d R_y = Eigen::AngleAxisd(theta_x, Eigen::Vector3d::UnitY()).toRotationMatrix();
-        Eigen::Matrix3d R_gw = R_x * R_y;  // Gravity → World rotation
-        
-        // 1. Compute gravity vector in world frame (BEFORE transformation)
-        Eigen::Vector3d g_gravity_frame(0, 0, -9.81);
-        Eigen::Vector3d g_world = R_gw * g_gravity_frame;
-        result.g_world_before_transform = g_world.cast<float>();
-        
-        // 2. Compute Tgw transformation matrix
-        Eigen::Matrix3d Rwg = R_gw.transpose();  // World → Gravity rotation
         result.Tgw_init = Eigen::Matrix4f::Identity();
-        result.Tgw_init.block<3,3>(0,0) = Rwg.cast<float>();
-        result.Rwg = Rwg;
+        result.Tgw_init.block<3,3>(0,0) = Rwg.cast<float>().transpose();
+        result.Rwg = Rwg; // World to Gravity frame
         
         // 3. Extract optimized velocities
         result.optimized_velocities.resize(velocity_params_vec.size());
@@ -1780,17 +1796,7 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         }
         result.has_gravity_visualization_data = true;
         
-        spdlog::info("✅ [IMU_INIT] Optimization results ready:");
-        spdlog::info("   📐 Gravity: [{:.6f}, {:.6f}, {:.6f}] m/s²", 
-                     g_world.x(), g_world.y(), g_world.z());
-        spdlog::info("   � Avg Gyro Bias: [{:.6f}, {:.6f}, {:.6f}] rad/s",
-                     result.optimized_gyro_bias.x(), 
-                     result.optimized_gyro_bias.y(), 
-                     result.optimized_gyro_bias.z());
-        spdlog::info("   🔧 Avg Accel Bias: [{:.6f}, {:.6f}, {:.6f}] m/s²",
-                     result.optimized_accel_bias.x(), 
-                     result.optimized_accel_bias.y(), 
-                     result.optimized_accel_bias.z());
+        
     } 
     else 
     {
@@ -1910,14 +1916,7 @@ void InertialOptimizer::setup_imu_init_vertices(
         
     }
     
-    // Initialize gravity direction to "down" (small perturbations around z-down)
-    gravity_dir_params[0] = 0.0; // Small x rotation
-    gravity_dir_params[1] = 0.0; // Small y rotation
-    
-    // spdlog::info("🏁 [IMU_INIT] Initialized {} pose vertices, {} velocity+bias vertices", 
-    //              pose_params_vec.size(), velocity_bias_params_vec.size());
-    // spdlog::info("📊 [IMU_INIT] Strategy: Frame[0]=ZERO_VEL, Frame[1-{}]=MULTI_SOURCE_AVERAGED_VEL + PER_FRAME_BIAS", 
-    //              frames.size() - 1);
+   
 }
 
 int InertialOptimizer::add_inertial_gravity_factors(

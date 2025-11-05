@@ -287,7 +287,6 @@ private:
     void draw_pose();
     void draw_camera_frustum();
     void draw_feature_grid(cv::Mat& image);  // Grid overlay for feature distribution
-    void draw_gravity_arrow();  // ⭐ Draw gravity direction arrow
     void draw_arrow_3d(const Eigen::Vector3f& start, const Eigen::Vector3f& direction, 
                       float length, const Eigen::Vector3f& color, float shaft_radius = 0.05f);
     
