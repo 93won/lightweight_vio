@@ -146,6 +146,10 @@ public:
 
     // Gravity frame transformation
     void set_gravity_transformation(const Eigen::Matrix4f& Tgw);
+    
+    // ⭐ Gravity direction visualization (BEFORE transformation)
+    void set_gravity_arrow(const Eigen::Vector3f& origin, const Eigen::Vector3f& g_world, const std::string& label = "g_world");
+    void clear_gravity_arrow();
 
 private:
     // Pangolin components
@@ -247,6 +251,12 @@ private:
     Eigen::Matrix4f m_Tgw;                  // World-to-Gravity transformation matrix (SE(3))
     bool m_has_gravity_transformation;      // Flag to check if transformation is set
     
+    // ⭐ Gravity arrow visualization (BEFORE transformation)
+    bool m_show_gravity_arrow;              // Flag to show gravity arrow
+    Eigen::Vector3f m_gravity_arrow_origin; // Arrow starting position
+    Eigen::Vector3f m_gravity_vector;       // g_world direction vector
+    std::string m_gravity_arrow_label;      // Label (e.g., "g_world")
+    
     // Input state
     bool m_space_pressed;
     bool m_next_pressed;
@@ -277,6 +287,9 @@ private:
     void draw_pose();
     void draw_camera_frustum();
     void draw_feature_grid(cv::Mat& image);  // Grid overlay for feature distribution
+    void draw_gravity_arrow();  // ⭐ Draw gravity direction arrow
+    void draw_arrow_3d(const Eigen::Vector3f& start, const Eigen::Vector3f& direction, 
+                      float length, const Eigen::Vector3f& color, float shaft_radius = 0.05f);
     
     // Uncertainty drawing helpers
     void draw_sphere(float radius, int slices = 16, int stacks = 16);

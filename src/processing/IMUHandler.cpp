@@ -707,6 +707,23 @@ bool IMUHandler::transform_to_gravity_frame(
     const std::vector<std::shared_ptr<MapPoint>>& map_points,
     Eigen::Matrix4f& T_gw) {
 
+
+    // if (Config::getInstance().m_enable_debug_output) 
+    {
+        spdlog::info("================================================================================");
+        spdlog::info("[TRANSFORM] 🔄 Applying gravity frame transformation");
+        spdlog::info("[TRANSFORM] Input Tgw (World → Gravity-aligned):");
+        spdlog::info("[TRANSFORM]   Row 1: [{:.6f}, {:.6f}, {:.6f}, {:.6f}]", 
+                     T_gw(0,0), T_gw(0,1), T_gw(0,2), T_gw(0,3));
+        spdlog::info("[TRANSFORM]   Row 2: [{:.6f}, {:.6f}, {:.6f}, {:.6f}]", 
+                     T_gw(1,0), T_gw(1,1), T_gw(1,2), T_gw(1,3));
+        spdlog::info("[TRANSFORM]   Row 3: [{:.6f}, {:.6f}, {:.6f}, {:.6f}]", 
+                     T_gw(2,0), T_gw(2,1), T_gw(2,2), T_gw(2,3));
+        spdlog::info("[TRANSFORM]   Row 4: [{:.6f}, {:.6f}, {:.6f}, {:.6f}]", 
+                     T_gw(3,0), T_gw(3,1), T_gw(3,2), T_gw(3,3));
+        spdlog::info("================================================================================");
+    }
+
     if (!m_gravity_aligned) {
         spdlog::error("[IMU_HANDLER] Gravity alignment not computed, call estimate_gravity_with_stereo_constraints first");
         return false;
@@ -718,19 +735,19 @@ bool IMUHandler::transform_to_gravity_frame(
     }
     
     if (Config::getInstance().m_enable_debug_output) {
-        spdlog::info("[IMU_HANDLER] 🌍 Transforming {} keyframes and {} map points to gravity-aligned frame", keyframes.size(), map_points.size());
+        spdlog::info("[IMU_HANDLER] 🌍 Transforming {} keyframes and {} map points to gravity-aligned frame", 
+                     keyframes.size(), map_points.size());
     }
     
-    // Transform all keyframe poses
-
-    int ii =0;
+    // ============================================================================
+    // 1. Transform all keyframes
+    // ============================================================================
     for (const auto& frame : keyframes) {
         if (!frame) continue;
         
         // Get current pose T_wb (world-to-body)
         Eigen::Matrix4f T_wb = frame->get_Twb();
         Eigen::Matrix4f T_gb = T_gw * T_wb;
-
         
         // Set transformed pose
         frame->set_Twb(T_gb);
@@ -739,11 +756,12 @@ bool IMUHandler::transform_to_gravity_frame(
         Eigen::Vector3f velocity_world = frame->get_velocity();
         Eigen::Vector3f velocity_gravity = m_Rgw * velocity_world;
         frame->set_velocity(velocity_gravity);
-        
-        // Frame transformation completed (reduced logging)
     }
+
     
-    // Transform all map points
+    // ============================================================================
+    // 2. Transform all map points
+    // ============================================================================
     int transformed_count = 0;
     for (const auto& map_point : map_points) {
         if (!map_point) continue;
@@ -758,13 +776,20 @@ bool IMUHandler::transform_to_gravity_frame(
         map_point->set_position(pos_gravity);
         transformed_count++;
     }
-    if (Config::getInstance().m_enable_debug_output)
-    {
     
-    spdlog::info("[IMU_HANDLER] ✅ Successfully transformed {} keyframes and {} map points to gravity frame", 
-                 keyframes.size(), transformed_count);
-    spdlog::info("[IMU_HANDLER] Gravity vector in new frame: ({:.4f}, {:.4f}, {:.4f}) m/s²", 
-                 0.0f, 0.0f, -m_gravity.norm());
+    if (Config::getInstance().m_enable_debug_output) {
+        spdlog::info("[IMU_HANDLER] ✅ Successfully transformed to gravity frame:");
+        spdlog::info("[IMU_HANDLER]   - {} keyframes", keyframes.size());
+        spdlog::info("[IMU_HANDLER]   - {} map points", transformed_count);
+        spdlog::info("[IMU_HANDLER] Gravity vector in new frame: ({:.4f}, {:.4f}, {:.4f}) m/s²", 
+                     0.0f, 0.0f, -m_gravity.norm());
+    }
+
+    // ============================================================================
+    // 🎯 VERIFICATION: Check if gravity is really aligned using raw IMU data
+    // ============================================================================
+    if (Config::getInstance().m_enable_debug_output) {
+        verify_gravity_alignment_with_imu_data(keyframes);
     }
     
     return true;
@@ -1000,6 +1025,122 @@ void IMUHandler::set_gravity_aligned_coordinate_system() {
         spdlog::info("  - Gravity vector: (0.0, 0.0, -9.81) m/s²");
         std::cout<<"\n";
     }
+}
+
+bool IMUHandler::verify_gravity_alignment_with_imu_data(
+    const std::vector<std::shared_ptr<Frame>>& keyframes) {
+    
+    if (keyframes.empty()) {
+        spdlog::warn("[IMU_HANDLER] No keyframes provided for verification");
+        return false;
+    }
+    
+    spdlog::info("[IMU_HANDLER] 🔍 Verifying gravity alignment using raw IMU data...");
+    
+    // Collect all IMU measurements from keyframes
+    std::vector<Eigen::Vector3f> world_accelerations;
+    int total_imu_samples = 0;
+    int keyframes_with_imu = 0;
+    
+    for (const auto& frame : keyframes) {
+        if (!frame) continue;
+        
+        // Get IMU data since last keyframe
+        const auto& imu_data = frame->get_imu_data_since_last_keyframe();
+        if (imu_data.empty()) continue;
+        
+        keyframes_with_imu++;
+        
+        // Get frame's body-to-world rotation (after gravity alignment)
+        Eigen::Matrix4f T_gb = frame->get_Twb();
+        Eigen::Matrix3f R_gb = T_gb.block<3,3>(0,0);
+        
+        // Get frame's bias
+        Eigen::Vector3f gyro_bias = frame->get_gyro_bias();
+        Eigen::Vector3f accel_bias = frame->get_accel_bias();
+        
+        // Transform each IMU acceleration to world frame
+        for (const auto& imu : imu_data) {
+            // Remove bias from body frame acceleration
+            Eigen::Vector3f accel_body = imu.linear_accel - accel_bias;
+            
+            // Transform to world (gravity-aligned) frame
+            Eigen::Vector3f accel_world = R_gb * accel_body;
+            
+            world_accelerations.push_back(accel_world);
+            total_imu_samples++;
+        }
+    }
+    
+    if (world_accelerations.empty()) {
+        spdlog::warn("[IMU_HANDLER] No IMU data available for verification");
+        return false;
+    }
+    
+    // Compute statistics
+    Eigen::Vector3f mean_accel = Eigen::Vector3f::Zero();
+    for (const auto& accel : world_accelerations) {
+        mean_accel += accel;
+    }
+    mean_accel /= static_cast<float>(world_accelerations.size());
+    
+    // Compute standard deviation
+    Eigen::Vector3f variance = Eigen::Vector3f::Zero();
+    for (const auto& accel : world_accelerations) {
+        Eigen::Vector3f diff = accel - mean_accel;
+        variance += diff.cwiseProduct(diff);
+    }
+    variance /= static_cast<float>(world_accelerations.size());
+    Eigen::Vector3f std_dev = variance.cwiseSqrt();
+    
+    // Expected gravity in gravity-aligned frame
+    Eigen::Vector3f expected_gravity(0.0f, 0.0f, -9.81f);
+    
+    // Compute error
+    Eigen::Vector3f error = mean_accel - expected_gravity;
+    float error_norm = error.norm();
+    float error_percentage = (error_norm / 9.81f) * 100.0f;
+    
+    // Log results
+    spdlog::info("[IMU_HANDLER] ═══════════════════════════════════════════════════════");
+    spdlog::info("[IMU_HANDLER]   GRAVITY ALIGNMENT VERIFICATION RESULTS");
+    spdlog::info("[IMU_HANDLER] ═══════════════════════════════════════════════════════");
+    spdlog::info("[IMU_HANDLER] Total keyframes: {}, Keyframes with IMU: {}", 
+                 keyframes.size(), keyframes_with_imu);
+    spdlog::info("[IMU_HANDLER] Total IMU samples analyzed: {}", total_imu_samples);
+    spdlog::info("[IMU_HANDLER] ───────────────────────────────────────────────────────");
+    spdlog::info("[IMU_HANDLER] Mean acceleration (world frame):");
+    spdlog::info("[IMU_HANDLER]   X: {:.4f} m/s² (σ={:.4f})", mean_accel.x(), std_dev.x());
+    spdlog::info("[IMU_HANDLER]   Y: {:.4f} m/s² (σ={:.4f})", mean_accel.y(), std_dev.y());
+    spdlog::info("[IMU_HANDLER]   Z: {:.4f} m/s² (σ={:.4f})", mean_accel.z(), std_dev.z());
+    spdlog::info("[IMU_HANDLER] ───────────────────────────────────────────────────────");
+    spdlog::info("[IMU_HANDLER] Expected gravity: (0.0000, 0.0000, -9.8100) m/s²");
+    spdlog::info("[IMU_HANDLER] ───────────────────────────────────────────────────────");
+    spdlog::info("[IMU_HANDLER] Error from expected:");
+    spdlog::info("[IMU_HANDLER]   ΔX: {:.4f} m/s²", error.x());
+    spdlog::info("[IMU_HANDLER]   ΔY: {:.4f} m/s²", error.y());
+    spdlog::info("[IMU_HANDLER]   ΔZ: {:.4f} m/s²", error.z());
+    spdlog::info("[IMU_HANDLER]   ||error||: {:.4f} m/s² ({:.2f}%)", error_norm, error_percentage);
+    spdlog::info("[IMU_HANDLER] ───────────────────────────────────────────────────────");
+    
+    // Determine if alignment is good (threshold: 5% error)
+    bool is_aligned = error_percentage < 5.0f;
+    
+    if (is_aligned) {
+        spdlog::info("[IMU_HANDLER] ✅ PASSED: Gravity is properly aligned!");
+        spdlog::info("[IMU_HANDLER]    Error within acceptable range (<5%)");
+    } else {
+        spdlog::warn("[IMU_HANDLER] ⚠️  WARNING: Gravity alignment error is high (>{:.1f}%)", error_percentage);
+        spdlog::warn("[IMU_HANDLER]    This may indicate:");
+        spdlog::warn("[IMU_HANDLER]      1. Sensor is moving during initialization");
+        spdlog::warn("[IMU_HANDLER]      2. Incorrect camera extrinsics (T_BC)");
+        spdlog::warn("[IMU_HANDLER]      3. Bias estimation issues");
+    }
+    
+    spdlog::info("[IMU_HANDLER] ═══════════════════════════════════════════════════════");
+    std::cout << "\n";
+    
+    return is_aligned;
 }
 
 

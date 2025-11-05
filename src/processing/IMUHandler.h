@@ -261,7 +261,7 @@ public:
     }
 
     /**
-     * @brief Transform all keyframe poses and map points to gravity-aligned coordinate frame
+     * @brief Transform keyframe poses and map points to gravity-aligned coordinate frame
      * @param keyframes Vector of keyframes to transform
      * @param map_points Vector of map points to transform (positions will be modified)
      * @param T_gw Output transformation matrix
@@ -271,6 +271,15 @@ public:
         const std::vector<std::shared_ptr<Frame>>& keyframes,
         const std::vector<std::shared_ptr<MapPoint>>& map_points,
         Eigen::Matrix4f& T_gw
+    );
+
+    /**
+     * @brief Verify gravity alignment by checking raw IMU accelerometer data
+     * @param keyframes Vector of keyframes with IMU data to verify
+     * @return True if gravity is properly aligned (accelerations average to [0,0,-9.81])
+     */
+    bool verify_gravity_alignment_with_imu_data(
+        const std::vector<std::shared_ptr<Frame>>& keyframes
     );
 
   

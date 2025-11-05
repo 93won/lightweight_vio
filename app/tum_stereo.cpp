@@ -14,10 +14,16 @@
 #include "player/tum_player.h"
 #include <util/Config.h>
 #include <glog/logging.h>
+#include <cstdlib>
+#include <opencv2/opencv.hpp>
 
 using namespace lightweight_vio;
 
 int main(int argc, char* argv[]) {
+    // Set random seed for reproducibility
+    srand(42);
+    cv::setRNGSeed(42);
+    
     // Suppress Google logging (Ceres) error messages
     google::InitGoogleLogging(argv[0]);
     FLAGS_logtostderr = false;

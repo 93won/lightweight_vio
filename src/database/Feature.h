@@ -73,15 +73,13 @@ public:
         m_has_stereo_match = true;
     }
     
-    void set_undistorted_stereo_match(const cv::Point2f& right_undistorted_coord, const Eigen::Vector2f& right_normalized, float undistorted_disparity) {
-        m_right_undistorted_coord = right_undistorted_coord;
+    void set_undistorted_stereo_match(const Eigen::Vector2f& right_normalized, float undistorted_disparity) {
         m_right_normalized_coord = right_normalized;
         m_undistorted_disparity = undistorted_disparity;
     }
     
     bool has_stereo_match() const { return m_has_stereo_match; }
     const cv::Point2f& get_right_coord() const { return m_right_coord; }
-    const cv::Point2f& get_right_undistorted_coord() const { return m_right_undistorted_coord; }
     float get_stereo_disparity() const { return m_disparity; }
     float get_undistorted_disparity() const { return m_undistorted_disparity; }
     Eigen::Vector2f get_right_normalized_coord() const {
@@ -105,7 +103,6 @@ private:
     
     // Stereo matching data
     cv::Point2f m_right_coord;     // Pixel coordinates in right image
-    cv::Point2f m_right_undistorted_coord; // Undistorted pixel coordinates in right image
     Eigen::Vector2f m_right_normalized_coord; // Normalized coordinates in right camera
     float m_disparity;             // Stereo disparity (pixel coordinates)
     float m_undistorted_disparity; // Undistorted stereo disparity

@@ -13,6 +13,7 @@
 
 #include <opencv2/opencv.hpp>
 #include <string>
+#include <memory>
 
 namespace lightweight_vio
 {

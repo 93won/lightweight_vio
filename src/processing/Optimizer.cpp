@@ -58,7 +58,7 @@ namespace lightweight_vio
 
         // Get camera parameters from frame
         double fx, fy, cx, cy;
-        frame->get_camera_intrinsics(fx, fy, cx, cy);
+        fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
         
 
         
@@ -456,7 +456,7 @@ namespace lightweight_vio
                 
         //         // Project to image plane
         //         double fx, fy, cx, cy;
-        //         frame->get_camera_intrinsics(fx, fy, cx, cy);
+        //         fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
                 
         //         if (point_camera.z() > 0) {
         //             double u_proj = fx * point_camera.x() / point_camera.z() + cx;
@@ -1386,8 +1386,8 @@ ceres::Solver::Options SlidingWindowOptimizer::setup_solver_options(int max_iter
     options.minimizer_progress_to_stdout = false;
     options.logging_type = ceres::SILENT;
     
-    // Use multiple threads if available
-    options.num_threads = std::min(4, static_cast<int>(std::thread::hardware_concurrency()));
+    // Use single thread for deterministic results
+    options.num_threads = 1;
     
     return options;
 }
@@ -1434,6 +1434,7 @@ InertialOptimizer::InertialOptimizer() {
 
 InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     std::vector<Frame*>& frames,
+    const std::vector<Frame*>& all_keyframes_for_transform,
     std::shared_ptr<IMUHandler> imu_handler) {
     
     InertialOptimizationResult result;
@@ -1448,111 +1449,163 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         return result;
     }
     
-    
-    
+    spdlog::info("================================================================================");
+    spdlog::info("🚀 [IMU_INIT] Starting 2-Stage Optimization");
+    spdlog::info("   Keyframes: {}", frames.size());
+    spdlog::info("================================================================================");
     
     // ===============================================================================
-    // STEP 1: Setup optimization parameters - separate velocity and bias arrays
+    // SETUP: Initialize all parameter vectors
     // ===============================================================================
     
     std::vector<std::vector<double>> pose_params_vec(frames.size(), std::vector<double>(6));
-    std::vector<std::vector<double>> velocity_params_vec(frames.size(), std::vector<double>(3));  // velocity (3D)
-    std::vector<std::vector<double>> accel_bias_params_vec(frames.size(), std::vector<double>(3)); // accel bias (3D)  
-    std::vector<std::vector<double>> gyro_bias_params_vec(frames.size(), std::vector<double>(3));  // gyro bias (3D)
-    std::vector<double> gravity_dir_params(2, 0.0); // 2D gravity direction
+    std::vector<std::vector<double>> velocity_params_vec(frames.size(), std::vector<double>(3));
+    std::vector<std::vector<double>> accel_bias_params_vec(frames.size(), std::vector<double>(3));
+    std::vector<std::vector<double>> gyro_bias_params_vec(frames.size(), std::vector<double>(3));
+    std::vector<double> gravity_dir_params(2, 0.0);
     
     setup_imu_init_vertices(frames, imu_handler, pose_params_vec, velocity_params_vec, 
                            accel_bias_params_vec, gyro_bias_params_vec, gravity_dir_params);
     
-    // ===============================================================================
-    // LOG INITIAL STATES (BEFORE OPTIMIZATION) - Minimized
-    // ===============================================================================
-    
-
+    auto start_time = std::chrono::high_resolution_clock::now();
     
     // ===============================================================================
-    // STEP 2: Setup Ceres problem
+    // STAGE 1: Optimize Gravity Direction ONLY (Rwg)
     // ===============================================================================
     
-    ceres::Problem problem;
-    ceres::Solver::Options options;
+    spdlog::info("");
+    spdlog::info("[STAGE 1] Optimizing Gravity Direction...");
     
-    // IMU initialization requires very strict convergence for accurate bias estimation
-    options.max_num_iterations = 100;  // Much longer optimization for better convergence
-    // Solver configuration optimized for IMU initialization
-    options.linear_solver_type = ceres::SPARSE_SCHUR;
-    options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
-    options.minimizer_progress_to_stdout = false;  // Disable progress output
-    options.logging_type = ceres::SILENT;
-    // options.check_gradients = true;  // Disable gradient checking temporarily to allow optimization
-
-
+    ceres::Problem problem_stage1;
+    ceres::Solver::Options options_stage1;
+    options_stage1.max_num_iterations = 50;
+    options_stage1.linear_solver_type = ceres::SPARSE_SCHUR;
+    options_stage1.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
+    options_stage1.minimizer_progress_to_stdout = false;
+    options_stage1.logging_type = ceres::SILENT;
     
-    // ===============================================================================
-    // STEP 3: Add parameter blocks and parameterizations
-    // ===============================================================================
-    
-    // Add pose parameter blocks (fixed during IMU initialization)
+    // Add parameter blocks - FIX poses, velocities, biases
     for (size_t i = 0; i < pose_params_vec.size(); ++i) {
-        problem.AddParameterBlock(pose_params_vec[i].data(), 6);
-        auto* pose_parameterization = new factor::SE3GlobalParameterization();
-        problem.SetParameterization(pose_params_vec[i].data(), pose_parameterization);
-        problem.SetParameterBlockConstant(pose_params_vec[i].data()); // Fix poses
+        problem_stage1.AddParameterBlock(pose_params_vec[i].data(), 6);
+        auto* pose_param = new factor::SE3GlobalParameterization();
+        problem_stage1.SetParameterization(pose_params_vec[i].data(), pose_param);
+        problem_stage1.SetParameterBlockConstant(pose_params_vec[i].data());
     }
     
-    // Add velocity parameter blocks (3D each) - temporarily fixed
     for (size_t i = 0; i < velocity_params_vec.size(); ++i) {
-        problem.AddParameterBlock(velocity_params_vec[i].data(), 3);
-        // problem.SetParameterBlockConstant(velocity_params_vec[i].data()); // Fix velocity
+        problem_stage1.AddParameterBlock(velocity_params_vec[i].data(), 3);
+        problem_stage1.SetParameterBlockConstant(velocity_params_vec[i].data());
     }
     
-    // Add accelerometer bias parameter blocks (3D each) - temporarily fixed
     for (size_t i = 0; i < accel_bias_params_vec.size(); ++i) {
-        problem.AddParameterBlock(accel_bias_params_vec[i].data(), 3);
-        // problem.SetParameterBlockConstant(accel_bias_params_vec[i].data()); // Fix accel bias
+        problem_stage1.AddParameterBlock(accel_bias_params_vec[i].data(), 3);
+        problem_stage1.SetParameterBlockConstant(accel_bias_params_vec[i].data());
     }
     
-    // Add gyroscope bias parameter blocks (3D each) - temporarily fixed
     for (size_t i = 0; i < gyro_bias_params_vec.size(); ++i) {
-        problem.AddParameterBlock(gyro_bias_params_vec[i].data(), 3);
-        // problem.SetParameterBlockConstant(gyro_bias_params_vec[i].data()); // Fix gyro bias
+        problem_stage1.AddParameterBlock(gyro_bias_params_vec[i].data(), 3);
+        problem_stage1.SetParameterBlockConstant(gyro_bias_params_vec[i].data());
     }
     
-    // Add gravity direction parameter block
-    problem.AddParameterBlock(gravity_dir_params.data(), 2);
-    // problem.SetParameterBlockConstant(gravity_dir_params.data()); // Fix gravity direction during IMU init
+    problem_stage1.AddParameterBlock(gravity_dir_params.data(), 2);
     
-    // ===============================================================================
-    // STEP 4: Add InertialGravityFactor factors
-    // ===============================================================================
-    
-    int inertial_gravity_factors_added = add_inertial_gravity_factors(
-        problem, frames, imu_handler,
+    // Add InertialGravityFactor
+    int stage1_factors = add_inertial_gravity_factors(
+        problem_stage1, frames, imu_handler,
         pose_params_vec, velocity_params_vec, accel_bias_params_vec, gyro_bias_params_vec, gravity_dir_params);
     
-    if (inertial_gravity_factors_added == 0) {
-        spdlog::error("[IMU_INIT] No inertial gravity factors added");
+    if (stage1_factors == 0) {
+        spdlog::error("[STAGE 1] No factors added - aborting");
         return result;
     }
     
+    // Solve Stage 1
+    auto stage1_start = std::chrono::high_resolution_clock::now();
+    
+    ceres::Solver::Summary summary_stage1;
+    ceres::Solve(options_stage1, &problem_stage1, &summary_stage1);
+    
+    auto stage1_end = std::chrono::high_resolution_clock::now();
+    auto stage1_duration = std::chrono::duration_cast<std::chrono::milliseconds>(stage1_end - stage1_start);
+    
+    spdlog::info("[STAGE 1] Complete: {} iterations, {:.2f}% cost reduction, {} ms",
+                 summary_stage1.iterations.size(),
+                 (1.0 - summary_stage1.final_cost / summary_stage1.initial_cost) * 100.0,
+                 stage1_duration.count());
     
     // ===============================================================================
-    // STEP 5: Add bias priors for regularization
+    // STAGE 2: Optimize Velocities + Biases (Rwg FIXED)
     // ===============================================================================
     
-    add_imu_init_priors(problem, frames, velocity_params_vec, accel_bias_params_vec, gyro_bias_params_vec);
+    spdlog::info("[STAGE 2] Optimizing Velocities and Biases...");
     
-    // ===============================================================================
-    // STEP 6: Solve optimization
-    // ===============================================================================
+    ceres::Problem problem_stage2;
+    ceres::Solver::Options options_stage2;
+    options_stage2.max_num_iterations = 100;
+    options_stage2.linear_solver_type = ceres::SPARSE_SCHUR;
+    options_stage2.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
+    options_stage2.minimizer_progress_to_stdout = false;
+    options_stage2.logging_type = ceres::SILENT;
     
-    auto start_time = std::chrono::high_resolution_clock::now();
+    // Add parameter blocks for Stage 2
+    for (size_t i = 0; i < pose_params_vec.size(); ++i) {
+        problem_stage2.AddParameterBlock(pose_params_vec[i].data(), 6);
+        auto* pose_param = new factor::SE3GlobalParameterization();
+        problem_stage2.SetParameterization(pose_params_vec[i].data(), pose_param);
+        problem_stage2.SetParameterBlockConstant(pose_params_vec[i].data());
+    }
     
-    ceres::Solver::Summary summary;
-    ceres::Solve(options, &problem, &summary);
+    for (size_t i = 0; i < velocity_params_vec.size(); ++i) {
+        problem_stage2.AddParameterBlock(velocity_params_vec[i].data(), 3);
+    }
+    
+    for (size_t i = 0; i < accel_bias_params_vec.size(); ++i) {
+        problem_stage2.AddParameterBlock(accel_bias_params_vec[i].data(), 3);
+    }
+    
+    for (size_t i = 0; i < gyro_bias_params_vec.size(); ++i) {
+        problem_stage2.AddParameterBlock(gyro_bias_params_vec[i].data(), 3);
+    }
+    
+    problem_stage2.AddParameterBlock(gravity_dir_params.data(), 2);
+    problem_stage2.SetParameterBlockConstant(gravity_dir_params.data());
+    
+    // Add InertialGravityFactor again
+    int stage2_factors = add_inertial_gravity_factors(
+        problem_stage2, frames, imu_handler,
+        pose_params_vec, velocity_params_vec, accel_bias_params_vec, gyro_bias_params_vec, gravity_dir_params);
+    
+    // Add priors
+    add_imu_init_priors(problem_stage2, frames, velocity_params_vec, accel_bias_params_vec, gyro_bias_params_vec);
+    
+    // Solve Stage 2
+    auto stage2_start = std::chrono::high_resolution_clock::now();
+    
+    ceres::Solver::Summary summary_stage2;
+    ceres::Solve(options_stage2, &problem_stage2, &summary_stage2);
+    
+    auto stage2_end = std::chrono::high_resolution_clock::now();
+    auto stage2_duration = std::chrono::duration_cast<std::chrono::milliseconds>(stage2_end - stage2_start);
+    
+    spdlog::info("[STAGE 2] Complete: {} iterations, {:.2f}% cost reduction, {} ms",
+                 summary_stage2.iterations.size(),
+                 (1.0 - summary_stage2.final_cost / summary_stage2.initial_cost) * 100.0,
+                 stage2_duration.count());
     
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    
+    spdlog::info("");
+    spdlog::info("📊 [SUMMARY] Total: {} ms, {} iterations",
+                 duration.count(),
+                 summary_stage1.iterations.size() + summary_stage2.iterations.size());
+    spdlog::info("================================================================================");
+    
+    // ===============================================================================
+    // Extract Results (use Stage 2 summary)
+    // ===============================================================================
+    
+    ceres::Solver::Summary summary = summary_stage2;
     
     // ===============================================================================
     // STEP 7: Extract optimized results
@@ -1564,26 +1617,183 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     result.final_cost = summary.final_cost;
     result.cost_reduction = result.initial_cost - result.final_cost;
     
-    if (result.success) {
-        // Recover optimized states
-        recover_imu_init_states(frames, imu_handler, pose_params_vec, velocity_params_vec, 
-                               accel_bias_params_vec, gyro_bias_params_vec, gravity_dir_params, result.Tgw_init);
+    // ===============================================================================
+    // STEP 7.5: Analyze residuals by component (rotation, velocity, position)
+    // ===============================================================================
+    spdlog::info("📊 [IMU_INIT] Optimized Gravity Direction:");
+    spdlog::info("  theta_x (pitch): {:.6f} rad ({:.3f}°)", gravity_dir_params[0], gravity_dir_params[0] * 180.0 / M_PI);
+    spdlog::info("  theta_y (roll):  {:.6f} rad ({:.3f}°)", gravity_dir_params[1], gravity_dir_params[1] * 180.0 / M_PI);
 
-        if (Config::getInstance().m_enable_debug_output)
-        {
-            spdlog::info("🎯 [IMU_INIT] Optimization Complete:");
-            spdlog::info("  ✅ Success: {}", result.success);
-            spdlog::info("  ⏱️  Duration: {} ms", duration.count());
-            spdlog::info("  🔄 Iterations: {}", result.num_iterations);
-            spdlog::info("  📊 Cost: {:.6f} → {:.6f} (Δ={:.6f})",
-                         result.initial_cost, result.final_cost, result.cost_reduction);
-            spdlog::info("  📋 InertialGravity factors: {}", inertial_gravity_factors_added);
-
-            // Print optimized gravity direction
-            spdlog::info("  🌍 Optimized Gravity Dir: ({:.6f}, {:.6f})",
-                         gravity_dir_params[0], gravity_dir_params[1]);
+    // I want log of velocity and biases of all frames
+    for (size_t i = 0; i < frames.size(); ++i) {
+        spdlog::info("  Frame {}: Velocity = [{:.6f}, {:.6f}, {:.6f}] m/s | Accel Bias = [{:.6f}, {:.6f}, {:.6f}] m/s² | Gyro Bias = [{:.6f}, {:.6f}, {:.6f}] rad/s",
+                     frames[i]->get_frame_id(),
+                     velocity_params_vec[i][0], velocity_params_vec[i][1], velocity_params_vec[i][2],
+                     accel_bias_params_vec[i][0], accel_bias_params_vec[i][1], accel_bias_params_vec[i][2],
+                     gyro_bias_params_vec[i][0], gyro_bias_params_vec[i][1], gyro_bias_params_vec[i][2]);
+    }   
+    
+    // Convert to rotation matrix and gravity vector
+    Eigen::Matrix3d R_x = Eigen::AngleAxisd(gravity_dir_params[1], Eigen::Vector3d::UnitX()).toRotationMatrix();
+    Eigen::Matrix3d R_y = Eigen::AngleAxisd(gravity_dir_params[0], Eigen::Vector3d::UnitY()).toRotationMatrix();
+    Eigen::Matrix3d R_gw = R_x * R_y;
+    Eigen::Vector3d g_initial(0.0, 0.0, 9.81);
+    Eigen::Vector3d g_optimized = R_gw * g_initial;
+    spdlog::info("  Optimized gravity: [{:.6f}, {:.6f}, {:.6f}] m/s²", g_optimized.x(), g_optimized.y(), g_optimized.z());
+    
+    spdlog::info("📊 [IMU_INIT] Residual Analysis:");
+    
+    std::vector<double> rotation_residuals;
+    std::vector<double> velocity_residuals;
+    std::vector<double> position_residuals;
+    
+    // Evaluate each InertialGravityFactor to get detailed residuals
+    for (size_t opt_idx = 0; opt_idx < velocity_params_vec.size() - 1; ++opt_idx) {
+        size_t frame_idx = opt_idx + 1;
+        auto* frame_i = frames[frame_idx];
+        auto* frame_j = frames[frame_idx + 1];
+        
+        auto preint = frame_j->get_imu_preintegration_from_last_keyframe();
+        if (!preint || !preint->is_valid()) continue;
+        
+        // Create factor
+        auto* factor = new factor::InertialGravityFactor(preint, 9.81);
+        
+        // Prepare parameters
+        const double* params[7] = {
+            pose_params_vec[opt_idx].data(),           // pose_i
+            velocity_params_vec[opt_idx].data(),       // velocity_i
+            gyro_bias_params_vec[opt_idx].data(),      // gyro_bias
+            accel_bias_params_vec[opt_idx].data(),     // accel_bias
+            pose_params_vec[opt_idx + 1].data(),       // pose_j
+            velocity_params_vec[opt_idx + 1].data(),   // velocity_j
+            gravity_dir_params.data()                  // gravity_dir
+        };
+        
+        // Compute residuals
+        double residuals[9];
+        factor->Evaluate(params, residuals, nullptr);
+        
+        // Extract components (residuals are already weighted by sqrt_information)
+        Eigen::Vector3d r_rotation(residuals[0], residuals[1], residuals[2]);
+        Eigen::Vector3d r_velocity(residuals[3], residuals[4], residuals[5]);
+        Eigen::Vector3d r_position(residuals[6], residuals[7], residuals[8]);
+        
+        rotation_residuals.push_back(r_rotation.norm());
+        velocity_residuals.push_back(r_velocity.norm());
+        position_residuals.push_back(r_position.norm());
+        
+        delete factor;
+    }
+    
+    if (!rotation_residuals.empty()) {
+        auto calc_stats = [](const std::vector<double>& vals) {
+            double sum = std::accumulate(vals.begin(), vals.end(), 0.0);
+            double mean = sum / vals.size();
+            double max_val = *std::max_element(vals.begin(), vals.end());
+            double min_val = *std::min_element(vals.begin(), vals.end());
+            return std::make_tuple(mean, max_val, min_val);
+        };
+        
+        auto [r_mean, r_max, r_min] = calc_stats(rotation_residuals);
+        auto [v_mean, v_max, v_min] = calc_stats(velocity_residuals);
+        auto [p_mean, p_max, p_min] = calc_stats(position_residuals);
+        
+        spdlog::info("  🔄 Rotation residual: mean={:.6f}, max={:.6f}, min={:.6f}", r_mean, r_max, r_min);
+        spdlog::info("  🏃 Velocity residual: mean={:.6f}, max={:.6f}, min={:.6f}", v_mean, v_max, v_min);
+        spdlog::info("  📍 Position residual: mean={:.6f}, max={:.6f}, min={:.6f}", p_mean, p_max, p_min);
+        
+        // Diagnose which component is problematic
+        if (v_mean > 1.0 || p_mean > 1.0) {
+            spdlog::error("  ❌ Large velocity/position residuals → Gravity direction is WRONG!");
+            spdlog::error("     💡 Velocity residual depends on: (v_j - v_i) - g*dt");
+            spdlog::error("     💡 Position residual depends on: (t_j - t_i - v_i*dt) - 0.5*g*dt²");
+            spdlog::error("     💡 If these are large, the optimized gravity 'g' doesn't match actual motion!");
+        } else if (r_mean > 0.1) {
+            spdlog::warn("  ⚠️  Large rotation residual → IMU gyro bias or preintegration issue");
+        } else {
+            spdlog::info("  ✅ All residuals are reasonable - gravity optimization successful!");
         }
-    } else {
+    }
+    
+    if (result.success) {
+        // ===============================================================================
+        // Extract optimization results - NO frame modification!
+        // ===============================================================================
+        
+        double theta_x = gravity_dir_params[0];
+        double theta_y = gravity_dir_params[1];
+        
+        // Compute rotation matrices
+        Eigen::Matrix3d R_x = Eigen::AngleAxisd(theta_y, Eigen::Vector3d::UnitX()).toRotationMatrix();
+        Eigen::Matrix3d R_y = Eigen::AngleAxisd(theta_x, Eigen::Vector3d::UnitY()).toRotationMatrix();
+        Eigen::Matrix3d R_gw = R_x * R_y;  // Gravity → World rotation
+        
+        // 1. Compute gravity vector in world frame (BEFORE transformation)
+        Eigen::Vector3d g_gravity_frame(0, 0, -9.81);
+        Eigen::Vector3d g_world = R_gw * g_gravity_frame;
+        result.g_world_before_transform = g_world.cast<float>();
+        
+        // 2. Compute Tgw transformation matrix
+        Eigen::Matrix3d Rwg = R_gw.transpose();  // World → Gravity rotation
+        result.Tgw_init = Eigen::Matrix4f::Identity();
+        result.Tgw_init.block<3,3>(0,0) = Rwg.cast<float>();
+        result.Rwg = Rwg;
+        
+        // 3. Extract optimized velocities
+        result.optimized_velocities.resize(velocity_params_vec.size());
+        for (size_t i = 0; i < velocity_params_vec.size(); ++i) {
+            result.optimized_velocities[i] = Eigen::Vector3f(
+                velocity_params_vec[i][0],
+                velocity_params_vec[i][1],
+                velocity_params_vec[i][2]
+            );
+        }
+        
+        // 4. Compute average bias (from frames 1,2,3 - exclude last frame)
+        Eigen::Vector3f avg_gyro_bias = Eigen::Vector3f::Zero();
+        Eigen::Vector3f avg_accel_bias = Eigen::Vector3f::Zero();
+        int bias_count = 0;
+        
+        for (size_t opt_idx = 0; opt_idx < velocity_params_vec.size() - 1; ++opt_idx) {
+            avg_gyro_bias += Eigen::Vector3f(
+                gyro_bias_params_vec[opt_idx][0],
+                gyro_bias_params_vec[opt_idx][1],
+                gyro_bias_params_vec[opt_idx][2]
+            );
+            avg_accel_bias += Eigen::Vector3f(
+                accel_bias_params_vec[opt_idx][0],
+                accel_bias_params_vec[opt_idx][1],
+                accel_bias_params_vec[opt_idx][2]
+            );
+            bias_count++;
+        }
+        
+        if (bias_count > 0) {
+            result.optimized_gyro_bias = avg_gyro_bias / bias_count;
+            result.optimized_accel_bias = avg_accel_bias / bias_count;
+        }
+        
+        // 5. Store first frame position for visualization
+        if (!frames.empty() && frames[0]) {
+            result.first_frame_position = frames[0]->get_Twb().block<3,1>(0,3);
+        }
+        result.has_gravity_visualization_data = true;
+        
+        spdlog::info("✅ [IMU_INIT] Optimization results ready:");
+        spdlog::info("   📐 Gravity: [{:.6f}, {:.6f}, {:.6f}] m/s²", 
+                     g_world.x(), g_world.y(), g_world.z());
+        spdlog::info("   � Avg Gyro Bias: [{:.6f}, {:.6f}, {:.6f}] rad/s",
+                     result.optimized_gyro_bias.x(), 
+                     result.optimized_gyro_bias.y(), 
+                     result.optimized_gyro_bias.z());
+        spdlog::info("   🔧 Avg Accel Bias: [{:.6f}, {:.6f}, {:.6f}] m/s²",
+                     result.optimized_accel_bias.x(), 
+                     result.optimized_accel_bias.y(), 
+                     result.optimized_accel_bias.z());
+    } 
+    else 
+    {
         spdlog::error("❌ [IMU_INIT] Optimization failed: {}", summary.BriefReport());
     }
     
@@ -1857,6 +2067,7 @@ void InertialOptimizer::add_imu_init_priors(
 
 void InertialOptimizer::recover_imu_init_states(
     const std::vector<Frame*>& frames,
+    const std::vector<Frame*>& all_frames_for_transform,
     std::shared_ptr<IMUHandler> imu_handler,
     const std::vector<std::vector<double>>& pose_params_vec,
     const std::vector<std::vector<double>>& velocity_params_vec,
@@ -1909,12 +2120,15 @@ void InertialOptimizer::recover_imu_init_states(
     double theta_x = gravity_dir_params[0];
     double theta_y = gravity_dir_params[1];
     
-    Eigen::Matrix3d R_x = Eigen::AngleAxisd(theta_x, Eigen::Vector3d::UnitX()).toRotationMatrix();
-    Eigen::Matrix3d R_y = Eigen::AngleAxisd(theta_y, Eigen::Vector3d::UnitY()).toRotationMatrix();
-    Eigen::Matrix3d R_wg = R_y * R_x;
+    // Convert 2D parameterization to 3D rotation matrix
+    // theta_x affects rotation around Y axis (pitch)
+    // theta_y affects rotation around X axis (roll)
+    Eigen::Matrix3d R_x = Eigen::AngleAxisd(theta_y, Eigen::Vector3d::UnitX()).toRotationMatrix();
+    Eigen::Matrix3d R_y = Eigen::AngleAxisd(theta_x, Eigen::Vector3d::UnitY()).toRotationMatrix();
+    Eigen::Matrix3d R_gw = R_x * R_y;  // R_gw: gravity frame to world frame
     
     Eigen::Vector3d g_I(0, 0, -9.81);  // gravity in gravity frame
-    Eigen::Vector3d g_world = R_wg * g_I;  // gravity in world frame
+    Eigen::Vector3d g_world = R_gw * g_I;  // gravity in world frame
     
     // ===============================================================================
     // POST-OPTIMIZATION PROCESSING: Apply results and transform to gravity frame
@@ -1963,51 +2177,6 @@ void InertialOptimizer::recover_imu_init_states(
     
     // 6. Set optimized gravity in IMUHandler (silently)
     imu_handler->set_gravity(g_world.cast<float>());
-    
-    // Store velocities before gravity transformation
-    std::vector<Eigen::Vector3f> velocities_before_transform;
-    for (size_t i = 0; i < frames.size(); ++i) {
-        velocities_before_transform.push_back(frames[i]->get_velocity());
-    }
-    
-    // 7. Transform all keyframes and map points to gravity-aligned frame (silently)
-    // Collect all map points from keyframes for transformation
-    std::vector<std::shared_ptr<MapPoint>> all_map_points;
-    std::set<std::shared_ptr<MapPoint>> unique_map_points;
-    
-    for (const auto& frame : frames) {
-        const auto& frame_map_points = frame->get_map_points();
-        for (const auto& mp : frame_map_points) {
-            if (mp && !mp->is_bad()) {
-                unique_map_points.insert(mp);
-            }
-        }
-    }
-    
-    all_map_points.assign(unique_map_points.begin(), unique_map_points.end());
-    
-    // Gravity transformation - reduced logging
-    if (imu_handler->is_gravity_aligned()) {
-        // Convert raw pointers to shared_ptr for the transform function
-        std::vector<std::shared_ptr<Frame>> shared_frames;
-        for (Frame* frame : frames) {
-            if (frame) {
-                shared_frames.push_back(std::shared_ptr<Frame>(frame, [](Frame*){})); // Non-owning shared_ptr
-            }
-        }
-
-        bool transform_success = imu_handler->transform_to_gravity_frame(shared_frames, all_map_points, T_gw);
-        if (transform_success)
-        {
-            imu_handler->set_gravity_aligned_coordinate_system();
-            if (Config::getInstance().m_enable_debug_output)
-            {
-                spdlog::info("[IMU_INIT] ✅ Gravity alignment applied to {} frames and {} map points",
-                             frames.size(), all_map_points.size());
-            }
-        }
-    }
-
     // ===============================================================================
     // 📋 FINAL RESULTS: Show only key information
     // ===============================================================================

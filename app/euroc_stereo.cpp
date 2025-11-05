@@ -13,10 +13,16 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include "player/euroc_player.h"
 #include <util/Config.h>
+#include <cstdlib>
+#include <ctime>
 
 using namespace lightweight_vio;
 
 int main(int argc, char* argv[]) {
+    // Set random seed for reproducibility
+    srand(42);
+    cv::setRNGSeed(42);
+    
     // Initialize spdlog for immediate colored output
     spdlog::set_level(spdlog::level::debug);
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");

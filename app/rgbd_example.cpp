@@ -9,6 +9,8 @@
  * This project is released under the MIT License.
  */
 
+#include <cstdlib>
+#include <opencv2/opencv.hpp>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include "player/rgbd_player.h"
@@ -17,6 +19,10 @@
 using namespace lightweight_vio;
 
 int main(int argc, char* argv[]) {
+    // Set random seed for reproducibility
+    srand(42);
+    cv::setRNGSeed(42);
+    
     // Initialize spdlog for immediate colored output
     spdlog::set_level(spdlog::level::debug);
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] %v");

@@ -723,32 +723,25 @@ cv::Point2f FeatureTracker::project_map_point_to_current_frame(std::shared_ptr<M
     // Convert to 3D camera coordinates
     Eigen::Vector3f camera_point = camera_point_homo.head<3>() / camera_point_homo.w();
     
-    // Get camera intrinsics
-    const Config& config = Config::getInstance();
-    cv::Mat K = config.left_camera_matrix();
-    cv::Mat D = config.left_dist_coeffs();
+    // Get camera intrinsics from frame
+    float fx = current_frame->get_fx();
+    float fy = current_frame->get_fy();
+    float cx = current_frame->get_cx();
+    float cy = current_frame->get_cy();
     
-    if (K.empty()) {
-        return cv::Point2f(-1, -1);  // No camera intrinsics
-    }
-    
-    // Project to distorted pixel coordinates using OpenCV
-    std::vector<cv::Point3f> points_3d = {cv::Point3f(camera_point.x(), camera_point.y(), camera_point.z())};
-    std::vector<cv::Point2f> pixel_points;
-    cv::projectPoints(points_3d, cv::Mat::zeros(3, 1, CV_64F), cv::Mat::zeros(3, 1, CV_64F), K, D, pixel_points);
-    
-    cv::Point2f pixel_point = pixel_points[0];
+    // Project to pixel coordinates (assuming pinhole model)
+    cv::Point2f pixel_undistorted;
+    pixel_undistorted.x = (camera_point.x() / camera_point.z()) * fx + cx;
+    pixel_undistorted.y = (camera_point.y() / camera_point.z()) * fy + cy;
     
     // Calculate pixel movement
-    float pixel_movement = cv::norm(pixel_point - prev_pixel);
+    float pixel_movement = cv::norm(pixel_undistorted - prev_pixel);
     
-    // Check if projection is within image bounds
-    if (pixel_point.x < 0 || pixel_point.y < 0 || 
-        pixel_point.x >= config.m_image_width || pixel_point.y >= config.m_image_height) {
-        return cv::Point2f(-1, -1);  // Outside image bounds
-    }
+
+    // image boundary check from calculated corner
+
     
-    return pixel_point;
+    return pixel_undistorted;
 }
 
 void FeatureTracker::assess_feature_quality_by_velocity(std::shared_ptr<Frame> current_frame) {
@@ -883,7 +876,7 @@ int FeatureTracker::compute_rgbd_3d(std::shared_ptr<Frame> frame) {
     
     // Get camera intrinsics
     double fx, fy, cx, cy;
-    frame->get_camera_intrinsics(fx, fy, cx, cy);
+    fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
     
     int valid_3d_count = 0;
     auto& features = frame->get_features_mutable();

@@ -397,7 +397,7 @@ std::unique_ptr<PangolinViewer> EurocPlayer::initialize_viewer(const EurocPlayer
 }
 
 void EurocPlayer::initialize_estimator(Estimator& estimator, const std::vector<ImageData>& image_data) {
-    // Set initial ground truth pose if available
+    // // Set initial ground truth pose if available
     if (EurocUtils::has_ground_truth() && !image_data.empty()) {
         auto first_gt_pose = EurocUtils::get_matched_pose(0);
         if (first_gt_pose.has_value()) {
@@ -581,6 +581,11 @@ void EurocPlayer::update_viewer(PangolinViewer& viewer,
     // Update tracking view with frame directly
     viewer.update_tracking_with_frame(current_frame);
     
+    // ⭐ Update gravity arrow visualization at stored origin
+    Eigen::Vector3f g_world, gravity_arrow_origin;
+    if (estimator.get_gravity_visualization_data(g_world, gravity_arrow_origin)) {
+        viewer.set_gravity_arrow(gravity_arrow_origin, g_world, "g_world (DOWN)");
+    }
     
     viewer.render();
 }

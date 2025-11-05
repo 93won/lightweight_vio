@@ -59,11 +59,13 @@ Estimator::Estimator()
     // Initialize inertial optimizer  
     m_inertial_optimizer = std::make_unique<InertialOptimizer>();
     
-    // Start sliding window optimization thread
+    // // // Start sliding window optimization thread
     m_sliding_window_thread_running = true;
     m_sliding_window_thread = std::make_unique<std::thread>(&Estimator::sliding_window_thread_function, this);
     
     if (Config::getInstance().m_enable_debug_output) {
+        spdlog::info("[ESTIMATOR] Camera models created: {}", 
+                     (Config::getInstance().get_camera_model() == CameraModel::PINHOLE) ? "PINHOLE" : "FISHEYE");
         spdlog::info("[ESTIMATOR] Sliding window optimization thread started");
     }
 }
@@ -1165,7 +1167,6 @@ std::shared_ptr<Frame> Estimator::create_rgbd_frame(const cv::Mat& rgb_image, co
         true  // is_rgbd flag
     );
 
-    
     // Set initial pose and velocity
     if (m_previous_frame) {
         // For non-first frames, start with previous frame pose
@@ -1327,7 +1328,7 @@ int lightweight_vio::Estimator::create_initial_map_points(std::shared_ptr<Frame>
             
             // Compute reprojection error for verification
             double fx, fy, cx, cy;
-            frame->get_camera_intrinsics(fx, fy, cx, cy);
+            fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
             
             // Project world point back to camera
             Eigen::Vector4f world_pos_h(world_pos.x(), world_pos.y(), world_pos.z(), 1.0f);
@@ -1379,62 +1380,82 @@ bool lightweight_vio::Estimator::initialize_imu() {
     spdlog::info("[INIT_IMU] Keyframes available: {}", m_keyframes.size());
     spdlog::info("================================================================================");
     
-    // Variables to capture optimization costs
-    double initial_cost = 0.0;
-    double final_cost = 0.0;
+    // Run optimization (get results only, no frame modification)
+    auto imu_init_result = try_initialize_imu();
     
-    // Attempt gravity estimation and bias optimization
-    m_success_imu_init = try_initialize_imu();
-    
-    if (m_success_imu_init) {
-        // Update initialization flags
-        m_gravity_initialized = true;
-        m_enable_imu_optimization = true;
-        
-        // Get IMU parameters
-        Eigen::Vector3f gravity_vector = m_imu_handler->get_gravity();
-        Eigen::Vector3f accel_bias = m_imu_handler->get_accel_bias();
-        Eigen::Vector3f gyro_bias = m_imu_handler->get_gyro_bias();
-        
-        // Enable IMU optimization in sliding window optimizer
-        std::shared_ptr<IMUHandler> shared_imu_handler = std::shared_ptr<IMUHandler>(
-            m_imu_handler.get(), 
-            [](IMUHandler*){}  // Non-owning shared_ptr
-        );
-        m_sliding_window_optimizer->enable_imu_optimization(
-            shared_imu_handler, 
-            gravity_vector.cast<double>()
-        );
-        
-        // Log success with detailed information
-        spdlog::info("================================================================================");
-        spdlog::info("[INIT_IMU] IMU Initialization SUCCESSFUL!");
-        spdlog::info("================================================================================");
-        spdlog::info("[INIT_IMU] Estimated Parameters:");
-        spdlog::info("[INIT_IMU]   Gravity Vector:");
-        spdlog::info("[INIT_IMU]     - X: {:.6f} m/s²", gravity_vector.x());
-        spdlog::info("[INIT_IMU]     - Y: {:.6f} m/s²", gravity_vector.y());
-        spdlog::info("[INIT_IMU]     - Z: {:.6f} m/s²", gravity_vector.z());
-        spdlog::info("[INIT_IMU]     - Magnitude: {:.6f} m/s²", gravity_vector.norm());
-        spdlog::info("[INIT_IMU]   Accelerometer Bias:");
-        spdlog::info("[INIT_IMU]     - X: {:.8f} m/s²", accel_bias.x());
-        spdlog::info("[INIT_IMU]     - Y: {:.8f} m/s²", accel_bias.y());
-        spdlog::info("[INIT_IMU]     - Z: {:.8f} m/s²", accel_bias.z());
-        spdlog::info("[INIT_IMU]   Gyroscope Bias:");
-        spdlog::info("[INIT_IMU]     - X: {:.8f} rad/s", gyro_bias.x());
-        spdlog::info("[INIT_IMU]     - Y: {:.8f} rad/s", gyro_bias.y());
-        spdlog::info("[INIT_IMU]     - Z: {:.8f} rad/s", gyro_bias.z());
-        spdlog::info("[INIT_IMU]   IMU optimization enabled in sliding window");
-        spdlog::info("================================================================================\n");
-        
-    } else {
+    if (!imu_init_result.success) {
         spdlog::warn("================================================================================");
         spdlog::warn("[INIT_IMU] IMU Initialization FAILED");
         spdlog::warn("[INIT_IMU] Will retry with more keyframes");
         spdlog::warn("================================================================================\n");
+        return false;
     }
     
-    return m_success_imu_init;
+    // ⭐ Apply results in Estimator
+    
+    // 1. Set gravity in IMU handler (BEFORE transformation!)
+    m_imu_handler->set_gravity(imu_init_result.g_world_before_transform);
+    
+    // 2. Apply velocities and biases to frames
+    apply_imu_optimization_results(imu_init_result);
+    
+    // 3. Set bias in IMU handler
+    m_imu_handler->set_bias(
+        imu_init_result.optimized_gyro_bias,
+        imu_init_result.optimized_accel_bias
+    );
+    
+    // 4. Update preintegrations with new bias
+    update_preintegrations_with_new_bias(imu_init_result);
+    
+    // 5. Visualize gravity direction (BEFORE transformation)
+    visualize_gravity_direction(imu_init_result);
+    
+    // 6. Apply Tgw transformation to all frames and map points
+    apply_gravity_alignment_transform(imu_init_result.Tgw_init);
+
+    // imu_init_result.Tgw_init = Eigen::Matrix4f::Identity();  // Reset to identity after application
+    
+    // 7. Update gravity visualization to use gravity-aligned frame coordinates
+    update_gravity_visualization_after_transform();
+    
+    // 8. Enable IMU optimization in sliding window
+    std::shared_ptr<IMUHandler> shared_imu_handler = std::shared_ptr<IMUHandler>(
+        m_imu_handler.get(), 
+        [](IMUHandler*){}  // Non-owning shared_ptr
+    );
+    m_sliding_window_optimizer->enable_imu_optimization(
+        shared_imu_handler, 
+        imu_init_result.g_world_before_transform.cast<double>()
+    );
+    
+    // Update initialization flags
+    m_gravity_initialized = true;
+    m_enable_imu_optimization = true;
+    m_success_imu_init = true;
+    
+    // Log success with detailed information
+    spdlog::info("================================================================================");
+    spdlog::info("[INIT_IMU] IMU Initialization SUCCESSFUL!");
+    spdlog::info("================================================================================");
+    spdlog::info("[INIT_IMU] Estimated Parameters:");
+    spdlog::info("[INIT_IMU]   Gravity Vector (BEFORE Tgw transform):");
+    spdlog::info("[INIT_IMU]     - X: {:.6f} m/s²", imu_init_result.g_world_before_transform.x());
+    spdlog::info("[INIT_IMU]     - Y: {:.6f} m/s²", imu_init_result.g_world_before_transform.y());
+    spdlog::info("[INIT_IMU]     - Z: {:.6f} m/s²", imu_init_result.g_world_before_transform.z());
+    spdlog::info("[INIT_IMU]     - Magnitude: {:.6f} m/s²", imu_init_result.g_world_before_transform.norm());
+    spdlog::info("[INIT_IMU]   Accelerometer Bias:");
+    spdlog::info("[INIT_IMU]     - X: {:.8f} m/s²", imu_init_result.optimized_accel_bias.x());
+    spdlog::info("[INIT_IMU]     - Y: {:.8f} m/s²", imu_init_result.optimized_accel_bias.y());
+    spdlog::info("[INIT_IMU]     - Z: {:.8f} m/s²", imu_init_result.optimized_accel_bias.z());
+    spdlog::info("[INIT_IMU]   Gyroscope Bias:");
+    spdlog::info("[INIT_IMU]     - X: {:.8f} rad/s", imu_init_result.optimized_gyro_bias.x());
+    spdlog::info("[INIT_IMU]     - Y: {:.8f} rad/s", imu_init_result.optimized_gyro_bias.y());
+    spdlog::info("[INIT_IMU]     - Z: {:.8f} rad/s", imu_init_result.optimized_gyro_bias.z());
+    spdlog::info("[INIT_IMU]   IMU optimization enabled in sliding window");
+    spdlog::info("================================================================================\n");
+    
+    return true;
 }
 
 // ========================================================================
@@ -1541,7 +1562,7 @@ int lightweight_vio::Estimator::create_new_map_points(std::shared_ptr<Frame> fra
                 
                 // Get camera intrinsics from frame
                 double fx, fy, cx, cy;
-                frame->get_camera_intrinsics(fx, fy, cx, cy);
+                fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
                 
                 float projected_x = (fx * camera_projected.x() / camera_projected.z()) + cx;
                 float projected_y = (fy * camera_projected.y() / camera_projected.z()) + cy;
@@ -1761,7 +1782,7 @@ void lightweight_vio::Estimator::compute_reprojection_error_statistics(std::shar
     
     // Get camera parameters
     double fx, fy, cx, cy;
-    frame->get_camera_intrinsics(fx, fy, cx, cy);
+    fx = frame->get_fx(); fy = frame->get_fy(); cx = frame->get_cx(); cy = frame->get_cy();
     
     // DEBUG: Print camera parameters
     // spdlog::debug("[REPROJ_DEBUG] Camera params: fx={:.2f}, fy={:.2f}, cx={:.2f}, cy={:.2f}", fx, fy, cx, cy);
@@ -1906,7 +1927,9 @@ void Estimator::predict_state() {
           
             
             
-        } else {
+        } 
+        else 
+        {
             // Fallback to constant velocity model if no valid preintegration
             
             // VO Mode fallback: Use visual motion model
@@ -1917,7 +1940,9 @@ void Estimator::predict_state() {
             m_current_frame->set_velocity(Eigen::Vector3f::Zero());
         }
         
-    } else {
+    } 
+    else 
+    {
         // VO Mode: Use visual odometry motion model
         Eigen::Matrix4f predicted_pose = m_previous_frame->get_Twb() * m_transform_from_last;
         m_predicted_pose = predicted_pose; // Store for comparison
@@ -2032,6 +2057,19 @@ void lightweight_vio::Estimator::sliding_window_thread_function() {
         if (m_keyframes_updated) {
             m_keyframes_updated = false;
             
+            // 🎯 VIO Mode: Skip sliding window optimization until IMU is initialized
+            const auto& config = Config::getInstance();
+            if (config.m_system_mode == "VIO" && !m_success_imu_init) {
+
+                spdlog::warn("[SW_THREAD] IMU not initialized yet, skipping sliding window optimization");
+                if (Config::getInstance().m_enable_debug_output) {
+                    spdlog::debug("[SW_THREAD] ⏸️ Waiting for IMU initialization before running sliding window optimization");
+                }
+                lock.unlock();
+                continue;  // Skip optimization, wait for IMU init
+            }
+            
+
             // Copy current keyframes for optimization (thread-safe)
             std::vector<std::shared_ptr<Frame>> keyframes_copy = m_keyframes;
             lock.unlock(); // Release lock early
@@ -2091,7 +2129,7 @@ void lightweight_vio::Estimator::transfer_imu_data_to_keyframe(std::shared_ptr<F
     }
 }
 
-bool lightweight_vio::Estimator::try_initialize_imu() {
+InertialOptimizationResult lightweight_vio::Estimator::try_initialize_imu() {
     /*
      * 🎯 IMU INITIALIZATION WITH GRAVITY ESTIMATION & BIAS OPTIMIZATION
      * 
@@ -2134,12 +2172,14 @@ bool lightweight_vio::Estimator::try_initialize_imu() {
      * ===============================================================================
      */
     
+    InertialOptimizationResult result;  // Default success = false
+    
     const auto& config = Config::getInstance();
     
     // Check if we have enough keyframes for gravity estimation
     if (m_keyframes.size() < 5) {
         spdlog::debug("[GRAVITY_EST] Not enough keyframes: {} < 5", m_keyframes.size());
-        return false;
+        return result;
     }
     
     // Use all keyframes for gravity estimation
@@ -2166,13 +2206,13 @@ bool lightweight_vio::Estimator::try_initialize_imu() {
     
     if (all_imu_data.empty()) {
         spdlog::warn("[GRAVITY_EST] No IMU data available for gravity estimation");
-        return false;
+        return result;
     }
     
     // Use IMUHandler to estimate gravity
     if (!m_imu_handler) {
         spdlog::error("[GRAVITY_EST] IMU handler not initialized");
-        return false;
+        return result;
     }
     
     // Variables to capture optimization costs
@@ -2202,23 +2242,33 @@ bool lightweight_vio::Estimator::try_initialize_imu() {
     Eigen::Matrix4f m_Tgw_init = Eigen::Matrix4f::Identity();
     m_Tgw_init.block<3,3>(0,0) = m_Rgw_init;
 
-    // Get copies for transformation (since function modifies them)
-    auto keyframes_copy = get_keyframes_safe();
-    auto map_points_copy = get_map_points_safe();
-    
-    // m_imu_handler->transform_to_gravity_frame(keyframes_copy, map_points_copy, m_Tgw_init);
+    if (Config::getInstance().m_enable_debug_output) {
+        spdlog::info("================================================================================");
+        spdlog::info("[ESTIMATOR] 📐 Constructed Tgw_init from Rgw:");
+        spdlog::info("[ESTIMATOR]   Rgw rotation angle from vertical: {:.1f} degrees", 
+                     std::acos(std::abs(m_Rgw_init(2,2))) * 180.0 / M_PI);
+        spdlog::info("================================================================================");
+    }
 
-    // return true;
-
+  
 
     // std::cout<<"Estimated initial gravity direction (Rgw):\n"<<m_Rgw_init<<"\n\n\n\n"<<std::endl;
+
+    spdlog::info("Num all keyframe VS keyframes for optimization: {} VS {}", keyframe_ptrs.size(), m_keyframes.size());
 
     if (gravity_success) {
         m_imu_handler->debug_velocity_comparison(keyframe_ptrs, all_imu_data);
         
+        // 🎯 Prepare ALL keyframes for transformation (not just optimization frames)
+        std::vector<Frame*> all_keyframe_ptrs;
+        for (const auto& kf : m_keyframes) {
+            all_keyframe_ptrs.push_back(kf.get());
+        }
+        
         // 🎯 After gravity estimation, perform IMU initialization optimization
         auto imu_init_result = m_inertial_optimizer->optimize_imu_initialization(
-            keyframe_ptrs, 
+            keyframe_ptrs,          // Frames for optimization (first 5)
+            all_keyframe_ptrs,      // ALL keyframes for transformation
             std::shared_ptr<IMUHandler>(m_imu_handler.get(), [](IMUHandler*){}) // Non-owning shared_ptr
         );
         
@@ -2226,21 +2276,231 @@ bool lightweight_vio::Estimator::try_initialize_imu() {
             
             // Store Tgw_init for viewer
             m_Tgw_init = imu_init_result.Tgw_init;
-            // spdlog::info("  - Stored Tgw_init for viewer\n\n\n\n");
-            // std::cout<<m_Tgw_init<<"\n\n\n\n"<<std::endl;
+            
+            // ⭐ Store gravity visualization data
+            if (imu_init_result.has_gravity_visualization_data) {
+                m_has_gravity_viz_data = true;
+                m_g_world_before_transform = imu_init_result.g_world_before_transform;
+                m_gravity_arrow_origin = imu_init_result.first_frame_position;
+                
+                spdlog::info("[Estimator] Gravity visualization data stored:");
+                spdlog::info("  g_world: [{:.3f}, {:.3f}, {:.3f}]", 
+                            m_g_world_before_transform.x(), 
+                            m_g_world_before_transform.y(), 
+                            m_g_world_before_transform.z());
+                spdlog::info("  origin: [{:.3f}, {:.3f}, {:.3f}]", 
+                            m_gravity_arrow_origin.x(), 
+                            m_gravity_arrow_origin.y(), 
+                            m_gravity_arrow_origin.z());
+            }
 
             debug_keyframe_to_keyframe_comparison();
             
-            return true;
+            return imu_init_result;  // ✅ Return result struct
         } else {
             spdlog::warn("❌ [IMU_INIT] IMU initialization optimization failed");
-            return false;
+            return result;  // Return failed result
         }
     }
 
     
 
-    return false;
+    return result;  // Return failed result
+}
+
+// ========================================================================
+// Helper Functions for IMU Initialization
+// ========================================================================
+
+void lightweight_vio::Estimator::apply_imu_optimization_results(const InertialOptimizationResult& result) {
+    // Update Frame[0] velocity from Frame[1]
+    if (m_keyframes.size() >= 2 && result.optimized_velocities.size() > 0) {
+        m_keyframes[0]->set_velocity(result.optimized_velocities[0]);
+    }
+    
+    // Update Frame[1..N] velocities
+    for (size_t i = 0; i < result.optimized_velocities.size(); ++i) {
+        size_t frame_idx = i + 1;
+        if (frame_idx < m_keyframes.size()) {
+            m_keyframes[frame_idx]->set_velocity(result.optimized_velocities[i]);
+        }
+    }
+    
+    // Apply averaged bias to ALL frames
+    for (auto& kf : m_keyframes) {
+        kf->set_accel_bias(result.optimized_accel_bias);
+        kf->set_gyro_bias(result.optimized_gyro_bias);
+    }
+    
+    spdlog::info("[ESTIMATOR] ✅ Updated velocities and biases for {} frames", m_keyframes.size());
+}
+
+void lightweight_vio::Estimator::update_preintegrations_with_new_bias(const InertialOptimizationResult& result) {
+    std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> frame_biases;
+    std::vector<Frame*> frames_to_update;
+    
+    for (size_t i = 1; i < m_keyframes.size(); ++i) {
+        frame_biases.emplace_back(
+            result.optimized_gyro_bias,
+            result.optimized_accel_bias
+        );
+        frames_to_update.push_back(m_keyframes[i].get());
+    }
+    
+    m_imu_handler->update_preintegrations_with_optimized_bias(
+        frames_to_update,
+        frame_biases
+    );
+    
+    spdlog::info("[ESTIMATOR] ✅ Updated preintegrations with optimized bias");
+}
+
+void lightweight_vio::Estimator::visualize_gravity_direction(const InertialOptimizationResult& result) {
+    if (!result.has_gravity_visualization_data) {
+        return;
+    }
+    
+    // Store gravity visualization data for viewer
+    m_has_gravity_viz_data = true;
+    m_g_world_before_transform = result.g_world_before_transform;
+    m_gravity_arrow_origin = result.first_frame_position;
+    
+    spdlog::info("");
+    spdlog::info("🎨 [VISUALIZATION] Gravity direction optimized:");
+    spdlog::info("   📍 g_world (World frame): [{:.6f}, {:.6f}, {:.6f}] m/s²",
+                 result.g_world_before_transform.x(),
+                 result.g_world_before_transform.y(),
+                 result.g_world_before_transform.z());
+    spdlog::info("   📏 Magnitude: {:.6f} m/s²", result.g_world_before_transform.norm());
+    spdlog::info("   🔴 RED ARROW will show g_world direction (before transformation)");
+}
+
+// void lightweight_vio::Estimator::update_gravity_visualization_after_transform() {
+//     if (!m_has_gravity_viz_data || m_keyframes.empty()) {
+//         return;
+//     }
+    
+//     // ⭐ Only update arrow origin to follow camera in gravity-aligned frame
+//     // Keep gravity direction unchanged (still shows world frame direction)
+//     m_gravity_arrow_origin = m_keyframes[0]->get_Twb().block<3,1>(0,3);
+    
+//     // Get current gravity from IMUHandler for verification only
+//     Eigen::Vector3f g_after = m_imu_handler->get_gravity();
+    
+//     spdlog::info("");
+//     spdlog::info("🎨 [VISUALIZATION] Gravity visualization updated:");
+//     spdlog::info("   📍 g_world (KEPT from before transform): [{:.6f}, {:.6f}, {:.6f}] m/s²",
+//                  m_g_world_before_transform.x(),
+//                  m_g_world_before_transform.y(),
+//                  m_g_world_before_transform.z());
+//     spdlog::info("   📍 g_current (IMU handler, after):      [{:.6f}, {:.6f}, {:.6f}] m/s²",
+//                  g_after.x(), g_after.y(), g_after.z());
+//     spdlog::info("   📍 Arrow origin (Gravity-aligned frame): [{:.3f}, {:.3f}, {:.3f}]",
+//                  m_gravity_arrow_origin.x(),
+//                  m_gravity_arrow_origin.y(),
+//                  m_gravity_arrow_origin.z());
+//     spdlog::info("   � RED ARROW continues showing original g_world direction (before transform)");
+// }
+
+void lightweight_vio::Estimator::update_gravity_visualization_after_transform() {
+    if (!m_has_gravity_viz_data || m_keyframes.empty()) {
+        return;
+    }
+    
+    // ⭐ Store original g_world before transform for logging
+    Eigen::Vector3f g_world_original = m_g_world_before_transform;
+    
+    // ⭐ Transform gravity using Tgw: g_gravity_aligned = Rgw * g_world
+    Eigen::Matrix3f Rgw = m_Tgw.block<3,3>(0,0);
+    m_g_world_before_transform = Rgw * g_world_original;
+    
+    // Update arrow origin to current keyframe position in gravity-aligned frame
+    m_gravity_arrow_origin = m_keyframes[0]->get_Twb().block<3,1>(0,3);
+    
+    // Get current gravity from IMUHandler for verification
+    Eigen::Vector3f g_imu_handler = m_imu_handler->get_gravity();
+    
+    spdlog::info("");
+    spdlog::info("🎨 [VISUALIZATION] Gravity arrow transformed:");
+    spdlog::info("   📍 g_world (ORIGINAL):           [{:8.5f}, {:8.5f}, {:8.5f}] m/s²",
+                 g_world_original.x(), g_world_original.y(), g_world_original.z());
+    spdlog::info("   📍 g (AFTER Tgw transform):      [{:8.5f}, {:8.5f}, {:8.5f}] m/s²",
+                 m_g_world_before_transform.x(),
+                 m_g_world_before_transform.y(),
+                 m_g_world_before_transform.z());
+    spdlog::info("   📍 g (IMU handler):              [{:8.5f}, {:8.5f}, {:8.5f}] m/s²",
+                 g_imu_handler.x(), g_imu_handler.y(), g_imu_handler.z());
+    spdlog::info("   📍 Arrow origin (gravity-aligned): [{:.3f}, {:.3f}, {:.3f}]",
+                 m_gravity_arrow_origin.x(),
+                 m_gravity_arrow_origin.y(),
+                 m_gravity_arrow_origin.z());
+    spdlog::info("   🔵 Viewer now shows gravity pointing down -Z axis");
+}
+
+void lightweight_vio::Estimator::apply_gravity_alignment_transform(const Eigen::Matrix4f& Tgw) {
+    spdlog::info("");
+    spdlog::info("🔄 ===============================================================================");
+    spdlog::info("🔄 [GRAVITY_ALIGN] Starting Coordinate Transformation");
+    spdlog::info("🔄 ===============================================================================");
+    
+    // ⭐ Store gravity BEFORE transformation for logging
+    Eigen::Vector3f g_world_before = m_imu_handler->get_gravity();
+    
+    // ⭐ Store Tgw for gravity visualization update
+    m_Tgw = Tgw;
+    
+    // Log transformation matrix
+    spdlog::info("📐 [GRAVITY_ALIGN] Transformation Matrix Tgw (World → Gravity-aligned):");
+    spdlog::info("     [{:9.6f} {:9.6f} {:9.6f} | {:9.3f}]", Tgw(0,0), Tgw(0,1), Tgw(0,2), Tgw(0,3));
+    spdlog::info("     [{:9.6f} {:9.6f} {:9.6f} | {:9.3f}]", Tgw(1,0), Tgw(1,1), Tgw(1,2), Tgw(1,3));
+    spdlog::info("     [{:9.6f} {:9.6f} {:9.6f} | {:9.3f}]", Tgw(2,0), Tgw(2,1), Tgw(2,2), Tgw(2,3));
+    spdlog::info("     [{:9.6f} {:9.6f} {:9.6f} | {:9.3f}]", Tgw(3,0), Tgw(3,1), Tgw(3,2), Tgw(3,3));
+    
+    // Collect all map points
+    std::vector<std::shared_ptr<MapPoint>> all_map_points;
+    std::set<std::shared_ptr<MapPoint>> unique_map_points;
+    
+    for (const auto& kf : m_keyframes) {
+        for (const auto& mp : kf->get_map_points()) {
+            if (mp && !mp->is_bad()) {
+                unique_map_points.insert(mp);
+            }
+        }
+    }
+    
+    all_map_points.assign(unique_map_points.begin(), unique_map_points.end());
+
+    // Let's transform map points here
+
+    for (const auto& mp : all_map_points) {
+        Eigen::Vector4f pos_homogeneous;
+        pos_homogeneous << mp->get_position(), 1.0f;
+        Eigen::Vector4f pos_transformed = Tgw * pos_homogeneous;
+        mp->set_position(pos_transformed.head<3>());
+    }
+
+    // Let's transform keyframes here
+    for (const auto& kf : m_keyframes) {
+        Eigen::Matrix4f Twb = kf->get_Twb();
+        Eigen::Matrix4f Tgb = Tgw * Twb;
+        kf->set_Twb(Tgb);
+    }
+
+    // Let's transform keyframe velocities here
+    for (const auto& kf : m_keyframes) {
+        Eigen::Vector3f vel_w = kf->get_velocity();
+        Eigen::Vector3f vel_g = Tgw.block<3,3>(0,0) * vel_w;
+        kf->set_velocity(vel_g);
+    }
+
+    spdlog::info("🔄 [GRAVITY_ALIGN] Coordinate transformation complete!");
+    spdlog::info("🔄 ===============================================================================\n");
+    
+    // 🎯 Notify sliding window thread that IMU initialization is complete
+    // This will wake up the thread to start optimization
+    notify_sliding_window_thread();
+    spdlog::info("🚀 [SW_THREAD] Sliding window thread notified - optimization will resume");
+  
 }
 
 
@@ -2337,6 +2597,16 @@ void lightweight_vio::Estimator::debug_keyframe_to_keyframe_comparison()
             }
         }
     }
+}
+
+bool Estimator::get_gravity_visualization_data(Eigen::Vector3f& g_world, Eigen::Vector3f& origin) const {
+    if (!m_has_gravity_viz_data) {
+        return false;
+    }
+    
+    g_world = m_g_world_before_transform;
+    origin = m_gravity_arrow_origin;
+    return true;
 }
 
 } // namespace lightweight_vio

@@ -34,10 +34,10 @@ namespace lightweight_vio {
     class SlidingWindowOptimizer;
 
     struct OptimizationResult;
+    struct InertialOptimizationResult;  // Add forward declaration
     struct IMUData;
     struct IMUPreintegration;
 }
-
 
 namespace lightweight_vio {
 
@@ -189,6 +189,14 @@ public:
      * @return True if gravity initialization is complete
      */
     bool is_gravity_initialized() const { return m_gravity_initialized; }
+    
+    /**
+     * @brief Get gravity visualization data (BEFORE transformation)
+     * @param g_world Output: gravity vector in World frame
+     * @param origin Output: position to draw arrow from
+     * @return True if data is available
+     */
+    bool get_gravity_visualization_data(Eigen::Vector3f& g_world, Eigen::Vector3f& origin) const;
 
 private:
     // System components
@@ -236,6 +244,12 @@ private:
     // Gravity transformation matrix for viewer
     Eigen::Matrix4f m_Tgw_init = Eigen::Matrix4f::Identity();  // World-to-Gravity transformation matrix (Identity if not initialized)
     Eigen::Matrix3f m_Rgw_init = Eigen::Matrix3f::Identity();  // Gravity rotation matrix (Identity if not initialized)
+    
+    // ⭐ Gravity visualization data
+    bool m_has_gravity_viz_data = false;
+    Eigen::Vector3f m_g_world_before_transform = Eigen::Vector3f::Zero();
+    Eigen::Vector3f m_gravity_arrow_origin = Eigen::Vector3f::Zero();
+    Eigen::Matrix4f m_Tgw = Eigen::Matrix4f::Identity();  // Transformation matrix for visualization
 
     // Sliding window optimization thread
     std::unique_ptr<std::thread> m_sliding_window_thread;
@@ -374,9 +388,39 @@ private:
     
     /**
      * @brief Attempt IMU initialization with gravity estimation and bias optimization
-     * @return True if IMU initialization successful
+     * @return InertialOptimizationResult containing optimized parameters
      */
-    bool try_initialize_imu();
+    InertialOptimizationResult try_initialize_imu();
+    
+    /**
+     * @brief Apply IMU optimization results to frames (velocities and biases)
+     * @param result Optimization results from IMU initialization
+     */
+    void apply_imu_optimization_results(const InertialOptimizationResult& result);
+    
+    /**
+     * @brief Update preintegrations with new bias estimates
+     * @param result Optimization results containing new biases
+     */
+    void update_preintegrations_with_new_bias(const InertialOptimizationResult& result);
+    
+    /**
+     * @brief Visualize gravity direction before transformation
+     * @param result Optimization results containing gravity visualization data
+     */
+    void visualize_gravity_direction(const InertialOptimizationResult& result);
+    
+    /**
+     * @brief Update gravity visualization after coordinate transformation
+     * Updates the visualization to use gravity-aligned frame coordinates
+     */
+    void update_gravity_visualization_after_transform();
+    
+    /**
+     * @brief Apply Tgw transformation to align coordinate system with gravity
+     * @param Tgw Transformation matrix from world to gravity-aligned frame
+     */
+    void apply_gravity_alignment_transform(const Eigen::Matrix4f& Tgw);
     
    
     /**

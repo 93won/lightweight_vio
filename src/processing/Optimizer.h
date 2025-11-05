@@ -74,12 +74,29 @@ struct InertialOptimizationResult {
     
     // Gravity transformation matrix (World-to-Gravity, SE(3))
     Eigen::Matrix4f Tgw_init;
+    Eigen::Matrix3d Rwg;  // Rotation from world to gravity frame
+    
+    // ⭐ Gravity vector in World frame (BEFORE transformation) for visualization
+    Eigen::Vector3f g_world_before_transform;
+    Eigen::Vector3f first_frame_position;  // Position to draw arrow from
+    bool has_gravity_visualization_data;
+    
+    // Optimized states
+    std::vector<Eigen::Vector3f> optimized_velocities;
+    Eigen::Vector3f optimized_gyro_bias;
+    Eigen::Vector3f optimized_accel_bias;
     
     InertialOptimizationResult() 
         : success(false), num_iterations(0), initial_cost(0.0), final_cost(0.0),
           cost_reduction(0.0), visual_cost(0.0), imu_cost(0.0), bias_cost(0.0),
           num_visual_residuals(0), num_imu_residuals(0), num_outliers_removed(0),
-          Tgw_init(Eigen::Matrix4f::Identity()) {}
+          Tgw_init(Eigen::Matrix4f::Identity()),
+          Rwg(Eigen::Matrix3d::Identity()),
+          g_world_before_transform(Eigen::Vector3f::Zero()),
+          first_frame_position(Eigen::Vector3f::Zero()),
+          has_gravity_visualization_data(false),
+          optimized_gyro_bias(Eigen::Vector3f::Zero()),
+          optimized_accel_bias(Eigen::Vector3f::Zero()) {}
 };
 
 /**
@@ -517,11 +534,13 @@ public:
     /**
      * @brief IMU initialization optimization using InertialGravityFactor
      * @param frames Frames to optimize (poses fixed, velocities and biases optimized)
+     * @param all_keyframes_for_transform All keyframes to transform to gravity-aligned frame
      * @param imu_handler IMU handler with preintegration data
      * @return Optimization result
      */
     InertialOptimizationResult optimize_imu_initialization(
         std::vector<Frame*>& frames,
+        const std::vector<Frame*>& all_keyframes_for_transform,
         std::shared_ptr<IMUHandler> imu_handler);
     
  
@@ -565,6 +584,7 @@ private:
     
     void recover_imu_init_states(
         const std::vector<Frame*>& frames,
+        const std::vector<Frame*>& all_frames_for_transform,
         std::shared_ptr<IMUHandler> imu_handler,
         const std::vector<std::vector<double>>& pose_params_vec,
         const std::vector<std::vector<double>>& velocity_params_vec,

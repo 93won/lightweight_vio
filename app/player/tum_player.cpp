@@ -595,6 +595,12 @@ void TUMPlayer::update_viewer(PangolinViewer& viewer,
     // Update tracking view with frame directly
     viewer.update_tracking_with_frame(current_frame);
     
+    // ⭐ Update gravity arrow visualization at stored origin (same pattern as EuRoC player)
+    Eigen::Vector3f g_world, gravity_arrow_origin;
+    if (estimator.get_gravity_visualization_data(g_world, gravity_arrow_origin)) {
+        viewer.set_gravity_arrow(gravity_arrow_origin, g_world, "g_world (DOWN)");
+    }
+    
     viewer.render();
 }
 

@@ -86,6 +86,10 @@ PangolinViewer::PangolinViewer()
     , m_previous_follow_frame_state(true)  // Initialize to true since follow frame starts enabled
     , m_Tgw(Eigen::Matrix4f::Identity())
     , m_has_gravity_transformation(false)
+    , m_show_gravity_arrow(false)
+    , m_gravity_arrow_origin(Eigen::Vector3f::Zero())
+    , m_gravity_vector(Eigen::Vector3f::Zero())
+    , m_gravity_arrow_label("")
 {
 }
 
@@ -348,6 +352,11 @@ void PangolinViewer::render() {
             draw_camera_frustum();
         }
     }
+    
+    // ⭐ Draw gravity arrow if set (BEFORE transformation visualization)
+    if (m_show_gravity_arrow) {
+        draw_gravity_arrow();
+    }
 
     // Render tracking image at the bottom (always)
     if (m_has_tracking_image) {
@@ -522,30 +531,32 @@ void PangolinViewer::draw_points() {
 void PangolinViewer::draw_map_points() {
     std::lock_guard<std::mutex> lock(m_data_mutex);
     
-    // Draw all map points in light gray (background points)
-    if (!m_all_map_points_storage.empty() && m_show_accumulated_map_points) {
-        glPointSize(m_point_size);
-        glColor3f(0.8f, 0.8f, 0.8f); // Light gray for all map points
-        
-        glBegin(GL_POINTS);
-        for (const auto& point : m_all_map_points_storage) {
-            if (point && !point->is_bad() && !point->is_multi_view_triangulated()) {
-                Eigen::Vector3f position = point->get_position();
-                glVertex3f(position.x(), position.y(), position.z());
+    // 🎯 Collect unique map points from keyframe window (real-time position access)
+    std::set<MapPoint*> unique_map_points;
+    if (!m_keyframe_window.empty() && m_show_accumulated_map_points) {
+        for (const auto& keyframe : m_keyframe_window) {
+            if (!keyframe) continue;
+            
+            const auto& kf_map_points = keyframe->get_map_points();
+            for (const auto& mp : kf_map_points) {
+                if (mp && !mp->is_bad()) {
+                    unique_map_points.insert(mp.get());
+                }
             }
         }
-        glEnd();
     }
     
-    // Draw sliding window map points in white (more prominent) - excluding multi-view triangulated
-    if (!m_window_map_points_storage.empty() && m_show_accumulated_map_points) {
-        glPointSize(m_point_size * 1.0f); // Slightly larger
-        glColor3f(1.0f, 1.0f, 1.0f); // White for window map points
+    // Draw collected map points in white
+    if (!unique_map_points.empty()) {
+        glPointSize(m_point_size * 1.0f);
+        glColor3f(1.0f, 1.0f, 1.0f); // White for keyframe window map points
         
         glBegin(GL_POINTS);
-        for (const auto& point : m_window_map_points_storage) {
-            if (point && !point->is_bad() && !point->is_multi_view_triangulated()) {
-                Eigen::Vector3f position = point->get_position();
+        for (const auto* mp_ptr : unique_map_points) {
+            if (mp_ptr && !mp_ptr->is_multi_view_triangulated()) {
+                if(mp_ptr->is_bad())
+                    continue;
+                Eigen::Vector3f position = mp_ptr->get_position();
                 glVertex3f(position.x(), position.y(), position.z());
             }
         }
@@ -553,84 +564,17 @@ void PangolinViewer::draw_map_points() {
     }
    
     
-    // Draw marginalized map points as green wireframe spheres (overlay on top of everything else)
-    if (!m_all_map_points_storage.empty() && m_show_accumulated_map_points) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glColor4f(0.0f, 1.0f, 0.0f, 0.1f); // Green for marginalized points with alpha 0.3
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); // Enable wireframe mode
-        glLineWidth(1.0f);
-        
-        for (const auto& point : m_all_map_points_storage) {
-            if (point && !point->is_bad() && point->is_marginalized()) {
-                Eigen::Vector3f position = point->get_position();
-                
-                // Draw wireframe sphere using OpenGL primitives
-                glPushMatrix();
-                glTranslatef(position.x(), position.y(), position.z());
-                
-                // Draw a wireframe sphere (radius 0.05 as requested)
-                const float radius = 0.05f;
-                const int slices = 12;
-                const int stacks = 8;
-                
-                for (int i = 0; i < stacks; ++i) {
-                    float lat0 = M_PI * (-0.5f + (float)i / stacks);
-                    float z0 = radius * sin(lat0);
-                    float zr0 = radius * cos(lat0);
-                    
-                    float lat1 = M_PI * (-0.5f + (float)(i + 1) / stacks);
-                    float z1 = radius * sin(lat1);
-                    float zr1 = radius * cos(lat1);
-                    
-                    glBegin(GL_LINE_STRIP);
-                    for (int j = 0; j <= slices; ++j) {
-                        float lng = 2 * M_PI * (float)j / slices;
-                        float x = cos(lng);
-                        float y = sin(lng);
-                        
-                        glVertex3f(x * zr0, y * zr0, z0);
-                        glVertex3f(x * zr1, y * zr1, z1);
-                    }
-                    glEnd();
-                }
-                
-                // Draw longitude lines
-                for (int j = 0; j < slices; ++j) {
-                    float lng = 2 * M_PI * (float)j / slices;
-                    float x = cos(lng);
-                    float y = sin(lng);
-                    
-                    glBegin(GL_LINE_STRIP);
-                    for (int i = 0; i <= stacks; ++i) {
-                        float lat = M_PI * (-0.5f + (float)i / stacks);
-                        float z = radius * sin(lat);
-                        float zr = radius * cos(lat);
-                        
-                        glVertex3f(x * zr, y * zr, z);
-                    }
-                    glEnd();
-                }
-                
-                glPopMatrix();
-            }
-        }
-        
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // Reset to fill mode
-        glDisable(GL_BLEND); // Disable blending
-    }
-    
-    // Also check window map points for marginalized ones
-    if (!m_window_map_points_storage.empty() && m_show_accumulated_map_points) {
+    // 🎯 Draw marginalized map points from keyframe window (real-time access)
+    if (!unique_map_points.empty() && m_show_accumulated_map_points) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glColor4f(0.0f, 1.0f, 0.0f, 0.3f); // Green for marginalized points with alpha 0.3
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); // Enable wireframe mode
         glLineWidth(1.0f);
         
-        for (const auto& point : m_window_map_points_storage) {
-            if (point && !point->is_bad() && point->is_marginalized()) {
-                Eigen::Vector3f position = point->get_position();
+        for (const auto* mp_ptr : unique_map_points) {
+            if (mp_ptr && mp_ptr->is_marginalized()) {
+                Eigen::Vector3f position = mp_ptr->get_position();
                 
                 // Draw wireframe sphere using OpenGL primitives
                 glPushMatrix();
@@ -750,11 +694,17 @@ void PangolinViewer::draw_keyframe_frustums() {
     
     // Set sky blue color for keyframe frustums
     glColor3f(0.5f, 0.8f, 1.0f);
+
+    // check first keyframe Twb
+
     
     for (const auto& keyframe : m_keyframe_window) {
         if (!keyframe) continue;
         
         // Get Twc from keyframe
+
+        
+
         Eigen::Matrix4f Twc = keyframe->get_Twc();
         Eigen::Matrix4f T_wc = Twc;
         
@@ -2024,4 +1974,88 @@ cv::Mat PangolinViewer::create_depth_heatmap(const cv::Mat& depth_map, float min
     return heatmap;
 }
 
+// ===============================================================================
+// ⭐ Gravity Arrow Visualization (BEFORE transformation)
+// ===============================================================================
+
+void PangolinViewer::set_gravity_arrow(const Eigen::Vector3f& origin, const Eigen::Vector3f& g_world, const std::string& label) {
+    std::lock_guard<std::mutex> lock(m_data_mutex);
+    m_show_gravity_arrow = true;
+    m_gravity_arrow_origin = origin;
+    m_gravity_vector = g_world;
+    m_gravity_arrow_label = label;
 }
+
+void PangolinViewer::clear_gravity_arrow() {
+    std::lock_guard<std::mutex> lock(m_data_mutex);
+    m_show_gravity_arrow = false;
+}
+
+void PangolinViewer::draw_gravity_arrow() {
+    std::lock_guard<std::mutex> lock(m_data_mutex);
+    
+    if (!m_show_gravity_arrow) return;
+    
+    // Scale arrow to be visually prominent
+    float arrow_length = 2.0f;  // 2 meters
+    Eigen::Vector3f normalized_direction = m_gravity_vector.normalized();
+    
+    // Draw RED arrow for gravity direction
+    draw_arrow_3d(m_gravity_arrow_origin, normalized_direction, arrow_length, Eigen::Vector3f(1.0f, 0.0f, 0.0f), 0.05f);
+    
+    // Note: Text rendering removed (pangolin::GlFont API varies by version)
+    // Arrow tip location for reference:
+    Eigen::Vector3f arrow_tip = m_gravity_arrow_origin + normalized_direction * arrow_length;
+}
+
+void PangolinViewer::draw_arrow_3d(const Eigen::Vector3f& start, const Eigen::Vector3f& direction, 
+                                  float length, const Eigen::Vector3f& color, float shaft_radius) {
+    // Arrow consists of:
+    // 1. Cylinder shaft (80% of length)
+    // 2. Cone tip (20% of length)
+    
+    float shaft_length = length * 0.8f;
+    float cone_length = length * 0.2f;
+    float cone_radius = shaft_radius * 3.0f;
+    
+    Eigen::Vector3f normalized_dir = direction.normalized();
+    
+    // ============ Draw using LINE instead of cylinder for simplicity ============
+    glPushMatrix();
+    
+    glColor3f(color.x(), color.y(), color.z());
+    glLineWidth(5.0f);
+    
+    // Draw shaft as thick line
+    Eigen::Vector3f end_point = start + normalized_dir * length;
+    
+    glBegin(GL_LINES);
+    glVertex3f(start.x(), start.y(), start.z());
+    glVertex3f(end_point.x(), end_point.y(), end_point.z());
+    glEnd();
+    
+    // Draw arrow tip (cone) at end
+    glTranslatef(end_point.x(), end_point.y(), end_point.z());
+    
+    // Compute rotation to align Z-axis (gluCylinder default) with direction
+    Eigen::Vector3f z_axis(0.0f, 0.0f, 1.0f);
+    Eigen::Vector3f rotation_axis = z_axis.cross(normalized_dir);
+    float rotation_angle = std::acos(std::max(-1.0f, std::min(1.0f, z_axis.dot(normalized_dir))));
+    
+    if (rotation_axis.norm() > 1e-6) {
+        rotation_axis.normalize();
+        glRotatef(rotation_angle * 180.0f / M_PI, rotation_axis.x(), rotation_axis.y(), rotation_axis.z());
+    } else if (z_axis.dot(normalized_dir) < 0) {
+        // 180 degree rotation needed (pointing opposite direction)
+        glRotatef(180.0f, 1.0f, 0.0f, 0.0f);
+    }
+    
+    // Draw cone tip
+    GLUquadricObj* quad = gluNewQuadric();
+    gluCylinder(quad, cone_radius, 0.0f, cone_length, 16, 1);
+    gluDeleteQuadric(quad);
+    
+    glPopMatrix();
+}
+
+} // namespace lightweight_vio
