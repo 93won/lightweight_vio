@@ -378,14 +378,14 @@ std::unique_ptr<PangolinViewer> TUMPlayer::initialize_viewer(const TUMPlayerConf
 }
 
 void TUMPlayer::initialize_estimator(Estimator& estimator, const std::vector<ImageData>& image_data) {
-    // Set initial ground truth pose if available
-    if (TUMUtils::has_ground_truth() && !image_data.empty()) {
-        auto first_gt_pose = TUMUtils::get_matched_pose(0);
-        if (first_gt_pose.has_value()) {
-            estimator.set_initial_gt_pose(first_gt_pose.value());
-            spdlog::info("[TUMPlayer] Set initial ground truth pose");
-        }
-    }
+    // // Set initial ground truth pose if available
+    // if (TUMUtils::has_ground_truth() && !image_data.empty()) {
+    //     auto first_gt_pose = TUMUtils::get_matched_pose(0);
+    //     if (first_gt_pose.has_value()) {
+    //         estimator.set_initial_gt_pose(first_gt_pose.value());
+    //         spdlog::info("[TUMPlayer] Set initial ground truth pose");
+    //     }
+    // }
 }
 
 double TUMPlayer::process_single_frame(Estimator& estimator,
