@@ -18,7 +18,7 @@
 #include <memory>
 #include <chrono>
 #include <Eigen/Dense>
-#include "../../src/util/StringUtils.h"
+#include "util/StringUtils.h"
 
 // Forward declarations to avoid heavy includes
 namespace lightweight_vio {

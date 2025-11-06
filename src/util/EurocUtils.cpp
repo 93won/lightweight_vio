@@ -326,14 +326,6 @@ long long EurocUtils::get_matched_timestamp(size_t index) {
     return s_image_timestamps[index];
 }
 
-// Helper function to trim whitespace
-std::string trim(const std::string& str) {
-    size_t first = str.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return "";
-    size_t last = str.find_last_not_of(" \t\r\n");
-    return str.substr(first, (last - first + 1));
-}
-
 bool EurocUtils::load_imu_data(const std::string& dataset_root_path) {
     std::string imu_file_path = dataset_root_path + "/mav0/imu0/data.csv";
     
