@@ -245,7 +245,7 @@ std::vector<RGBDImageData> RGBDPlayer::load_rgbd_timestamps(const std::string& d
         
         if (ss >> timestamp_sec >> filename) {
             long long timestamp_ns = static_cast<long long>(timestamp_sec * 1e9);
-            rgb_map[timestamp_ns] = trim(filename);
+            rgb_map[timestamp_ns] = utils::trim(filename);
         }
     }
     rgb_stream.close();
@@ -269,7 +269,7 @@ std::vector<RGBDImageData> RGBDPlayer::load_rgbd_timestamps(const std::string& d
         
         if (ss >> timestamp_sec >> filename) {
             long long timestamp_ns = static_cast<long long>(timestamp_sec * 1e9);
-            depth_map[timestamp_ns] = trim(filename);
+            depth_map[timestamp_ns] = utils::trim(filename);
         }
     }
     depth_stream.close();
@@ -981,13 +981,6 @@ void RGBDPlayer::save_statistics(const RGBDPlayerResult& result,
     
     out.close();
     spdlog::info("[RGBDPlayer] Saved statistics to: {}", stats_file);
-}
-
-std::string RGBDPlayer::trim(const std::string& str) {
-    size_t first = str.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return "";
-    size_t last = str.find_last_not_of(" \t\r\n");
-    return str.substr(first, last - first + 1);
 }
 
 std::vector<Eigen::Vector3f> RGBDPlayer::extract_positions_from_poses(const std::vector<Eigen::Matrix4f>& poses) {

@@ -263,8 +263,8 @@ std::vector<ImageData> TUMPlayer::load_image_timestamps(const std::string& datas
         
         if (std::getline(ss, timestamp_str, ',') && std::getline(ss, filename)) {
             ImageData data;
-            data.timestamp = std::stoll(trim(timestamp_str));
-            data.filename = trim(filename);
+            data.timestamp = std::stoll(utils::trim(timestamp_str));
+            data.filename = utils::trim(filename);
             image_data.push_back(data);
         }
     }
@@ -967,13 +967,6 @@ void TUMPlayer::save_statistics(const TUMPlayerResult& result,
         stats_out.close();
         spdlog::info("[TUMPlayer] Saved statistics to: {}", stats_file);
     }
-}
-
-std::string TUMPlayer::trim(const std::string& str) {
-    size_t first = str.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return "";
-    size_t last = str.find_last_not_of(" \t\r\n");
-    return str.substr(first, (last - first + 1));
 }
 
 std::vector<Eigen::Vector3f> TUMPlayer::extract_positions_from_poses(const std::vector<Eigen::Matrix4f>& poses) {

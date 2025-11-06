@@ -18,6 +18,7 @@
 #include <memory>
 #include <chrono>
 #include <Eigen/Dense>
+#include "../../src/util/StringUtils.h"
 
 // Forward declarations to avoid heavy includes
 namespace lightweight_vio {
@@ -314,13 +315,6 @@ private:
                         bool use_vio_mode);
 
     // === Utility Functions ===
-    
-    /**
-     * @brief Trim whitespace from string
-     * @param str Input string
-     * @return Trimmed string
-     */
-    std::string trim(const std::string& str);
     
     /**
      * @brief Extract positions from pose matrices

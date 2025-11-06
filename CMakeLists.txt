@@ -91,6 +91,7 @@ add_executable(euroc_stereo app/euroc_stereo.cpp
     src/optimization/Parameters.cpp
     src/util/Config.cpp
     src/util/EurocUtils.cpp
+    src/util/StringUtils.cpp
     src/viewer/PangolinViewer.cpp
 )
 
@@ -108,6 +109,7 @@ add_executable(tum_stereo app/tum_stereo.cpp
     src/optimization/Parameters.cpp
     src/util/Config.cpp
     src/util/TUMUtils.cpp
+    src/util/StringUtils.cpp
     src/viewer/PangolinViewer.cpp
 )
 
@@ -124,6 +126,7 @@ add_executable(rgbd_example app/rgbd_example.cpp
     src/optimization/Factors.cpp
     src/optimization/Parameters.cpp
     src/util/Config.cpp
+    src/util/StringUtils.cpp
     src/viewer/PangolinViewer.cpp
 )
 
