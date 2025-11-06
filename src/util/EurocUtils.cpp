@@ -10,6 +10,7 @@
  */
 
 #include "util/EurocUtils.h"
+#include "util/StringUtils.h"
 #include "database/Frame.h" // For IMUData struct
 #include <fstream>
 #include <sstream>
@@ -355,7 +356,7 @@ bool EurocUtils::load_imu_data(const std::string& dataset_root_path) {
         
         // Parse CSV line
         while (std::getline(ss, cell, ',')) {
-            row.push_back(trim(cell));
+            row.push_back(utils::trim(cell));
         }
         
         // EuRoC IMU format: timestamp,w_RS_S_x,w_RS_S_y,w_RS_S_z,a_RS_S_x,a_RS_S_y,a_RS_S_z
@@ -445,7 +446,7 @@ bool EurocUtils::load_imu_data_in_range(const std::string& dataset_root_path,
         
         // Parse CSV line
         while (std::getline(ss, cell, ',')) {
-            row.push_back(trim(cell));
+            row.push_back(utils::trim(cell));
         }
         
         // EuRoC IMU format: timestamp,w_RS_S_x,w_RS_S_y,w_RS_S_z,a_RS_S_x,a_RS_S_y,a_RS_S_z
