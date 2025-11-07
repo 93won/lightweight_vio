@@ -497,6 +497,9 @@ namespace lightweight_vio
         options.linear_solver_type = ceres::DENSE_QR;
         options.use_explicit_schur_complement = false;
 
+
+        options.trust_region_strategy_type = ceres::DOGLEG;
+
         // Logging configuration - simplified (no config variables)
         options.logging_type = ceres::SILENT;
         options.minimizer_progress_to_stdout = false;
@@ -1480,18 +1483,18 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     ceres::Solver::Options options_stage1;
     options_stage1.max_num_iterations = 50;
     options_stage1.linear_solver_type = ceres::SPARSE_SCHUR;
-    options_stage1.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
+    options_stage1.trust_region_strategy_type = ceres::DOGLEG;
     options_stage1.minimizer_progress_to_stdout = true;  // ⭐ Enable to see what's happening
     options_stage1.logging_type = ceres::PER_MINIMIZER_ITERATION;
     
-    // ⭐ Accept first improvement without being too strict
+    // // ⭐ Accept first improvement without being too strict
     options_stage1.function_tolerance = 1e-3;   // Accept 0.1% cost reduction
     options_stage1.gradient_tolerance = 1e-6;   
     options_stage1.parameter_tolerance = 1e-6;
     
-    // ⭐ Constrain trust region to prevent too large steps
-    options_stage1.max_trust_region_radius = 1e2;  // Limit maximum step size
-    options_stage1.initial_trust_region_radius = 1e1;  // Start with moderate steps
+    // // ⭐ Constrain trust region to prevent too large steps
+    // options_stage1.max_trust_region_radius = 1e2;  // Limit maximum step size
+    // options_stage1.initial_trust_region_radius = 1e1;  // Start with moderate steps
     
     // Add parameter blocks - FIX poses, velocities, biases
     for (size_t i = 0; i < pose_params_vec.size(); ++i) {
@@ -1559,7 +1562,7 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     ceres::Solver::Options options_stage2;
     options_stage2.max_num_iterations = 100;
     options_stage2.linear_solver_type = ceres::SPARSE_SCHUR;
-    options_stage2.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
+    options_stage2.trust_region_strategy_type = ceres::DOGLEG;
     options_stage2.minimizer_progress_to_stdout = false;
     options_stage2.logging_type = ceres::SILENT;
     
