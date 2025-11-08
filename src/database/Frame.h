@@ -54,6 +54,11 @@ public:
           double fx, double fy, double cx, double cy, 
           const std::vector<double>& distortion_coeffs);  // DEPRECATED: for backward compatibility
     
+    // Monocular constructor - single image with Camera object
+    Frame(long long timestamp, int frame_id,
+          const cv::Mat& image,
+          std::shared_ptr<Camera> camera);
+    
     // Stereo constructor - directly takes both images with Camera objects (left and right)
     Frame(long long timestamp, int frame_id,
           const cv::Mat& left_image, const cv::Mat& right_image,

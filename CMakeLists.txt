@@ -118,6 +118,7 @@ add_executable(euroc_stereo app/euroc_stereo.cpp
     src/processing/FeatureTracker.cpp
     src/processing/Optimizer.cpp
     src/processing/Estimator.cpp
+    src/processing/MonocularInitializer.cpp
     src/processing/IMUHandler.cpp
     src/optimization/Factors.cpp
     src/optimization/Parameters.cpp
@@ -139,6 +140,7 @@ add_executable(tum_stereo app/tum_stereo.cpp
     src/processing/FeatureTracker.cpp
     src/processing/Optimizer.cpp
     src/processing/Estimator.cpp
+    src/processing/MonocularInitializer.cpp
     src/processing/IMUHandler.cpp
     src/optimization/Factors.cpp
     src/optimization/Parameters.cpp
@@ -160,6 +162,7 @@ add_executable(rgbd_example app/rgbd_example.cpp
     src/processing/FeatureTracker.cpp
     src/processing/Optimizer.cpp
     src/processing/Estimator.cpp
+    src/processing/MonocularInitializer.cpp
     src/processing/IMUHandler.cpp
     src/optimization/Factors.cpp
     src/optimization/Parameters.cpp

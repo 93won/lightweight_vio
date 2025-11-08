@@ -42,7 +42,23 @@ camera:
 keyframe_management:
   keyframe_window_size: 5
   grid_coverage_ratio: 0.7  # Add keyframe when coverage drops to 80% of last keyframe's coverage
-  time_threshold: 0.05   
+  time_threshold: 0.05
+
+# Monocular Initialization Parameters
+# Controls consecutive SFM initialization for monocular VIO
+initialization:
+  required_keyframes: 5              # Number of keyframes needed for initialization
+  min_parallax_degrees: 5.0          # Minimum parallax for individual frame pair (degrees)
+  min_average_parallax: 8.0          # Minimum average parallax for keyframe selection (degrees)
+  
+  # Two-view geometry parameters
+  ransac_threshold: 1.0              # RANSAC inlier threshold (pixels)
+  ransac_confidence: 0.99            # RANSAC confidence level
+  ransac_max_iterations: 1000        # Maximum RANSAC iterations
+  
+  # Triangulation parameters
+  min_triangulation_angle: 2.0       # Minimum parallax angle for triangulation (degrees)
+  max_reprojection_error: 2.0        # Maximum reprojection error (pixels)   
   
 # Feature Detection Parameters
 # Controls how corner features are detected using goodFeaturesToTrack

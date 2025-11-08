@@ -32,6 +32,7 @@ namespace lightweight_vio {
     class InertialOptimizer;
     class PnPOptimizer;
     class SlidingWindowOptimizer;
+    class MonocularInitializer;  // ⭐ Monocular initialization
     class Camera;  // Forward declaration for Camera
 
     struct OptimizationResult;
@@ -117,6 +118,14 @@ public:
      * @return Estimation result
      */
     EstimationResult process_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, long long timestamp);
+
+    /**
+     * @brief Process a new monocular frame (VO mode only)
+     * @param image Monocular image
+     * @param timestamp Frame timestamp in nanoseconds
+     * @return Estimation result
+     */
+    EstimationResult process_monocular_frame(const cv::Mat& image, long long timestamp);
 
     /**
      * @brief Reset the estimator state
@@ -206,6 +215,7 @@ private:
     std::unique_ptr<SlidingWindowOptimizer> m_sliding_window_optimizer;
     std::unique_ptr<IMUHandler> m_imu_handler;  // IMU processing and preintegration
     std::unique_ptr<InertialOptimizer> m_inertial_optimizer;  // VIO optimization
+    std::unique_ptr<MonocularInitializer> m_monocular_initializer;  // ⭐ Monocular initialization
     
     // Camera model (shared across all frames)
     std::shared_ptr<Camera> m_left_camera;   // Left camera model
@@ -229,6 +239,9 @@ private:
     // IMU initialization state
     bool m_gravity_initialized = false;  // Flag indicating if gravity has been estimated
     int m_frame_count_since_start = 0;   // Counter for frames processed since start
+    
+    // ⭐ Monocular initialization state
+    bool m_monocular_initialized = false;  // Flag indicating if monocular system is initialized
     
     // Keyframe management state
     double m_last_keyframe_grid_coverage = 0.0;  // Grid coverage of the last keyframe
@@ -294,6 +307,14 @@ private:
      * @return New frame
      */
     std::shared_ptr<Frame> create_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, long long timestamp);
+    
+    /**
+     * @brief Initialize a new monocular frame
+     * @param image Grayscale image
+     * @param timestamp Frame timestamp
+     * @return New frame
+     */
+    std::shared_ptr<Frame> create_monocular_frame(const cv::Mat& image, long long timestamp);
     
     /**
      * @brief Predict current frame pose using motion model

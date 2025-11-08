@@ -201,6 +201,20 @@ namespace lightweight_vio
         float m_rgbd_vis_min_depth = 0.3f;             // Minimum depth for heatmap visualization (clamp to red below this)
         float m_rgbd_vis_max_depth = 20.0f;            // Maximum depth for heatmap visualization (clamp to blue above this)
 
+        // ⭐ Monocular Initialization Parameters
+        int m_init_required_keyframes = 5;             // Number of keyframes needed for initialization
+        double m_init_min_parallax_degrees = 5.0;      // Minimum parallax for individual frame pair (degrees)
+        double m_init_min_average_parallax = 8.0;      // Minimum average parallax for keyframe selection (degrees)
+        
+        // Two-view geometry parameters
+        double m_init_ransac_threshold = 1.0;          // RANSAC inlier threshold (pixels)
+        double m_init_ransac_confidence = 0.99;        // RANSAC confidence level
+        int m_init_ransac_max_iterations = 1000;       // Maximum RANSAC iterations
+        
+        // Triangulation parameters
+        double m_init_min_triangulation_angle = 2.0;   // Minimum parallax angle for triangulation (degrees)
+        double m_init_max_reprojection_error = 2.0;    // Maximum reprojection error (pixels)
+
     private:
         Config() = default;
 

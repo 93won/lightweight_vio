@@ -93,6 +93,50 @@ Frame::Frame(long long timestamp, int frame_id, std::shared_ptr<Camera> camera)
     }
 }
 
+// Monocular constructor with image
+Frame::Frame(long long timestamp, int frame_id,
+             const cv::Mat& image,
+             std::shared_ptr<Camera> camera)
+    : m_timestamp(timestamp)
+    , m_frame_id(frame_id)
+    , m_frame_type(FrameType::MONOCULAR)
+    , m_camera(camera)
+    , m_right_camera(nullptr)
+    , m_left_image(image.clone())
+    , m_rotation(Eigen::Matrix3f::Identity())
+    , m_translation(Eigen::Vector3f::Zero())
+    , m_is_keyframe(false)
+    , m_world_pose(Sophus::SE3f())
+    , m_velocity(Eigen::Vector3f::Zero())
+    , m_accel_bias(Eigen::Vector3f::Zero())
+    , m_gyro_bias(Eigen::Vector3f::Zero())
+    , m_dt_from_last_keyframe(0.0)
+    , m_T_relative_from_ref(Eigen::Matrix4f::Identity())
+    , m_fx(camera->get_fx()), m_fy(camera->get_fy())
+    , m_cx(camera->get_cx()), m_cy(camera->get_cy())
+    , m_distortion_coeffs(camera->get_distortion_coeffs())
+{
+    // Get T_BC from config and convert to T_CB (body to camera)
+    const Config& config = Config::getInstance();
+    cv::Mat T_bc_cv = config.left_T_BC();
+    Eigen::Matrix4d T_bc;
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            T_bc(i, j) = T_bc_cv.at<double>(i, j);
+        }
+    }
+    m_T_CB = T_bc.inverse();
+    
+    // Set reference keyframe to last keyframe if available
+    if (m_last_keyframe) {
+        m_reference_keyframe = m_last_keyframe;
+        m_T_relative_from_ref = Eigen::Matrix4f::Identity();
+    }
+    
+    // Compute undistorted image boundaries
+    undistort_corner_points();
+}
+
 Frame::Frame(long long timestamp, int frame_id,
              const cv::Mat& left_image, const cv::Mat& right_image,
              std::shared_ptr<Camera> left_camera, std::shared_ptr<Camera> right_camera)

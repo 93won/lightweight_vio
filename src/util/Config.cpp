@@ -421,6 +421,34 @@ bool Config::load(const std::string& config_file) {
         }
     }
     
+    // ========================================================================
+    // Monocular Initialization Parameters
+    // ========================================================================
+    cv::FileNode initialization = fs["initialization"];
+    if (!initialization.empty()) {
+        m_init_required_keyframes = (int)initialization["required_keyframes"];
+        m_init_min_parallax_degrees = (double)initialization["min_parallax_degrees"];
+        m_init_min_average_parallax = (double)initialization["min_average_parallax"];
+        
+        m_init_ransac_threshold = (double)initialization["ransac_threshold"];
+        m_init_ransac_confidence = (double)initialization["ransac_confidence"];
+        m_init_ransac_max_iterations = (int)initialization["ransac_max_iterations"];
+        
+        m_init_min_triangulation_angle = (double)initialization["min_triangulation_angle"];
+        m_init_max_reprojection_error = (double)initialization["max_reprojection_error"];
+        
+        if (m_enable_debug_output) {
+            spdlog::info("[CONFIG] Monocular initialization parameters loaded:");
+            spdlog::info("  - Required keyframes: {}", m_init_required_keyframes);
+            spdlog::info("  - Min parallax: {:.1f}° (average: {:.1f}°)", 
+                        m_init_min_parallax_degrees, m_init_min_average_parallax);
+            spdlog::info("  - RANSAC: threshold={:.1f}px, confidence={:.2f}, max_iters={}", 
+                        m_init_ransac_threshold, m_init_ransac_confidence, m_init_ransac_max_iterations);
+            spdlog::info("  - Triangulation: min_angle={:.1f}°, max_reproj_error={:.1f}px",
+                        m_init_min_triangulation_angle, m_init_max_reprojection_error);
+        }
+    }
+    
     fs.release();
     return true;
 }

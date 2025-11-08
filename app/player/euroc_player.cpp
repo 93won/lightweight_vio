@@ -427,9 +427,17 @@ double EurocPlayer::process_single_frame(Estimator& estimator,
                                         bool use_vio_mode) {
     auto start_time = std::chrono::high_resolution_clock::now();
     
-    // Load stereo images
+    const Config& config = Config::getInstance();
+    CameraType camera_type = config.get_camera_type();
+    
+    // Load images based on camera type
     cv::Mat left_image = load_image(dataset_path, image_data[context.current_idx].filename, 0);
-    cv::Mat right_image = load_image(dataset_path, image_data[context.current_idx].filename, 1);
+    cv::Mat right_image;
+    
+    // Only load right image for stereo mode
+    if (camera_type == CameraType::STEREO) {
+        right_image = load_image(dataset_path, image_data[context.current_idx].filename, 1);
+    }
     
     if (left_image.empty()) {
         spdlog::warn("[EurocPlayer] Skipping frame {} due to empty image", context.current_idx);
@@ -440,11 +448,15 @@ double EurocPlayer::process_single_frame(Estimator& estimator,
     cv::Mat processed_left = preprocess_image(left_image);
     cv::Mat processed_right = right_image.empty() ? cv::Mat() : preprocess_image(right_image);
     
-    // Process frame
+    // Process frame based on camera type
     Estimator::EstimationResult result;
     
-    if (use_vio_mode && context.processed_frames > 0) {
-        // VIO mode with IMU data
+    if (camera_type == CameraType::MONOCULAR) {
+        // ⭐ Monocular mode - use dedicated monocular function (VO only for now)
+        result = estimator.process_monocular_frame(processed_left, 
+                                                  image_data[context.current_idx].timestamp);
+    } else if (use_vio_mode && context.processed_frames > 0) {
+        // VIO mode with IMU data (stereo/rgbd)
         auto imu_data = get_imu_data_between_frames(context.previous_frame_timestamp, 
                                                    image_data[context.current_idx].timestamp);
         
@@ -457,7 +469,7 @@ double EurocPlayer::process_single_frame(Estimator& estimator,
                                            image_data[context.current_idx].timestamp);
         }
     } else {
-        // VO mode
+        // VO mode (stereo/rgbd)
         result = estimator.process_frame(processed_left, processed_right, 
                                        image_data[context.current_idx].timestamp);
     }

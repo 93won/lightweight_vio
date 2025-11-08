@@ -12,6 +12,7 @@
 #include "processing/Estimator.h"
 #include "processing/FeatureTracker.h"
 #include "processing/IMUHandler.h"
+#include "processing/MonocularInitializer.h"  // ⭐ Added for monocular initialization
 #include "database/Frame.h"
 #include "database/MapPoint.h"
 #include "processing/Optimizer.h"
@@ -61,6 +62,9 @@ Estimator::Estimator()
     
     // Initialize inertial optimizer  
     m_inertial_optimizer = std::make_unique<InertialOptimizer>();
+    
+    // ⭐ Initialize monocular initializer (will only be used if camera is monocular)
+    m_monocular_initializer = std::make_unique<MonocularInitializer>();
     
     // Create camera models based on config
     const Config& config = Config::getInstance();
@@ -271,6 +275,202 @@ Estimator::EstimationResult Estimator::process_rgbd_frame(const cv::Mat& rgb_ima
 
     return result;
 
+}
+
+Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& image, long long timestamp) {
+    EstimationResult result;
+    auto total_start_time = std::chrono::high_resolution_clock::now();
+
+    // Frame processing starts
+    if (Config::getInstance().m_enable_debug_output) {
+        std::cout << "\n";
+        spdlog::info("============================== Frame {} ==============================\n", m_frame_id_counter);
+    }
+
+    // Increment frame counter since last keyframe for every new frame
+    m_frames_since_last_keyframe++;
+
+    // Create new monocular frame
+    auto frame_creation_start = std::chrono::high_resolution_clock::now();
+    m_current_frame = create_monocular_frame(image, timestamp);
+    auto frame_creation_end = std::chrono::high_resolution_clock::now();
+    auto frame_creation_time = std::chrono::duration_cast<std::chrono::microseconds>(frame_creation_end - frame_creation_start).count() / 1000.0;
+
+    if (!m_current_frame) {
+        spdlog::error("[Estimator] Failed to create monocular frame!");
+        result.success = false;
+        return result;
+    }
+
+    // ⭐ Monocular initialization: If not yet initialized
+    if (!m_monocular_initialized) {
+        spdlog::info("[MONO_INIT] Frame {}: Adding to initializer...", m_frame_id_counter);
+        
+        // Add current frame to initializer
+        m_monocular_initializer->add_frame(m_current_frame);
+        
+        // Check if we have enough frames to attempt initialization
+        if (m_monocular_initializer->has_sufficient_frames()) {
+            spdlog::info("[MONO_INIT] Sufficient frames collected, attempting initialization...");
+            
+            auto init_result = m_monocular_initializer->try_initialize();
+            
+            if (init_result.success) {
+                spdlog::info("[MONO_INIT] ✅ Initialization successful!");
+                spdlog::info("  - Initialized frames: {}", init_result.initialized_keyframes.size());
+                spdlog::info("  - Map points created: {}", init_result.initialized_mappoints.size());
+                
+                // Store initialized frames and map points
+                for (const auto& frame : init_result.initialized_keyframes) {
+                    m_keyframes.push_back(frame);
+                    m_all_frames.push_back(frame);
+                }
+                
+                for (const auto& mp : init_result.initialized_mappoints) {
+                    m_map_points.push_back(mp);
+                }
+                
+                // Set the last initialized frame as the last keyframe
+                if (!init_result.initialized_keyframes.empty()) {
+                    m_last_keyframe = init_result.initialized_keyframes.back();
+                    m_previous_frame = m_last_keyframe;
+                    m_current_pose = m_last_keyframe->get_Twb();
+                }
+                
+                // Mark as initialized
+                m_monocular_initialized = true;
+                
+                result.success = true;
+                result.num_features = m_current_frame->get_feature_count();
+                result.num_inliers = init_result.initialized_mappoints.size();
+                return result;
+                
+            } else {
+                spdlog::warn("[MONO_INIT] ❌ Initialization failed, resetting...");
+                m_monocular_initializer->reset();
+                result.success = false;
+                return result;
+            }
+        }
+        
+        // Not enough frames yet - just return early
+        spdlog::info("[MONO_INIT] Waiting for more frames ({}/{})", 
+                    m_monocular_initializer->get_num_candidates(),
+                    Config::getInstance().m_init_required_keyframes);
+        result.success = false;
+        return result;
+    }
+
+    // ⭐ After initialization: Normal tracking
+    if (m_previous_frame) {
+        // Predict state using motion model
+        auto prediction_start = std::chrono::high_resolution_clock::now();
+        predict_state();
+        auto prediction_end = std::chrono::high_resolution_clock::now();
+        auto prediction_time = std::chrono::duration_cast<std::chrono::microseconds>(prediction_end - prediction_start).count() / 1000.0;
+        
+        // Track features from previous frame
+        auto tracking_start = std::chrono::high_resolution_clock::now();
+        m_feature_tracker->track_features(m_current_frame, m_previous_frame);
+        auto tracking_end = std::chrono::high_resolution_clock::now();
+        auto tracking_time = std::chrono::duration_cast<std::chrono::microseconds>(tracking_end - tracking_start).count() / 1000.0;
+        
+        result.num_features = m_current_frame->get_feature_count();
+        
+        // Count how many features have associated map points
+        int num_tracked_with_map_points = count_features_with_map_points(m_current_frame);
+        
+        // Log tracking information
+        if (Config::getInstance().m_enable_debug_output) {
+            spdlog::info("[TRACKING] {} features tracked, {} with map points", 
+                        result.num_features, num_tracked_with_map_points);
+        }
+        
+        if (num_tracked_with_map_points >= 5) {
+            // Pose optimization
+            auto optimization_start = std::chrono::high_resolution_clock::now();
+            auto opt_result = optimize_pose(m_current_frame);
+            auto optimization_end = std::chrono::high_resolution_clock::now();
+            auto optimization_time = std::chrono::duration_cast<std::chrono::microseconds>(optimization_end - optimization_start).count() / 1000.0;
+            
+            result.success = opt_result.success;
+            result.num_inliers = opt_result.num_inliers;
+            result.num_outliers = opt_result.num_outliers;
+            
+            if (opt_result.success) {
+                m_current_pose = opt_result.optimized_pose;
+                m_current_frame->set_Twb(m_current_pose);
+                
+                // Update transform from last frame for velocity estimation
+                update_transform_from_last();
+                
+                if (Config::getInstance().m_enable_debug_output) {
+                    spdlog::info("[POSE_OPT] ✅ Optimization successful: {} inliers, {} outliers", 
+                                opt_result.num_inliers, opt_result.num_outliers);
+                }
+            } else {
+                if (Config::getInstance().m_enable_debug_output) {
+                    spdlog::warn("[POSE_OPT] ❌ Optimization failed - keeping previous pose");
+                }
+            }
+        } else {
+            if (Config::getInstance().m_enable_debug_output) {
+                spdlog::warn("[POSE_OPT] ⚠️ Not enough map point associations for optimization: {} (need ≥5)", 
+                            num_tracked_with_map_points);
+            }
+            // Fallback: use current pose as-is
+            m_current_pose = m_current_frame->get_Twb();
+            update_transform_from_last();
+            
+            result.success = true;
+            result.num_inliers = num_tracked_with_map_points;
+            result.num_outliers = 0;
+        }
+        
+        // Decide whether to create keyframe
+        bool is_keyframe = should_create_keyframe(m_current_frame);
+        
+        if (is_keyframe) {
+            // For monocular, we can't create new map points from stereo
+            // TODO: Implement map point creation via triangulation with previous keyframes
+            result.num_new_map_points = 0;
+            
+            create_keyframe(m_current_frame);
+            m_frames_since_last_keyframe = 0;
+        } else {
+            result.num_new_map_points = 0;
+        }
+        
+        // Count tracked features and features with map points
+        result.num_tracked_features = m_current_frame->get_feature_count();
+        result.num_features_with_map_points = count_features_with_map_points(m_current_frame);
+        
+    } else {
+        // Should not reach here - initialization should have set m_previous_frame
+        spdlog::error("[MONO] No previous frame after initialization!");
+        result.success = false;
+        return result;
+    }
+
+    // Add processed frame to all frames vector for trajectory export
+    m_all_frames.push_back(m_current_frame);
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - total_start_time);
+    result.optimization_time_ms = duration.count() / 1000.0;
+
+    // Set reference keyframe for non-keyframe frames
+    if (!m_current_frame->is_keyframe() && m_last_keyframe) {
+        m_current_frame->set_reference_keyframe(m_last_keyframe);
+    }
+
+    // Update state - release old previous frame's images before updating
+    if (m_previous_frame) {
+        m_previous_frame->release_images();
+    }
+    m_previous_frame = m_current_frame;
+
+    return result;
 }
 
 Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, const cv::Mat& right_image, long long timestamp) {
@@ -1144,7 +1344,20 @@ std::vector<std::shared_ptr<MapPoint>> Estimator::get_map_points_safe() const {
 }
 
 std::shared_ptr<Frame> Estimator::create_frame(const cv::Mat& left_image, const cv::Mat& right_image, long long timestamp) {
-    if (left_image.empty() || right_image.empty()) {
+    if (left_image.empty()) {
+        return nullptr;
+    }
+    
+    const Config& config = Config::getInstance();
+    CameraType camera_type = config.get_camera_type();
+    
+    // Monocular mode - only use left image
+    if (camera_type == CameraType::MONOCULAR) {
+        return create_monocular_frame(left_image, timestamp);
+    }
+    
+    // Stereo/RGBD mode - need both images
+    if (right_image.empty()) {
         return nullptr;
     }
     
@@ -1177,6 +1390,49 @@ std::shared_ptr<Frame> Estimator::create_frame(const cv::Mat& left_image, const 
         frame->set_Twb(m_previous_frame->get_Twb());
 
       
+        // Initialize velocity to zero
+        frame->set_velocity(Eigen::Vector3f::Zero());
+    } else {
+        // First frame - use ground truth pose if available, otherwise identity
+        if (m_has_initial_gt_pose) {
+            frame->set_Twb(m_initial_gt_pose);
+        } else {
+            frame->set_Twb(Eigen::Matrix4f::Identity());
+        }
+        
+        // First frame velocity is zero
+        frame->set_velocity(Eigen::Vector3f::Zero());
+    }
+    
+    // Inherit IMU bias from the last keyframe (if available)
+    if (m_last_keyframe && m_imu_handler) {
+        m_imu_handler->inherit_bias_from_keyframe(frame.get(), m_last_keyframe.get());
+    }
+    
+    return frame;
+}
+
+std::shared_ptr<Frame> Estimator::create_monocular_frame(const cv::Mat& image, long long timestamp) {
+    if (image.empty()) {
+        return nullptr;
+    }
+    
+    // Player already passes preprocessed grayscale image, so just use it directly
+    const cv::Mat& gray_image = image;  // Direct reference (no copy)
+    
+    auto frame = std::make_shared<Frame>(
+        timestamp,
+        m_frame_id_counter++,
+        gray_image,
+        m_left_camera  // Monocular uses left camera parameters
+    );
+
+    // Set initial pose and velocity
+    if (m_previous_frame) {
+        // For non-first frames, start with previous frame pose
+        // Actual prediction will be done in process_frame() via predict_state()
+        frame->set_Twb(m_previous_frame->get_Twb());
+        
         // Initialize velocity to zero
         frame->set_velocity(Eigen::Vector3f::Zero());
     } else {
