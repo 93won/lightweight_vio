@@ -43,6 +43,15 @@ cv::Point2f Camera::project_normalized_to_pixel(const Eigen::Vector2f& normalize
     return pixel;
 }
 
+Eigen::Vector2f Camera::compute_normalized(const cv::Point2f& undistorted_pixel) const {
+    // Normalize: (u - cx) / fx, (v - cy) / fy
+    // This forms the unnormalized bearing vector [x_n, y_n, 1.0]
+    return Eigen::Vector2f(
+        (undistorted_pixel.x - m_cx) / m_fx,
+        (undistorted_pixel.y - m_cy) / m_fy
+    );
+}
+
 cv::Mat Camera::get_camera_matrix() const {
     cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
     K.at<double>(0, 0) = m_fx;

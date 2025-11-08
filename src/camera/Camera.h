@@ -62,6 +62,14 @@ public:
      */
     cv::Point2f project_normalized_to_pixel(const Eigen::Vector2f& normalized) const;
     
+    /**
+     * @brief Compute normalized camera coordinates from undistorted pixel
+     * @param undistorted_pixel Undistorted pixel coordinates
+     * @return Normalized coordinates [x_n, y_n] where x_n = (u - cx)/fx, y_n = (v - cy)/fy
+     * @note Forms unnormalized bearing vector: [x_n, y_n, 1.0]
+     */
+    Eigen::Vector2f compute_normalized(const cv::Point2f& undistorted_pixel) const;
+    
     // Getters
     double get_fx() const { return m_fx; }
     double get_fy() const { return m_fy; }

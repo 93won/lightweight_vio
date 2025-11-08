@@ -911,11 +911,8 @@ void Frame::undistort_features() {
                 cv::Point2f undistorted_pixel = m_camera->undistort_point(pixel_pt);
                 feature->set_undistorted_coord(undistorted_pixel);
                 
-                // Normalize: (u - cx) / fx, (v - cy) / fy
-                Eigen::Vector2f normalized(
-                    (undistorted_pixel.x - m_camera->get_cx()) / m_camera->get_fx(),
-                    (undistorted_pixel.y - m_camera->get_cy()) / m_camera->get_fy()
-                );
+                // Compute normalized camera coordinates
+                Eigen::Vector2f normalized = m_camera->compute_normalized(undistorted_pixel);
                 feature->set_normalized_coord(normalized);
             }
             
@@ -928,11 +925,8 @@ void Frame::undistort_features() {
                     // Undistort right pixel using right camera
                     cv::Point2f right_undistorted = m_right_camera->undistort_point(right_pixel);
                     
-                    // Normalize using right camera parameters
-                    Eigen::Vector2f right_normalized(
-                        (right_undistorted.x - m_right_camera->get_cx()) / m_right_camera->get_fx(),
-                        (right_undistorted.y - m_right_camera->get_cy()) / m_right_camera->get_fy()
-                    );
+                    // Compute normalized coordinates using right camera parameters
+                    Eigen::Vector2f right_normalized = m_right_camera->compute_normalized(right_undistorted);
                     
                     // Store right normalized coordinate
                     feature->set_undistorted_stereo_match(right_normalized, -1.0f);
