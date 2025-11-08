@@ -12,6 +12,30 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Compiler optimization flags based on architecture
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
+
+# Detect architecture and add SIMD flags
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    # ARM64 NEON support
+    message(STATUS "Detected ARM64 architecture - enabling NEON")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native -mtune=native")
+    add_definitions(-DENABLE_NEON)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "armv7|armv8")
+    # ARM32 NEON support
+    message(STATUS "Detected ARM32 architecture - enabling NEON")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfpu=neon -march=native -mtune=native")
+    add_definitions(-DENABLE_NEON)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    # x86_64 SSE/AVX support
+    message(STATUS "Detected x86_64 architecture - enabling SSE/AVX")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native -mtune=native")
+    add_definitions(-DENABLE_SSE)
+else()
+    message(STATUS "Unknown architecture: ${CMAKE_SYSTEM_PROCESSOR} - using default flags")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+endif()
+
 # Set OpenGL preference to avoid warnings
 set(OpenGL_GL_PREFERENCE GLVND)
 
@@ -46,6 +70,10 @@ set(BUILD_EXAMPLES OFF CACHE BOOL "Build Ceres examples" FORCE)
 set(BUILD_BENCHMARKS OFF CACHE BOOL "Build Ceres benchmarks" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "Build Ceres tests" FORCE)
 set(SUITESPARSE OFF CACHE BOOL "Enable SuiteSparse" FORCE)
+set(CXSPARSE OFF CACHE BOOL "Enable CXSparse" FORCE)
+set(MINIGLOG OFF CACHE BOOL "Use full glog instead of miniglog" FORCE)
+set(GLOG ON CACHE BOOL "Enable glog" FORCE)
+set(GFLAGS OFF CACHE BOOL "Enable gflags" FORCE)
 set(PROVIDE_UNINSTALL_TARGET OFF CACHE BOOL "Disable Ceres uninstall target" FORCE)
 
 # Prevent finding system Ceres
@@ -70,6 +98,7 @@ include_directories(${CMAKE_BINARY_DIR}/thirdparty/ceres-solver/include)
 # Collect source files
 file(GLOB_RECURSE SOURCES 
     "src/database/*.cpp"
+    "src/camera/*.cpp"
     "src/module/*.cpp"
     "src/util/*.cpp"
     "src/viewer/*.cpp"
@@ -83,6 +112,9 @@ add_executable(euroc_stereo app/euroc_stereo.cpp
     src/database/Frame.cpp
     src/database/Feature.cpp
     src/database/MapPoint.cpp
+    src/camera/Camera.cpp
+    src/camera/Rectlinear.cpp
+    src/camera/Fisheye.cpp
     src/processing/FeatureTracker.cpp
     src/processing/Optimizer.cpp
     src/processing/Estimator.cpp
@@ -101,6 +133,9 @@ add_executable(tum_stereo app/tum_stereo.cpp
     src/database/Frame.cpp
     src/database/Feature.cpp
     src/database/MapPoint.cpp
+    src/camera/Camera.cpp
+    src/camera/Rectlinear.cpp
+    src/camera/Fisheye.cpp
     src/processing/FeatureTracker.cpp
     src/processing/Optimizer.cpp
     src/processing/Estimator.cpp
@@ -119,6 +154,9 @@ add_executable(rgbd_example app/rgbd_example.cpp
     src/database/Frame.cpp
     src/database/Feature.cpp
     src/database/MapPoint.cpp
+    src/camera/Camera.cpp
+    src/camera/Rectlinear.cpp
+    src/camera/Fisheye.cpp
     src/processing/FeatureTracker.cpp
     src/processing/Optimizer.cpp
     src/processing/Estimator.cpp

@@ -25,6 +25,7 @@ namespace lightweight_vio {
 
 class Feature; // Forward declaration
 class MapPoint;
+class Camera; // Forward declaration for Camera class
 struct IMUPreintegration; // Forward declaration for IMU preintegration
 
 // ⭐ Frame type enumeration
@@ -48,18 +49,28 @@ struct IMUData {
 class Frame {
 public:
     // Constructors
-    Frame(long long timestamp, int frame_id);
+    Frame(long long timestamp, int frame_id, std::shared_ptr<Camera> camera);
     Frame(long long timestamp, int frame_id, 
           double fx, double fy, double cx, double cy, 
-          const std::vector<double>& distortion_coeffs);
+          const std::vector<double>& distortion_coeffs);  // DEPRECATED: for backward compatibility
     
-    // Stereo constructor - directly takes both images with manual camera params
+    // Stereo constructor - directly takes both images with Camera objects (left and right)
+    Frame(long long timestamp, int frame_id,
+          const cv::Mat& left_image, const cv::Mat& right_image,
+          std::shared_ptr<Camera> left_camera, std::shared_ptr<Camera> right_camera);
+    
+    // Stereo constructor - DEPRECATED (backward compatibility)
     Frame(long long timestamp, int frame_id,
           const cv::Mat& left_image, const cv::Mat& right_image,
           double fx, double fy, double cx, double cy, 
           const std::vector<double>& distortion_coeffs);
 
-    // RGBD constructor - directly takes both images, uses Config for camera params
+    // RGBD constructor - directly takes both images with single Camera object
+    Frame(long long timestamp, int frame_id,
+          const cv::Mat& rgb_image, const cv::Mat& depth_map, 
+          std::shared_ptr<Camera> camera, bool is_rgbd = true);
+
+    // RGBD constructor - DEPRECATED (backward compatibility)
     Frame(long long timestamp, int frame_id,
           const cv::Mat& rgb_image, const cv::Mat& depth_map, 
           double fx, double fy, double cx, double cy, const std::vector<double>& distortion_coeffs, bool is_rgbd);
@@ -172,6 +183,10 @@ public:
     float get_cx() const;
     float get_cy() const;
     
+    // Camera object getter
+    std::shared_ptr<Camera> get_camera() const { return m_camera; }
+    void set_camera(std::shared_ptr<Camera> camera) { m_camera = camera; }
+    
     // Undistorted boundary getters
     double get_undist_x_min() const { return m_undist_x_min; }
     double get_undist_x_max() const { return m_undist_x_max; }
@@ -181,9 +196,6 @@ public:
     // Camera extrinsics operations
     void set_T_CB(const Eigen::Matrix4d& T_CB) { m_T_CB = T_CB; }
     const Eigen::Matrix4d& get_Tcb() const { return m_T_CB; }
-    
-    // Undistort a single point
-    cv::Point2f undistort_point(const cv::Point2f& distorted_point) const;
     
     // Boundary checking
     bool is_in_boundary(const cv::Point2f& point, int border_size = 0) const;
@@ -287,7 +299,11 @@ private:
     // Outlier flags for map points (same indexing as m_features and m_map_points)
     std::vector<bool> m_outlier_flags;
 
-    // Camera intrinsics (stored directly, no Camera class)
+    // Camera models (shared pointers for efficient copying)
+    std::shared_ptr<Camera> m_camera;        // Left camera (or single camera for RGBD/Mono)
+    std::shared_ptr<Camera> m_right_camera;  // Right camera (only for stereo)
+    
+    // Camera intrinsics (stored directly for backward compatibility and quick access)
     double m_fx, m_fy;  // Focal lengths
     double m_cx, m_cy;  // Principal point
     std::vector<double> m_distortion_coeffs;  // Distortion coefficients

@@ -12,6 +12,9 @@
 #include "database/Frame.h"
 #include "database/Feature.h" // Include Feature header
 #include "database/MapPoint.h"
+#include "camera/Camera.h"
+#include "camera/Rectlinear.h"
+#include "camera/Fisheye.h"
 #include "util/Config.h"
 #include "processing/IMUHandler.h" // Include for IMUPreintegration
 #include <opencv2/features2d.hpp>
@@ -50,43 +53,140 @@ void Frame::release_images() {
 
 }
 
-Frame::Frame(long long timestamp, int frame_id)
+// ============================================================================
+// NEW CONSTRUCTORS WITH CAMERA CLASS
+// ============================================================================
+
+Frame::Frame(long long timestamp, int frame_id, std::shared_ptr<Camera> camera)
     : m_timestamp(timestamp)
     , m_frame_id(frame_id)
-    , m_frame_type(FrameType::STEREO)  // ⭐ Default to STEREO
+    , m_frame_type(FrameType::STEREO)
+    , m_camera(camera)
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
-    , m_world_pose(Sophus::SE3f())  // Initialize as identity
-    , m_velocity(Eigen::Vector3f::Zero())  // Initialize velocity as zero
-    , m_accel_bias(Eigen::Vector3f::Zero())  // Initialize accel bias as zero
-    , m_gyro_bias(Eigen::Vector3f::Zero())   // Initialize gyro bias as zero
-    , m_dt_from_last_keyframe(0.0)          // Initialize dt as zero
+    , m_world_pose(Sophus::SE3f())
+    , m_velocity(Eigen::Vector3f::Zero())
+    , m_accel_bias(Eigen::Vector3f::Zero())
+    , m_gyro_bias(Eigen::Vector3f::Zero())
+    , m_dt_from_last_keyframe(0.0)
     , m_T_relative_from_ref(Eigen::Matrix4f::Identity())
-    , m_fx(500.0), m_fy(500.0)  // Default focal lengths
-    , m_cx(320.0), m_cy(240.0)  // Default principal point
+    , m_fx(camera->get_fx()), m_fy(camera->get_fy())
+    , m_cx(camera->get_cx()), m_cy(camera->get_cy())
+    , m_distortion_coeffs(camera->get_distortion_coeffs())
 {
-    // Initialize default distortion coefficients (no distortion)
-    m_distortion_coeffs = {0.0, 0.0, 0.0, 0.0, 0.0};
-    
     // Get T_BC from config and convert to T_CB (body to camera)
     const Config& config = Config::getInstance();
-    cv::Mat T_bc_cv = config.left_T_BC();  // T_BC (camera to body)
-    Eigen::Matrix4d T_bc;  // T_BC (camera to body)
+    cv::Mat T_bc_cv = config.left_T_BC();
+    Eigen::Matrix4d T_bc;
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
             T_bc(i, j) = T_bc_cv.at<double>(i, j);
         }
     }
-    m_T_CB = T_bc.inverse();  // Convert T_BC to T_CB (body to camera)
+    m_T_CB = T_bc.inverse();
     
     // Set reference keyframe to last keyframe if available
     if (m_last_keyframe) {
         m_reference_keyframe = m_last_keyframe;
-        // Initialize with identity transform (will be updated by tracking)
         m_T_relative_from_ref = Eigen::Matrix4f::Identity();
     }
 }
+
+Frame::Frame(long long timestamp, int frame_id,
+             const cv::Mat& left_image, const cv::Mat& right_image,
+             std::shared_ptr<Camera> left_camera, std::shared_ptr<Camera> right_camera)
+    : m_timestamp(timestamp)
+    , m_frame_id(frame_id)
+    , m_frame_type(FrameType::STEREO)
+    , m_camera(left_camera)
+    , m_right_camera(right_camera)
+    , m_left_image(left_image.clone())
+    , m_right_image(right_image.clone())
+    , m_rotation(Eigen::Matrix3f::Identity())
+    , m_translation(Eigen::Vector3f::Zero())
+    , m_is_keyframe(false)
+    , m_world_pose(Sophus::SE3f())
+    , m_velocity(Eigen::Vector3f::Zero())
+    , m_accel_bias(Eigen::Vector3f::Zero())
+    , m_gyro_bias(Eigen::Vector3f::Zero())
+    , m_dt_from_last_keyframe(0.0)
+    , m_T_relative_from_ref(Eigen::Matrix4f::Identity())
+    , m_fx(left_camera->get_fx()), m_fy(left_camera->get_fy())
+    , m_cx(left_camera->get_cx()), m_cy(left_camera->get_cy())
+    , m_distortion_coeffs(left_camera->get_distortion_coeffs())
+{
+    // Get T_BC from config and convert to T_CB (body to camera)
+    const Config& config = Config::getInstance();
+    cv::Mat T_bc_cv = config.left_T_BC();
+    Eigen::Matrix4d T_bc;
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            T_bc(i, j) = T_bc_cv.at<double>(i, j);
+        }
+    }
+    m_T_CB = T_bc.inverse();
+    
+    // Set reference keyframe to last keyframe if available
+    if (m_last_keyframe) {
+        m_reference_keyframe = m_last_keyframe;
+        m_T_relative_from_ref = Eigen::Matrix4f::Identity();
+    }
+    
+    // Compute undistorted image boundaries
+    undistort_corner_points();
+}
+
+Frame::Frame(long long timestamp, int frame_id,
+             const cv::Mat &rgb_image, const cv::Mat &depth_map,
+             std::shared_ptr<Camera> camera, bool is_rgbd)
+    : m_timestamp(timestamp)
+    , m_frame_id(frame_id)
+    , m_frame_type(FrameType::RGBD)
+    , m_camera(camera)
+    , m_right_camera(nullptr)  // RGBD has no right camera
+    , m_left_image(rgb_image.clone())
+    , m_rotation(Eigen::Matrix3f::Identity())
+    , m_translation(Eigen::Vector3f::Zero())
+    , m_is_keyframe(false)
+    , m_world_pose(Sophus::SE3f())
+    , m_velocity(Eigen::Vector3f::Zero())
+    , m_accel_bias(Eigen::Vector3f::Zero())
+    , m_gyro_bias(Eigen::Vector3f::Zero())
+    , m_dt_from_last_keyframe(0.0)
+    , m_T_relative_from_ref(Eigen::Matrix4f::Identity())
+    , m_depth_map(depth_map.clone())
+    , m_fx(camera->get_fx()), m_fy(camera->get_fy())
+    , m_cx(camera->get_cx()), m_cy(camera->get_cy())
+    , m_distortion_coeffs(camera->get_distortion_coeffs())
+{
+    // Get T_BC from config and convert to T_CB (body to camera)
+    const Config& config = Config::getInstance();
+    cv::Mat T_bc_cv = config.left_T_BC();
+    Eigen::Matrix4d T_bc;
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            T_bc(i, j) = T_bc_cv.at<double>(i, j);
+        }
+    }
+    m_T_CB = T_bc.inverse();
+    
+    // Set reference keyframe to last keyframe if available
+    if (m_last_keyframe) {
+        m_reference_keyframe = m_last_keyframe;
+        m_T_relative_from_ref = Eigen::Matrix4f::Identity();
+    }
+    
+    // Process depth map
+    process_depth_map(depth_map);
+    
+    // Compute undistorted image boundaries
+    undistort_corner_points();
+}
+
+// ============================================================================
+// DEPRECATED CONSTRUCTORS (for backward compatibility)
+// ============================================================================
 
 Frame::Frame(long long timestamp, int frame_id, 
              double fx, double fy, double cx, double cy, 
@@ -570,8 +670,7 @@ void Frame::update_feature_index() {
 
 bool Frame::is_in_border(const cv::Point2f& point, int border_size) const {
     // Undistort the point first to get its undistorted coordinates
-    cv::Point2f undistorted_point = undistort_point(point);
-
+    cv::Point2f undistorted_point = m_camera->undistort_point(point);
 
     // Check against undistorted boundaries
     return (m_undist_x_min + border_size <= undistorted_point.x && 
@@ -614,7 +713,7 @@ void Frame::undistort_corner_points() {
         
         std::vector<cv::Point2f> undistorted_corners(4);
         for (size_t i = 0; i < corner_points.size(); ++i) {
-            undistorted_corners[i] = undistort_point(corner_points[i]);
+            undistorted_corners[i] = m_camera->undistort_point(corner_points[i]);
         }
         
         // Find min/max from undistorted corners
@@ -801,65 +900,39 @@ void Frame::undistort_features() {
     // Initialize outlier flags for all features
     initialize_outlier_flags();
     
-    // Get camera parameters from config
-    const Config& config = Config::getInstance();
-    cv::Mat left_K = config.left_camera_matrix();
-    cv::Mat left_D = config.left_dist_coeffs();
-    cv::Mat right_K = config.right_camera_matrix();
-    cv::Mat right_D = config.right_dist_coeffs();
-    CameraModel camera_model = config.get_camera_model();
-    
-    if (left_K.empty()) {
-        std::cerr << "Left camera calibration not available for undistortion" << std::endl;
-        return;
-    }
-    
-    // Process all features - undistort using opencv directly
+    // Process all features - undistort using Camera class
     for (auto& feature : m_features) {
         if (feature->is_valid()) {
             // Get original pixel coordinate
             cv::Point2f pixel_pt = feature->get_pixel_coord();
             
-            // Undistort using opencv (different for pinhole vs fisheye)
-            std::vector<cv::Point2f> distorted_pts = {pixel_pt};
-            std::vector<cv::Point2f> normalized_pts;
-            
-            if (camera_model == CameraModel::FISHEYE) {
-                cv::fisheye::undistortPoints(distorted_pts, normalized_pts, left_K, left_D);
-            } else {
-                cv::undistortPoints(distorted_pts, normalized_pts, left_K, left_D);
+            // Undistort left feature using left camera
+            if (m_camera) {
+                cv::Point2f undistorted_pixel = m_camera->undistort_point(pixel_pt);
+                feature->set_undistorted_coord(undistorted_pixel);
+                
+                // Normalize: (u - cx) / fx, (v - cy) / fy
+                Eigen::Vector2f normalized(
+                    (undistorted_pixel.x - m_camera->get_cx()) / m_camera->get_fx(),
+                    (undistorted_pixel.y - m_camera->get_cy()) / m_camera->get_fy()
+                );
+                feature->set_normalized_coord(normalized);
             }
             
-            // Convert normalized coordinate to pixel coordinate
-            cv::Point2f undistorted_pixel;
-            undistorted_pixel.x = normalized_pts[0].x * m_fx + m_cx;
-            undistorted_pixel.y = normalized_pts[0].y * m_fy + m_cy;
-            feature->set_undistorted_coord(undistorted_pixel);
-            
-            // Store normalized coordinate
-            Eigen::Vector2f normalized(normalized_pts[0].x, normalized_pts[0].y);
-            feature->set_normalized_coord(normalized);
-            
             // For stereo matches, undistort right coordinate using right camera
-            if (feature->has_stereo_match() && !right_K.empty()) {
+            if (feature->has_stereo_match() && m_right_camera) {
                 cv::Point2f right_pixel = feature->get_right_coord();
                 
                 // Check if stereo match is valid
                 if (right_pixel.x >= 0 && right_pixel.y >= 0) {
-                    // Undistort right pixel using right camera intrinsics
-                    std::vector<cv::Point2f> right_distorted_pts = {right_pixel};
-                    std::vector<cv::Point2f> right_normalized_pts;
+                    // Undistort right pixel using right camera
+                    cv::Point2f right_undistorted = m_right_camera->undistort_point(right_pixel);
                     
-                    if (camera_model == CameraModel::FISHEYE) {
-                        cv::fisheye::undistortPoints(right_distorted_pts, right_normalized_pts, right_K, right_D);
-                    } else {
-                        cv::undistortPoints(right_distorted_pts, right_normalized_pts, right_K, right_D);
-                    }
-                    
-                    // Get right camera intrinsics (not needed for storage anymore)
-                    
-                    // Store right normalized coordinate
-                    Eigen::Vector2f right_normalized(right_normalized_pts[0].x, right_normalized_pts[0].y);
+                    // Normalize using right camera parameters
+                    Eigen::Vector2f right_normalized(
+                        (right_undistorted.x - m_right_camera->get_cx()) / m_right_camera->get_fx(),
+                        (right_undistorted.y - m_right_camera->get_cy()) / m_right_camera->get_fy()
+                    );
                     
                     // Store right normalized coordinate
                     feature->set_undistorted_stereo_match(right_normalized, -1.0f);
@@ -1199,36 +1272,6 @@ float Frame::get_cy() const {
 void Frame::set_distortion_coeffs(const std::vector<double>& distortion_coeffs) {
     m_distortion_coeffs = distortion_coeffs;
 }
-
-cv::Point2f Frame::undistort_point(const cv::Point2f& distorted_point) const {
-    // Get camera parameters from config
-    const Config& config = Config::getInstance();
-    cv::Mat left_K = config.left_camera_matrix();
-    cv::Mat left_D = config.left_dist_coeffs();
-    CameraModel camera_model = config.get_camera_model();
-    
-    if (left_K.empty()) {
-        return distorted_point; // No camera calibration available
-    }
-    
-    // Use opencv to undistort (different for pinhole vs fisheye)
-    std::vector<cv::Point2f> distorted_pts = {distorted_point};
-    std::vector<cv::Point2f> normalized_pts;
-    
-    if (camera_model == CameraModel::FISHEYE) {
-        cv::fisheye::undistortPoints(distorted_pts, normalized_pts, left_K, left_D);
-    } else {
-        cv::undistortPoints(distorted_pts, normalized_pts, left_K, left_D);
-    }
-    
-    // Convert normalized coordinate back to pixel coordinate
-    cv::Point2f undistorted_pixel;
-    undistorted_pixel.x = normalized_pts[0].x * m_fx + m_cx;
-    undistorted_pixel.y = normalized_pts[0].y * m_fy + m_cy;
-    
-    return undistorted_pixel;
-}
-    
 
 void Frame::extract_stereo_features(int max_features) {
     // Extract features only from left image

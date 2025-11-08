@@ -15,6 +15,9 @@
 #include "database/Frame.h"
 #include "database/MapPoint.h"
 #include "processing/Optimizer.h"
+#include "camera/Camera.h"
+#include "camera/Rectlinear.h"
+#include "camera/Fisheye.h"
 #include "util/Config.h"
 #include "util/EurocUtils.h"
 #include "database/Feature.h"
@@ -58,6 +61,63 @@ Estimator::Estimator()
     
     // Initialize inertial optimizer  
     m_inertial_optimizer = std::make_unique<InertialOptimizer>();
+    
+    // Create camera models based on config
+    const Config& config = Config::getInstance();
+    
+    // Extract camera parameters from cv::Mat
+    cv::Mat left_K = config.left_camera_matrix();
+    cv::Mat right_K = config.right_camera_matrix();
+    cv::Mat left_dist = config.left_dist_coeffs();
+    cv::Mat right_dist = config.right_dist_coeffs();
+    
+    double fx0 = left_K.at<double>(0, 0);
+    double fy0 = left_K.at<double>(1, 1);
+    double cx0 = left_K.at<double>(0, 2);
+    double cy0 = left_K.at<double>(1, 2);
+    
+    double fx1 = right_K.at<double>(0, 0);
+    double fy1 = right_K.at<double>(1, 1);
+    double cx1 = right_K.at<double>(0, 2);
+    double cy1 = right_K.at<double>(1, 2);
+    
+    // Convert cv::Mat distortion coefficients to std::vector
+    std::vector<double> left_dist_vec, right_dist_vec;
+    
+    // Handle both row vector (1xN) and column vector (Nx1)
+    int left_dist_count = left_dist.rows * left_dist.cols;
+    int right_dist_count = right_dist.rows * right_dist.cols;
+    
+    for (int i = 0; i < left_dist_count; ++i) {
+        left_dist_vec.push_back(left_dist.at<double>(i));
+    }
+    for (int i = 0; i < right_dist_count; ++i) {
+        right_dist_vec.push_back(right_dist.at<double>(i));
+    }
+    
+    // OpenCV expects 5 distortion coefficients for pinhole [k1, k2, p1, p2, k3]
+    // If only 4 are provided [k1, k2, p1, p2], pad with k3=0
+    if (config.get_camera_model() == CameraModel::PINHOLE) {
+        if (left_dist_vec.size() == 4) {
+            left_dist_vec.push_back(0.0);  // k3 = 0
+            spdlog::info("[ESTIMATOR] Padded left distortion coefficients: 4 -> 5");
+        }
+        if (right_dist_vec.size() == 4) {
+            right_dist_vec.push_back(0.0);  // k3 = 0
+            spdlog::info("[ESTIMATOR] Padded right distortion coefficients: 4 -> 5");
+        }
+    }
+    
+    spdlog::info("[ESTIMATOR] Left dist coeffs size: {}", left_dist_vec.size());
+    spdlog::info("[ESTIMATOR] Right dist coeffs size: {}", right_dist_vec.size());
+    
+    if (config.get_camera_model() == CameraModel::FISHEYE) {
+        m_left_camera = std::make_shared<Fisheye>(fx0, fy0, cx0, cy0, left_dist_vec);
+        m_right_camera = std::make_shared<Fisheye>(fx1, fy1, cx1, cy1, right_dist_vec);
+    } else {
+        m_left_camera = std::make_shared<Rectlinear>(fx0, fy0, cx0, cy0, left_dist_vec);
+        m_right_camera = std::make_shared<Rectlinear>(fx1, fy1, cx1, cy1, right_dist_vec);
+    }
     
     // // // Start sliding window optimization thread
     m_sliding_window_thread_running = true;
@@ -1103,16 +1163,11 @@ std::shared_ptr<Frame> Estimator::create_frame(const cv::Mat& left_image, const 
     }
     
     // Create frame with stereo images and camera parameters
-    // Get camera parameters from global config
-    const auto& global_config = Config::getInstance();
-    cv::Mat left_K = global_config.left_camera_matrix();
-    
     auto frame = std::make_shared<Frame>(
         timestamp, 
         m_frame_id_counter++,
         gray_left, gray_right,
-        left_K.at<double>(0, 0), left_K.at<double>(1, 1), left_K.at<double>(0, 2), left_K.at<double>(1, 2),
-        global_config.left_dist_coeffs()
+        m_left_camera, m_right_camera
     );
     
     // Set initial pose and velocity
@@ -1153,18 +1208,12 @@ std::shared_ptr<Frame> Estimator::create_rgbd_frame(const cv::Mat& rgb_image, co
     // No need to convert or clone
     const cv::Mat& gray_image = rgb_image;  // Direct reference (no copy)
     
-    // Get camera parameters from global config
-    const auto& global_config = Config::getInstance();
-    cv::Mat K = global_config.left_camera_matrix();
-   
     auto frame = std::make_shared<Frame>(
         timestamp,
         m_frame_id_counter++,
         gray_image,
         depth_map,
-        K.at<double>(0, 0), K.at<double>(1, 1), K.at<double>(0, 2), K.at<double>(1, 2),
-        global_config.left_dist_coeffs(),
-        true  // is_rgbd flag
+        m_left_camera
     );
 
     // Set initial pose and velocity

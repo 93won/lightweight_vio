@@ -28,6 +28,7 @@ sudo apt install -y \
     libglew-dev \
     libyaml-cpp-dev \
     libgflags-dev \
+    libunwind-dev \
     libgoogle-glog-dev \
     libatlas-base-dev \
     libsuitesparse-dev
@@ -54,8 +55,10 @@ cmake .. \
     -DUSE_OPENMP=ON \
     -DSUITESPARSE=OFF \
     -DCXSPARSE=OFF \
-    -DMINIGLOG=ON \
-    -DEIGENSPARSE=ON
+    -DMINIGLOG=OFF \
+    -DGLOG=ON \
+    -DEIGENSPARSE=ON \
+    -DCMAKE_CXX_FLAGS="-O3 -DNDEBUG"
 make -j$NPROC
 cd ../../..
 
@@ -70,7 +73,8 @@ cmake .. \
     -DBUILD_EXAMPLES=OFF \
     -DBUILD_TOOLS=OFF \
     -DBUILD_PYPANGOLIN=OFF \
-    -DBUILD_PANGOLIN_PYTHON=OFF
+    -DBUILD_PANGOLIN_PYTHON=OFF \
+    -DCMAKE_CXX_FLAGS="-O3 -DNDEBUG"
 make -j$NPROC
 cd ../../..
 
@@ -87,7 +91,9 @@ fi
 cd build
 
 # Configure and build main project
-cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_FLAGS="-O3 -DNDEBUG"
 make -j$NPROC
 
 echo ""

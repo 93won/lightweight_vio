@@ -32,6 +32,7 @@ namespace lightweight_vio {
     class InertialOptimizer;
     class PnPOptimizer;
     class SlidingWindowOptimizer;
+    class Camera;  // Forward declaration for Camera
 
     struct OptimizationResult;
     struct InertialOptimizationResult;  // Add forward declaration
@@ -205,6 +206,10 @@ private:
     std::unique_ptr<SlidingWindowOptimizer> m_sliding_window_optimizer;
     std::unique_ptr<IMUHandler> m_imu_handler;  // IMU processing and preintegration
     std::unique_ptr<InertialOptimizer> m_inertial_optimizer;  // VIO optimization
+    
+    // Camera model (shared across all frames)
+    std::shared_ptr<Camera> m_left_camera;   // Left camera model
+    std::shared_ptr<Camera> m_right_camera;  // Right camera model (for stereo)
     
     // State
     std::shared_ptr<Frame> m_current_frame;

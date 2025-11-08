@@ -24,11 +24,8 @@ int main(int argc, char* argv[]) {
     srand(42);
     cv::setRNGSeed(42);
     
-    // Suppress Google logging (Ceres) error messages
+    // Initialize Google logging (Ceres)
     google::InitGoogleLogging(argv[0]);
-    FLAGS_logtostderr = false;
-    FLAGS_minloglevel = 3;  // Only fatal messages (0=INFO, 1=WARNING, 2=ERROR, 3=FATAL)
-    FLAGS_stderrthreshold = 3;
     
     // Initialize spdlog for immediate colored output
     spdlog::set_level(spdlog::level::debug);
