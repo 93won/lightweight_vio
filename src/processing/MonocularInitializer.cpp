@@ -20,13 +20,12 @@ namespace lightweight_vio {
 
 MonocularInitializer::MonocularInitializer() 
     : m_is_initialized(false)
+    , m_reference_frame(nullptr)
 {
     const Config& config = Config::getInstance();
     
     // Load initialization parameters from config
-    m_required_keyframes = config.m_init_required_keyframes;
-    m_min_parallax_degrees = config.m_init_min_parallax_degrees;
-    m_min_average_parallax = config.m_init_min_average_parallax;
+    m_min_parallax_pixels = config.m_init_min_parallax_pixels;
     
     // Two-view geometry parameters
     m_ransac_threshold = config.m_init_ransac_threshold;
@@ -38,9 +37,7 @@ MonocularInitializer::MonocularInitializer()
     m_max_reprojection_error = config.m_init_max_reprojection_error;
     
     spdlog::info("[MonocularInitializer] Created with parameters:");
-    spdlog::info("  Required keyframes: {}", m_required_keyframes);
-    spdlog::info("  Min parallax: {:.1f} degrees", m_min_parallax_degrees);
-    spdlog::info("  Min average parallax: {:.1f} degrees", m_min_average_parallax);
+    spdlog::info("  Min parallax: {:.1f} pixels (median)", m_min_parallax_pixels);
 }
 
 bool MonocularInitializer::add_frame(std::shared_ptr<Frame> frame) {
@@ -49,146 +46,93 @@ bool MonocularInitializer::add_frame(std::shared_ptr<Frame> frame) {
         return false;
     }
     
-    // Check if this is the first frame
-    if (m_candidate_frames.empty()) {
-        m_candidate_frames.push_back(frame);
-        spdlog::info("[MonocularInitializer] Added first candidate frame {}", frame->get_frame_id());
-        return true;
-    }
-    
-    // Check parallax with last candidate frame
-    auto last_frame = m_candidate_frames.back();
-    ParallaxInfo parallax_info = compute_parallax(last_frame, frame);
-    
-    spdlog::debug("[MonocularInitializer] Frame {} parallax with last candidate: avg={:.2f}°, median={:.2f}°, tracked={}",
-                 frame->get_frame_id(), 
-                 parallax_info.average_parallax,
-                 parallax_info.median_parallax,
-                 parallax_info.num_tracked_features);
-    
-    // Only add if parallax is sufficient
-    if (parallax_info.average_parallax >= m_min_average_parallax) {
-        m_candidate_frames.push_back(frame);
-        spdlog::info("[MonocularInitializer] Added candidate frame {} ({}/{} collected, avg_parallax={:.2f}°)",
-                    frame->get_frame_id(),
-                    m_candidate_frames.size(),
-                    m_required_keyframes,
-                    parallax_info.average_parallax);
-        return true;
-    } else {
-        spdlog::debug("[MonocularInitializer] Frame {} rejected: insufficient parallax ({:.2f}° < {:.2f}°)",
-                     frame->get_frame_id(),
-                     parallax_info.average_parallax,
-                     m_min_average_parallax);
+    // Already initialized - no more frames needed
+    if (m_is_initialized) {
         return false;
     }
-}
-
-bool MonocularInitializer::has_sufficient_frames() const {
-    return m_candidate_frames.size() >= static_cast<size_t>(m_required_keyframes);
+    
+    // First frame - keep as reference
+    if (!m_reference_frame) {
+        m_reference_frame = frame;
+        spdlog::info("[MONO_INIT] Frame {}: Set as reference frame", frame->get_frame_id());
+        return true;
+    }
+    
+    // Check parallax with reference frame
+    ParallaxInfo parallax_info = compute_parallax(m_reference_frame, frame);
+    
+    spdlog::debug("[MONO_INIT] Frame {} parallax with reference {}: median={:.2f}px, avg={:.2f}px, tracked={}",
+                 frame->get_frame_id(), 
+                 m_reference_frame->get_frame_id(),
+                 parallax_info.median_parallax_pixels,
+                 parallax_info.average_parallax_pixels,
+                 parallax_info.num_tracked_features);
+    
+    // Sufficient parallax - attempt initialization
+    if (parallax_info.median_parallax_pixels >= m_min_parallax_pixels) {
+        spdlog::info("[MONO_INIT] Sufficient parallax ({:.2f}px >= {:.2f}px), attempting initialization...",
+                    parallax_info.median_parallax_pixels, m_min_parallax_pixels);
+        
+        // Attempt two-view initialization
+        Eigen::Matrix3f R_21;
+        Eigen::Vector3f t_21;
+        std::vector<Eigen::Vector3f> points_3d;
+        std::vector<int> inlier_indices;
+        
+        if (initialize_two_views(m_reference_frame, frame, R_21, t_21, points_3d, inlier_indices)) {
+            // Success - store result
+            // Set camera poses (Twc = camera-to-world transform)
+            m_reference_frame->set_Twc(Eigen::Matrix4f::Identity());
+            
+            Eigen::Matrix4f T_21 = Eigen::Matrix4f::Identity();
+            T_21.block<3,3>(0,0) = R_21;
+            T_21.block<3,1>(0,3) = t_21;
+            frame->set_Twc(T_21);
+            
+            // Create MapPoints
+            m_result.initialized_keyframes.clear();
+            m_result.initialized_keyframes.push_back(m_reference_frame);
+            m_result.initialized_keyframes.push_back(frame);
+            
+            m_result.initialized_mappoints.clear();
+            m_result.initialized_mappoints.reserve(points_3d.size());
+            for (const auto& pt : points_3d) {
+                auto mappoint = std::make_shared<MapPoint>(pt);
+                m_result.initialized_mappoints.push_back(mappoint);
+            }
+            
+            m_result.num_triangulated_points = points_3d.size();
+            m_result.success = true;
+            m_is_initialized = true;
+            
+            spdlog::info("[MONO_INIT] ✅ Initialization successful!");
+            spdlog::info("  - Frame {} → {}", m_reference_frame->get_frame_id(), frame->get_frame_id());
+            spdlog::info("  - Map points created: {}", m_result.initialized_mappoints.size());
+            return true;
+        } else {
+            // Initialization failed - discard reference, keep current as new reference
+            spdlog::warn("[MONO_INIT] ❌ Two-view initialization failed");
+            spdlog::info("[MONO_INIT] Discarding frame {}, using frame {} as new reference",
+                        m_reference_frame->get_frame_id(), frame->get_frame_id());
+            m_reference_frame = frame;
+            return true;
+        }
+    } else {
+        // Insufficient parallax - discard reference, keep current as new reference
+        spdlog::debug("[MONO_INIT] Insufficient parallax ({:.2f}px < {:.2f}px)",
+                     parallax_info.median_parallax_pixels, m_min_parallax_pixels);
+        spdlog::debug("[MONO_INIT] Discarding frame {}, using frame {} as new reference",
+                     m_reference_frame->get_frame_id(), frame->get_frame_id());
+        m_reference_frame = frame;
+        return true;
+    }
 }
 
 void MonocularInitializer::reset() {
-    m_candidate_frames.clear();
+    m_reference_frame.reset();
     m_is_initialized = false;
+    m_result = InitializationResult();
     spdlog::info("[MonocularInitializer] Reset");
-}
-
-MonocularInitializer::InitializationResult MonocularInitializer::try_initialize() {
-    InitializationResult result;
-    
-    if (!has_sufficient_frames()) {
-        result.failure_reason = "Insufficient candidate frames";
-        spdlog::warn("[MonocularInitializer] Cannot initialize: only {}/{} frames collected",
-                    m_candidate_frames.size(), m_required_keyframes);
-        return result;
-    }
-    
-    spdlog::info("[MonocularInitializer] Starting initialization with {} candidate frames",
-                m_candidate_frames.size());
-    
-    // Stage 1: Consecutive SFM
-    if (!consecutive_sfm(result)) {
-        spdlog::error("[MonocularInitializer] Stage 1 (Consecutive SFM) failed: {}",
-                     result.failure_reason);
-        return result;
-    }
-    
-    spdlog::info("[MonocularInitializer] ✓ Stage 1 (Consecutive SFM) succeeded:");
-    spdlog::info("  - Initialized {} keyframes", result.initialized_keyframes.size());
-    spdlog::info("  - Triangulated {} 3D points", result.num_triangulated_points);
-    
-    // TODO: Stage 2 - Gravity Initialization
-    // TODO: Stage 3 - IMU Initialization (if VIO mode)
-    
-    result.success = true;
-    m_is_initialized = true;
-    
-    return result;
-}
-
-// ============================================================================
-// Stage 1: Consecutive SFM
-// ============================================================================
-
-bool MonocularInitializer::consecutive_sfm(InitializationResult& result) {
-    if (m_candidate_frames.size() < 2) {
-        result.failure_reason = "Need at least 2 frames for SFM";
-        return false;
-    }
-    
-    // Step 1: Initialize first two frames using two-view geometry
-    auto frame1 = m_candidate_frames[0];
-    auto frame2 = m_candidate_frames[1];
-    
-    Eigen::Matrix3f R_21;
-    Eigen::Vector3f t_21;
-    std::vector<Eigen::Vector3f> points_3d;
-    std::vector<int> inlier_indices;
-    
-    if (!initialize_two_views(frame1, frame2, R_21, t_21, points_3d, inlier_indices)) {
-        result.failure_reason = "Two-view initialization failed";
-        return false;
-    }
-    
-    spdlog::info("[MonocularInitializer] Two-view initialization succeeded:");
-    spdlog::info("  - Frames: {} → {}", frame1->get_frame_id(), frame2->get_frame_id());
-    spdlog::info("  - Triangulated points: {}", points_3d.size());
-    
-    // Set poses for first two frames (frame1 at origin, frame2 relative)
-    frame1->set_Twb(Eigen::Matrix4f::Identity());
-    
-    Eigen::Matrix4f T_21 = Eigen::Matrix4f::Identity();
-    T_21.block<3,3>(0,0) = R_21;
-    T_21.block<3,1>(0,3) = t_21;
-    frame2->set_Twb(T_21);
-    
-    // Create MapPoints from triangulated points
-    std::vector<std::shared_ptr<MapPoint>> mappoints;
-    mappoints.reserve(points_3d.size());
-    
-    for (size_t i = 0; i < points_3d.size(); ++i) {
-        auto mappoint = std::make_shared<MapPoint>(points_3d[i]);
-        mappoints.push_back(mappoint);
-        
-        // Associate with features in both frames
-        int feature_idx1 = inlier_indices[i];
-        // Note: Need to find corresponding feature in frame2
-        // This is simplified - in practice need proper feature association
-    }
-    
-    result.initialized_keyframes.push_back(frame1);
-    result.initialized_keyframes.push_back(frame2);
-    result.initialized_mappoints = mappoints;
-    result.num_triangulated_points = points_3d.size();
-    
-    // TODO: Step 2: Process remaining frames (if any)
-    // For each additional frame:
-    //   - Use PnP to estimate pose
-    //   - Triangulate new points
-    //   - Add to result
-    
-    return true;
 }
 
 MonocularInitializer::ParallaxInfo MonocularInitializer::compute_parallax(
@@ -206,8 +150,8 @@ MonocularInitializer::ParallaxInfo MonocularInitializer::compute_parallax(
     }
     
     // Find tracked features between frames using tracked_feature_id
-    std::vector<double> parallax_angles;
-    parallax_angles.reserve(features1.size());
+    std::vector<double> pixel_displacements;
+    pixel_displacements.reserve(features1.size());
     
     for (const auto& feat1 : features1) {
         if (!feat1->is_valid() || !feat1->has_tracked_feature()) {
@@ -222,45 +166,38 @@ MonocularInitializer::ParallaxInfo MonocularInitializer::compute_parallax(
             continue;
         }
         
-        // Compute parallax angle using normalized coordinates (bearing vectors)
-        Eigen::Vector2f norm1 = feat1->get_normalized_coord();
-        Eigen::Vector2f norm2 = feat2->get_normalized_coord();
+        // Compute pixel displacement (use undistorted coordinates)
+        cv::Point2f pt1 = feat1->get_undistorted_coord();
+        cv::Point2f pt2 = feat2->get_undistorted_coord();
         
-        // Convert to 3D bearing vectors
-        Eigen::Vector3f bearing1(norm1.x(), norm1.y(), 1.0f);
-        Eigen::Vector3f bearing2(norm2.x(), norm2.y(), 1.0f);
-        bearing1.normalize();
-        bearing2.normalize();
+        double dx = pt2.x - pt1.x;
+        double dy = pt2.y - pt1.y;
+        double displacement = std::sqrt(dx * dx + dy * dy);
         
-        // Compute angle between bearing vectors
-        double cos_angle = bearing1.dot(bearing2);
-        cos_angle = std::max(-1.0, std::min(1.0, static_cast<double>(cos_angle))); // Clamp to [-1,1]
-        double angle_rad = std::acos(cos_angle);
-        double angle_deg = angle_rad * 180.0 / M_PI;
-        
-        parallax_angles.push_back(angle_deg);
+        pixel_displacements.push_back(displacement);
     }
     
-    if (parallax_angles.empty()) {
+    if (pixel_displacements.empty()) {
         return info;
     }
     
     // Compute statistics
-    info.num_tracked_features = parallax_angles.size();
-    info.average_parallax = std::accumulate(parallax_angles.begin(), parallax_angles.end(), 0.0) 
-                           / parallax_angles.size();
+    info.num_tracked_features = pixel_displacements.size();
+    info.average_parallax_pixels = std::accumulate(pixel_displacements.begin(), 
+                                                    pixel_displacements.end(), 0.0) 
+                                   / pixel_displacements.size();
     
-    // Compute median
-    std::vector<double> sorted_angles = parallax_angles;
-    std::sort(sorted_angles.begin(), sorted_angles.end());
-    size_t mid = sorted_angles.size() / 2;
-    if (sorted_angles.size() % 2 == 0) {
-        info.median_parallax = (sorted_angles[mid-1] + sorted_angles[mid]) / 2.0;
+    // Compute median (more robust than average)
+    std::vector<double> sorted_displacements = pixel_displacements;
+    std::sort(sorted_displacements.begin(), sorted_displacements.end());
+    size_t mid = sorted_displacements.size() / 2;
+    if (sorted_displacements.size() % 2 == 0) {
+        info.median_parallax_pixels = (sorted_displacements[mid-1] + sorted_displacements[mid]) / 2.0;
     } else {
-        info.median_parallax = sorted_angles[mid];
+        info.median_parallax_pixels = sorted_displacements[mid];
     }
     
-    info.sufficient_parallax = (info.average_parallax >= m_min_average_parallax);
+    info.sufficient_parallax = (info.median_parallax_pixels >= m_min_parallax_pixels);
     
     return info;
 }
@@ -453,27 +390,6 @@ int MonocularInitializer::triangulate_two_views(
     inlier_indices = valid_inlier_indices;
     
     return num_valid;
-}
-
-bool MonocularInitializer::recover_pose_pnp(
-    const std::shared_ptr<Frame>& frame,
-    const std::vector<std::shared_ptr<MapPoint>>& mappoints,
-    Eigen::Matrix3f& R_new,
-    Eigen::Vector3f& t_new)
-{
-    // TODO: Implement PnP for additional frames
-    spdlog::warn("[MonocularInitializer] PnP not yet implemented");
-    return false;
-}
-
-int MonocularInitializer::triangulate_new_points(
-    const std::shared_ptr<Frame>& existing_frame,
-    const std::shared_ptr<Frame>& new_frame,
-    std::vector<std::shared_ptr<MapPoint>>& existing_mappoints)
-{
-    // TODO: Implement new point triangulation
-    spdlog::warn("[MonocularInitializer] New point triangulation not yet implemented");
-    return 0;
 }
 
 } // namespace lightweight_vio

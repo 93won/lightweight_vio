@@ -120,6 +120,7 @@ public:
     // Pose management
     void set_pose(const Eigen::Matrix3f& rotation, const Eigen::Vector3f& translation);
     void set_Twb(const Eigen::Matrix4f& T_wb);
+    void set_Twc(const Eigen::Matrix4f& T_wc);  // Set camera pose in world frame
     Eigen::Matrix4f get_Twb() const;
     Eigen::Matrix4f get_Twc() const;  // World to camera transform
     

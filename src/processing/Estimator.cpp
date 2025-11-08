@@ -304,59 +304,56 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
 
     // ⭐ Monocular initialization: If not yet initialized
     if (!m_monocular_initialized) {
-        spdlog::info("[MONO_INIT] Frame {}: Adding to initializer...", m_frame_id_counter);
-        
-        // Add current frame to initializer
-        m_monocular_initializer->add_frame(m_current_frame);
-        
-        // Check if we have enough frames to attempt initialization
-        if (m_monocular_initializer->has_sufficient_frames()) {
-            spdlog::info("[MONO_INIT] Sufficient frames collected, attempting initialization...");
-            
-            auto init_result = m_monocular_initializer->try_initialize();
-            
-            if (init_result.success) {
-                spdlog::info("[MONO_INIT] ✅ Initialization successful!");
-                spdlog::info("  - Initialized frames: {}", init_result.initialized_keyframes.size());
-                spdlog::info("  - Map points created: {}", init_result.initialized_mappoints.size());
-                
-                // Store initialized frames and map points
-                for (const auto& frame : init_result.initialized_keyframes) {
-                    m_keyframes.push_back(frame);
-                    m_all_frames.push_back(frame);
-                }
-                
-                for (const auto& mp : init_result.initialized_mappoints) {
-                    m_map_points.push_back(mp);
-                }
-                
-                // Set the last initialized frame as the last keyframe
-                if (!init_result.initialized_keyframes.empty()) {
-                    m_last_keyframe = init_result.initialized_keyframes.back();
-                    m_previous_frame = m_last_keyframe;
-                    m_current_pose = m_last_keyframe->get_Twb();
-                }
-                
-                // Mark as initialized
-                m_monocular_initialized = true;
-                
-                result.success = true;
-                result.num_features = m_current_frame->get_feature_count();
-                result.num_inliers = init_result.initialized_mappoints.size();
-                return result;
-                
-            } else {
-                spdlog::warn("[MONO_INIT] ❌ Initialization failed, resetting...");
-                m_monocular_initializer->reset();
-                result.success = false;
-                return result;
-            }
+        // Extract or track features first
+        if (m_previous_frame) {
+            // Track features from previous frame
+            m_feature_tracker->track_features(m_current_frame, m_previous_frame);
+        } else {
+            // Extract features for first frame
+            m_feature_tracker->track_features(m_current_frame, nullptr);
         }
         
-        // Not enough frames yet - just return early
-        spdlog::info("[MONO_INIT] Waiting for more frames ({}/{})", 
-                    m_monocular_initializer->get_num_candidates(),
-                    Config::getInstance().m_init_required_keyframes);
+        spdlog::info("[MONO_INIT] Frame {}: Adding to initializer (features: {})...", 
+                    m_frame_id_counter, m_current_frame->get_feature_count());
+        
+        // Add current frame to initializer (may trigger initialization)
+        m_monocular_initializer->add_frame(m_current_frame);
+        
+        // Check if initialization succeeded
+        if (m_monocular_initializer->is_initialized()) {
+            auto init_result = m_monocular_initializer->get_result();
+            
+            spdlog::info("[MONO_INIT] ✅ Initialization successful!");
+            spdlog::info("  - Initialized frames: {}", init_result.initialized_keyframes.size());
+            spdlog::info("  - Map points created: {}", init_result.initialized_mappoints.size());
+            
+            // Store initialized frames and map points
+            for (const auto& frame : init_result.initialized_keyframes) {
+                m_keyframes.push_back(frame);
+                m_all_frames.push_back(frame);
+            }
+            
+            for (const auto& mp : init_result.initialized_mappoints) {
+                m_map_points.push_back(mp);
+            }
+            
+            // Set the last initialized frame as the last keyframe
+            if (!init_result.initialized_keyframes.empty()) {
+                m_last_keyframe = init_result.initialized_keyframes.back();
+                m_previous_frame = m_last_keyframe;
+                m_current_pose = m_last_keyframe->get_Twb();
+            }
+            
+            // Mark as initialized
+            m_monocular_initialized = true;
+            
+            result.success = true;
+            result.num_features = m_current_frame->get_feature_count();
+            result.num_inliers = init_result.initialized_mappoints.size();
+            return result;
+        }
+        
+        // Not yet initialized - just return
         result.success = false;
         return result;
     }

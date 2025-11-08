@@ -426,9 +426,7 @@ bool Config::load(const std::string& config_file) {
     // ========================================================================
     cv::FileNode initialization = fs["initialization"];
     if (!initialization.empty()) {
-        m_init_required_keyframes = (int)initialization["required_keyframes"];
-        m_init_min_parallax_degrees = (double)initialization["min_parallax_degrees"];
-        m_init_min_average_parallax = (double)initialization["min_average_parallax"];
+        m_init_min_parallax_pixels = (double)initialization["min_parallax_pixels"];
         
         m_init_ransac_threshold = (double)initialization["ransac_threshold"];
         m_init_ransac_confidence = (double)initialization["ransac_confidence"];
@@ -439,9 +437,7 @@ bool Config::load(const std::string& config_file) {
         
         if (m_enable_debug_output) {
             spdlog::info("[CONFIG] Monocular initialization parameters loaded:");
-            spdlog::info("  - Required keyframes: {}", m_init_required_keyframes);
-            spdlog::info("  - Min parallax: {:.1f}° (average: {:.1f}°)", 
-                        m_init_min_parallax_degrees, m_init_min_average_parallax);
+            spdlog::info("  - Min parallax: {:.1f} pixels (median)", m_init_min_parallax_pixels);
             spdlog::info("  - RANSAC: threshold={:.1f}px, confidence={:.2f}, max_iters={}", 
                         m_init_ransac_threshold, m_init_ransac_confidence, m_init_ransac_max_iterations);
             spdlog::info("  - Triangulation: min_angle={:.1f}°, max_reproj_error={:.1f}px",

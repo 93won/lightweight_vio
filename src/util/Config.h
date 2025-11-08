@@ -202,9 +202,7 @@ namespace lightweight_vio
         float m_rgbd_vis_max_depth = 20.0f;            // Maximum depth for heatmap visualization (clamp to blue above this)
 
         // ⭐ Monocular Initialization Parameters
-        int m_init_required_keyframes = 5;             // Number of keyframes needed for initialization
-        double m_init_min_parallax_degrees = 5.0;      // Minimum parallax for individual frame pair (degrees)
-        double m_init_min_average_parallax = 8.0;      // Minimum average parallax for keyframe selection (degrees)
+        double m_init_min_parallax_pixels = 30.0;      // Minimum median pixel displacement for initialization (pixels)
         
         // Two-view geometry parameters
         double m_init_ransac_threshold = 1.0;          // RANSAC inlier threshold (pixels)

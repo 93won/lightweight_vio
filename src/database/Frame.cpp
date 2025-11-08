@@ -374,6 +374,20 @@ void Frame::set_Twb(const Eigen::Matrix4f& T_wb) {
     m_translation = T_wb.block<3, 1>(0, 3);
 }
 
+void Frame::set_Twc(const Eigen::Matrix4f& T_wc) {
+    // T_wc is camera pose in world frame
+    // T_wb = T_wc * T_cb = T_wc * T_bc^-1
+    // For now, if T_CB is identity, T_wb = T_wc
+    std::lock_guard<std::mutex> lock(m_pose_mutex);
+    
+    // Apply camera-to-body transformation if available
+    Eigen::Matrix4f T_cb = m_T_CB.cast<float>();
+    Eigen::Matrix4f T_wb = T_wc * T_cb;
+    
+    m_rotation = T_wb.block<3, 3>(0, 0);
+    m_translation = T_wb.block<3, 1>(0, 3);
+}
+
 Eigen::Matrix4f Frame::get_Twb() const {
     std::lock_guard<std::mutex> lock(m_pose_mutex);
     
