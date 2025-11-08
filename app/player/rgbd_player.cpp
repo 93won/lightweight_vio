@@ -684,16 +684,22 @@ double RGBDPlayer::process_single_frame(Estimator& estimator,
 }
 
 cv::Mat RGBDPlayer::preprocess_image(const cv::Mat& input_image) {
-    cv::Mat equalized_image, processed_image;
+    cv::Mat downsampled, equalized_small, clahe_applied, upsampled;
     
-    // Global histogram equalization
-    cv::equalizeHist(input_image, equalized_image);
+    // Downsample to reduce computation (0.5x scale = 1/4 pixels)
+    cv::resize(input_image, downsampled, cv::Size(), 0.5, 0.5, cv::INTER_LINEAR);
     
-    // CLAHE for local contrast enhancement
+    // Global histogram equalization on smaller image
+    cv::equalizeHist(downsampled, equalized_small);
+    
+    // CLAHE for local contrast enhancement on smaller image
     cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
-    clahe->apply(equalized_image, processed_image);
+    clahe->apply(equalized_small, clahe_applied);
     
-    return processed_image;
+    // Upsample back to original size
+    cv::resize(clahe_applied, upsampled, input_image.size(), 0, 0, cv::INTER_LINEAR);
+    
+    return upsampled;
 }
 
 bool RGBDPlayer::handle_viewer_controls(PangolinViewer& viewer, RGBDFrameContext& context) {

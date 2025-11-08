@@ -46,6 +46,7 @@ if [ ! -d "thirdparty/ceres-solver/build" ]; then
 fi
 cd thirdparty/ceres-solver/build
 cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=OFF \
     -DBUILD_EXAMPLES=OFF \
     -DBUILD_BENCHMARKS=OFF \
@@ -65,6 +66,7 @@ if [ ! -d "thirdparty/pangolin/build" ]; then
 fi
 cd thirdparty/pangolin/build
 cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_EXAMPLES=OFF \
     -DBUILD_TOOLS=OFF \
     -DBUILD_PYPANGOLIN=OFF \
@@ -85,7 +87,7 @@ fi
 cd build
 
 # Configure and build main project
-cmake ..
+cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$NPROC
 
 echo ""

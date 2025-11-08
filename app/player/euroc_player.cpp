@@ -124,6 +124,9 @@ EurocPlayerResult EurocPlayer::run(const EurocPlayerConfig& config) {
                 double total_time_ms = frame_duration.count() / 1000.0;
                 result.frame_processing_times.push_back(total_time_ms);
                 
+                // Log frame processing time
+                // spdlog::info("[EurocPlayer] Frame {}: {:.2f} ms", context.current_idx, total_time_ms);
+                
                 // Update viewer
                 if (viewer) {
                     update_viewer(*viewer, estimator, context);
@@ -167,6 +170,11 @@ EurocPlayerResult EurocPlayer::run(const EurocPlayerConfig& config) {
             result.average_processing_time_ms = std::accumulate(
                 result.frame_processing_times.begin(), 
                 result.frame_processing_times.end(), 0.0) / result.frame_processing_times.size();
+            
+            // Log average processing time
+            spdlog::info("[EurocPlayer] Average processing time: {:.2f} ms ({:.1f} fps)", 
+                        result.average_processing_time_ms, 
+                        1000.0 / result.average_processing_time_ms);
         }
         
         // spdlog::info("[EurocPlayer] Successfully processed {} frames", result.processed_frames);
@@ -407,9 +415,9 @@ void EurocPlayer::initialize_estimator(Estimator& estimator, const std::vector<I
     //     }
     // }
 
-    // Eigen::Matrix4f Twb_init;
-    // Twb_init<<0,0,1,0, 0,-1,0,0, 1,0,0,0, 0,0,0,1;
-    // estimator.set_initial_gt_pose(Twb_init);
+    Eigen::Matrix4f Twb_init;
+    Twb_init<<0,0,1,0, 0,-1,0,0, 1,0,0,0, 0,0,0,1;
+    estimator.set_initial_gt_pose(Twb_init);
 }
 
 double EurocPlayer::process_single_frame(Estimator& estimator,
@@ -477,16 +485,22 @@ double EurocPlayer::process_single_frame(Estimator& estimator,
 }
 
 cv::Mat EurocPlayer::preprocess_image(const cv::Mat& input_image) {
-    cv::Mat equalized_image, processed_image;
+    cv::Mat downsampled, equalized_small, clahe_applied, upsampled;
     
-    // Global histogram equalization
-    cv::equalizeHist(input_image, equalized_image);
+    // Downsample to reduce computation (0.25x scale = 1/16 pixels)
+    cv::resize(input_image, downsampled, cv::Size(), 0.5, 0.5, cv::INTER_LINEAR);
     
-    // CLAHE for local contrast enhancement
+    // Global histogram equalization on smaller image
+    cv::equalizeHist(downsampled, equalized_small);
+    
+    // CLAHE for local contrast enhancement on smaller image
     cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
-    clahe->apply(equalized_image, processed_image);
+    clahe->apply(equalized_small, clahe_applied);
     
-    return processed_image;
+    // Upsample back to original size
+    cv::resize(clahe_applied, upsampled, input_image.size(), 0, 0, cv::INTER_LINEAR);
+    
+    return upsampled;
 }
 
 std::vector<IMUData> EurocPlayer::get_imu_data_between_frames(long long previous_timestamp, 

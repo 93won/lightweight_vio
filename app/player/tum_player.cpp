@@ -165,6 +165,11 @@ TUMPlayerResult TUMPlayer::run(const TUMPlayerConfig& config) {
             result.average_processing_time_ms = std::accumulate(
                 result.frame_processing_times.begin(), 
                 result.frame_processing_times.end(), 0.0) / result.frame_processing_times.size();
+            
+            // Log average processing time
+            spdlog::info("[TUMPlayer] Average processing time: {:.2f} ms ({:.1f} fps)", 
+                        result.average_processing_time_ms, 
+                        1000.0 / result.average_processing_time_ms);
         }
         
         spdlog::info("[TUMPlayer] Successfully processed {} frames", result.processed_frames);
@@ -499,16 +504,18 @@ double TUMPlayer::process_single_frame(Estimator& estimator,
 }
 
 cv::Mat TUMPlayer::preprocess_image(const cv::Mat& input_image) {
-    cv::Mat equalized_image, processed_image;
+    cv::Mat downsampled, equalized_small, upsampled;
     
-    // Global histogram equalization
-    cv::equalizeHist(input_image, equalized_image);
+    // Downsample to reduce computation (0.5x scale = 1/4 pixels)
+    cv::resize(input_image, downsampled, cv::Size(), 0.5, 0.5, cv::INTER_LINEAR);
     
-    // // CLAHE for local contrast enhancement
-    // cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
-    // clahe->apply(equalized_image, processed_image);
+    // Global histogram equalization on smaller image
+    cv::equalizeHist(downsampled, equalized_small);
     
-    return equalized_image;
+    // Upsample back to original size
+    cv::resize(equalized_small, upsampled, input_image.size(), 0, 0, cv::INTER_LINEAR);
+    
+    return upsampled;
 }
 
 std::vector<IMUData> TUMPlayer::get_imu_data_between_frames(long long previous_timestamp, 
