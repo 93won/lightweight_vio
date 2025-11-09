@@ -35,11 +35,6 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
         return;
     }
 
-    spdlog::debug("[FEATURE_TRACKER] track_features called: current_frame={}, previous_frame={}, current has {} features", 
-                 current_frame->get_frame_id(), 
-                 previous_frame ? previous_frame->get_frame_id() : -1,
-                 current_frame->get_feature_count());
-
     int tracked_features = 0;
     int new_map_points_from_tracking = 0;
     int new_extracted_features = 0;
@@ -50,7 +45,6 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
     auto mask_creation_time = 0.0;
 
     if (previous_frame) {
-        spdlog::debug("[FEATURE_TRACKER] Previous frame exists, performing optical flow tracking...");
         // Track existing features
         auto tracking_start = std::chrono::high_resolution_clock::now();
         auto tracking_stats = optical_flow_tracking(current_frame, previous_frame);
@@ -65,10 +59,7 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
     }
 
     // Extract new features if needed
-    spdlog::debug("[FEATURE_TRACKER] Current feature count: {}, max: {}", 
-                 current_frame->get_feature_count(), m_config.m_max_features);
     if (current_frame->get_feature_count() < m_config.m_max_features) {
-        spdlog::debug("[FEATURE_TRACKER] Extracting new features...");
         auto mask_start = std::chrono::high_resolution_clock::now();
         set_mask(current_frame);
         auto mask_end = std::chrono::high_resolution_clock::now();
@@ -81,7 +72,6 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
         
         new_extracted_features = extraction_stats.first;
         new_map_points_from_extraction = extraction_stats.second;
-        spdlog::debug("[FEATURE_TRACKER] Extracted {} new features", new_extracted_features);
     }
 
     // Note: Stereo matching is now handled by Frame::compute_stereo_depth() in Estimator
@@ -181,8 +171,14 @@ std::pair<int, int> FeatureTracker::extract_new_features(std::shared_ptr<Frame> 
         // Create all features without map points - Estimator will handle map point creation during keyframe creation
         int next_feature_id = frame->get_feature_count();  // Start from current count
         for (const auto& corner : corners) {
-            auto feature = std::make_shared<Feature>(next_feature_id++, corner);
+            auto feature = std::make_shared<Feature>(next_feature_id, corner);
             frame->add_feature(feature);
+            
+            // ✅ Add observation for newly extracted feature (Monocular tracking)
+            int feature_idx = frame->get_feature_count() - 1;
+            feature->add_observation(frame, feature_idx);
+            
+            next_feature_id++;
         }
         
         // Return feature count and 0 for map points (no immediate map point creation)
@@ -319,7 +315,19 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
         // Propagate outlier flag from previous frame
         bool was_outlier = previous_frame->get_outlier_flag(original_feature_idx);
         current_frame->add_feature(new_feature);
-        current_frame->set_outlier_flag(current_frame->get_feature_count() - 1, was_outlier);
+        
+        // ✅ Add observations for monocular tracking
+        // 1. Inherit all observations from previous feature
+        const auto& prev_observations = prev_feature->get_observations();
+        for (const auto& obs : prev_observations) {
+            new_feature->add_observation(obs.frame, obs.feature_index);
+        }
+        
+        // 2. Add current frame observation
+        int current_feature_idx = current_frame->get_feature_count() - 1;
+        new_feature->add_observation(current_frame, current_feature_idx);
+        
+        current_frame->set_outlier_flag(current_feature_idx, was_outlier);
         new_feature->set_track_count(prev_feature->get_track_count() + 1);
         tracked_features++;
         
@@ -338,6 +346,13 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
             // NOTE: Do NOT add observation here - observations should only be added when frame becomes keyframe
             // prev_map_point->add_observation(current_frame, current_frame->get_feature_count() - 1);  // REMOVED
             associated_map_points++;
+
+            // set 3d point to feature
+            Eigen::Vector3f mp_position = prev_map_point->get_position();
+            Eigen::Matrix4f Tcw = current_frame->get_Twc().inverse();
+            Eigen::Vector4f mp_homogeneous(mp_position.x(), mp_position.y(), mp_position.z(), 1.0f);
+            Eigen::Vector4f mp_in_camera = Tcw * mp_homogeneous;
+            new_feature->set_3d_point(mp_in_camera.head<3>());
             
             // Map point creation is now handled only by Estimator during keyframe creation
         } 

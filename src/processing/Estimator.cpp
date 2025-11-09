@@ -286,8 +286,8 @@ Estimator::EstimationResult Estimator::process_rgbd_frame(const cv::Mat& rgb_ima
         m_current_frame->set_reference_keyframe(m_last_keyframe);
     }
 
-    // Update state - release old previous frame's images before updating
-    if (m_previous_frame)
+    // Update state - only release images if previous frame is NOT a keyframe
+    if (m_previous_frame && !m_previous_frame->is_keyframe())
     {
         m_previous_frame->release_images();
     }
@@ -312,9 +312,7 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
 
     // Create new monocular frame
     auto frame_creation_start = std::chrono::high_resolution_clock::now();
-    spdlog::info("[ESTIMATOR] Creating monocular frame at timestamp {}", timestamp);
     m_current_frame = create_monocular_frame(image, timestamp);
-    spdlog::info("[ESTIMATOR] Monocular frame created with {} features", m_current_frame ? m_current_frame->get_feature_count() : 0);
     auto frame_creation_end = std::chrono::high_resolution_clock::now();
     auto frame_creation_time = std::chrono::duration_cast<std::chrono::microseconds>(frame_creation_end - frame_creation_start).count() / 1000.0;
 
@@ -331,26 +329,19 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         m_current_frame->set_Twb(m_initial_gt_pose);
 
         // Extract or track features
-        spdlog::debug("[MONO_INIT] Before feature tracking: {} features", m_current_frame->get_feature_count());
         if (m_previous_frame) {
-            spdlog::debug("[MONO_INIT] Tracking features from previous frame (prev has {} features)", 
-                         m_previous_frame->get_feature_count());
             // Track features from previous frame (which is the reference frame)
             m_feature_tracker->track_features(m_current_frame, m_previous_frame);
         } else {
-            spdlog::debug("[MONO_INIT] Extracting features for first frame (no previous frame)");
             // Extract features for first frame
             m_feature_tracker->track_features(m_current_frame, nullptr);
             // Set first frame as reference for tracking in subsequent frames
             m_previous_frame = m_current_frame;
         }
-        spdlog::debug("[MONO_INIT] After feature tracking: {} features", m_current_frame->get_feature_count());
         
         // Undistort features for parallax computation
         m_current_frame->undistort_features();
         
-        spdlog::info("[MONO_INIT] Frame {}: Adding to initializer (features: {})...", 
-                    m_frame_id_counter, m_current_frame->get_feature_count());
         
         // Add current frame to initializer (may trigger initialization)
         bool init_attempted = false;
@@ -408,6 +399,10 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
 
             return result;
         }
+        else
+        {
+            spdlog::info("[MONO_INIT] Initialization not yet successful - waiting for more frames to accumulate parallax");
+        }
         
         // If initialization was attempted but failed (parallax sufficient but too few inliers),
         // reset reference frame to current frame and try again from here
@@ -421,7 +416,7 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         return result;
     }
 
-    // ⭐ After initialization: Normal tracking
+    // After initialization: Normal tracking
     if (m_previous_frame) {
         // Predict state using motion model
         auto prediction_start = std::chrono::high_resolution_clock::now();
@@ -493,11 +488,10 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         bool is_keyframe = should_create_keyframe(m_current_frame);
         
         if (is_keyframe) {
-            // For monocular, we can't create new map points from stereo
-            // TODO: Implement map point creation via triangulation with previous keyframes
-            result.num_new_map_points = 0;
+            // ⭐ Use monocular-specific keyframe creation with triangulation
+            int new_map_points = create_keyframe_monocular(m_current_frame);
+            result.num_new_map_points = new_map_points;
             
-            create_keyframe(m_current_frame);
             m_frames_since_last_keyframe = 0;
         } else {
             result.num_new_map_points = 0;
@@ -526,8 +520,8 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         m_current_frame->set_reference_keyframe(m_last_keyframe);
     }
 
-    // Update state - release old previous frame's images before updating
-    if (m_previous_frame) {
+    // Update state - only release images if previous frame is NOT a keyframe
+    if (m_previous_frame && !m_previous_frame->is_keyframe()) {
         m_previous_frame->release_images();
     }
     m_previous_frame = m_current_frame;
@@ -711,8 +705,8 @@ Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, 
         m_current_frame->set_reference_keyframe(m_last_keyframe);
     }
     
-    // Update state - release old previous frame's images before updating
-    if (m_previous_frame) {
+    // Update state - only release images if previous frame is NOT a keyframe
+    if (m_previous_frame && !m_previous_frame->is_keyframe()) {
         m_previous_frame->release_images();
     }
     m_previous_frame = m_current_frame;
@@ -1331,8 +1325,8 @@ Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, 
         m_current_frame->set_reference_keyframe(m_last_keyframe);
     }
     
-    // Update state - release old previous frame's images before updating
-    if (m_previous_frame) {
+    // Update state - only release images if previous frame is NOT a keyframe
+    if (m_previous_frame && !m_previous_frame->is_keyframe()) {
         m_previous_frame->release_images();
     }
     m_previous_frame = m_current_frame;
@@ -1486,27 +1480,15 @@ std::shared_ptr<Frame> Estimator::create_monocular_frame(const cv::Mat& image, d
     }
     
 
-    spdlog::debug("[ESTIMATOR] Creating monocular frame ID {}", m_frame_id_counter);
-    // Player already passes preprocessed grayscale image, so just use it directly
     const cv::Mat& gray_image = image;  // Direct reference (no copy)
     
-    spdlog::debug("[ESTIMATOR] Image properties: rows={}, cols={}, channels={}, type={}, empty={}", 
-                 gray_image.rows, gray_image.cols, gray_image.channels(), 
-                 gray_image.type(), gray_image.empty());
-    
-    spdlog::debug("[ESTIMATOR] Left camera fx: {}, fy: {}, cx: {}, cy: {}",
-                  m_left_camera->get_fx(), m_left_camera->get_fy(),
-                  m_left_camera->get_cx(), m_left_camera->get_cy());
 
-    spdlog::debug("[ESTIMATOR] About to create Frame object...");
     auto frame = std::make_shared<Frame>(
         timestamp,
         m_frame_id_counter++,
         gray_image,
         m_left_camera  // Monocular uses left camera parameters
     );
-
-    spdlog::debug("[ESTIMATOR] Created monocular frame with ID {}", frame->get_frame_id());
 
     // Set initial pose and velocity
     if (m_previous_frame) {
@@ -1527,13 +1509,10 @@ std::shared_ptr<Frame> Estimator::create_monocular_frame(const cv::Mat& image, d
         // First frame velocity is zero
         frame->set_velocity(Eigen::Vector3f::Zero());
     }
-    spdlog::debug("[ESTIMATOR] Set initial pose for monocular frame ID {}", frame->get_frame_id());
     // Inherit IMU bias from the last keyframe (if available)
     if (m_last_keyframe && m_imu_handler) {
         m_imu_handler->inherit_bias_from_keyframe(frame.get(), m_last_keyframe.get());
     }
-
-    spdlog::debug("[ESTIMATOR] Inherited IMU bias for monocular frame ID {}", frame->get_frame_id());
     
     return frame;
 }
@@ -1980,6 +1959,8 @@ bool lightweight_vio::Estimator::should_create_keyframe(std::shared_ptr<Frame> f
     // Grid-based keyframe creation policy
     // Create keyframe when grid coverage drops to configured ratio of last keyframe's coverage
     double current_grid_coverage = calculate_grid_coverage_with_map_points(frame);
+
+    spdlog::info("[KEYFRAME] Current grid coverage: {:.2f}", current_grid_coverage);
     
     // For the first few keyframes, use absolute threshold of 50% to establish baseline
     if (m_keyframes.size() <= 2 || m_last_keyframe_grid_coverage <= 0.0) {
@@ -2042,6 +2023,9 @@ void lightweight_vio::Estimator::create_keyframe(std::shared_ptr<Frame> frame) {
             // Remove oldest keyframe
             auto oldest_keyframe = m_keyframes.front();
             
+            // Mark oldest keyframe as inactive (removed from sliding window)
+            oldest_keyframe->set_active(false);
+            
             // Clean up observations from map points before removing the keyframe
             int removed_observations = 0;
             const auto& features = oldest_keyframe->get_features();
@@ -2061,6 +2045,9 @@ void lightweight_vio::Estimator::create_keyframe(std::shared_ptr<Frame> frame) {
                     }
                 }
             }
+            
+            // Release images from oldest keyframe before removing it from window
+            oldest_keyframe->release_images();
             
             m_keyframes.erase(m_keyframes.begin());
         }
@@ -2102,6 +2089,276 @@ void lightweight_vio::Estimator::create_keyframe(std::shared_ptr<Frame> frame) {
     // Notify sliding window optimization thread
     notify_sliding_window_thread();
 }
+
+int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame> frame) {
+    if (!frame) {
+        return 0;
+    }
+    
+    // First, do standard keyframe creation
+    frame->set_keyframe(true);
+    
+    // Calculate time difference from last keyframe
+    double dt_from_last_kf = 0.0;
+    if (m_last_keyframe) {
+        double current_time = frame->get_timestamp();
+        double last_kf_time = m_last_keyframe->get_timestamp();
+        dt_from_last_kf = current_time - last_kf_time;
+    }
+    
+    frame->set_dt_from_last_keyframe(dt_from_last_kf);
+    
+    int num_new_map_points = 0;
+    int num_reused_map_points = 0;
+
+    // Let's check feature observations before creating the keyframe
+    const auto& features = frame->get_features();
+    for (auto& feature : features) {
+        if (feature && feature->is_valid()) {
+
+            // If already map point associated, skip
+
+            auto curr_idx = feature->get_feature_id();
+            auto existing_mp = frame->get_map_point(curr_idx);
+            
+            if (existing_mp && !existing_mp->is_bad())
+                continue;
+
+            // Correct keyframes in observations
+            const auto& observation = feature->get_observations();
+
+            std::vector<std::shared_ptr<Frame>> keyframe_observations;
+
+            bool is_there_valid_mp = false;
+
+            for (const auto& obs : observation) {
+                if (obs.frame && obs.frame->is_keyframe() && obs.frame->is_active()) {
+                    // Valid keyframe observation
+                    keyframe_observations.push_back(obs.frame);
+
+                }
+            }
+
+            if(is_there_valid_mp)
+                continue; // No need to triangulate
+
+            spdlog::info("[MONO_KF] Triangulating feature {} with {} keyframe observations", 
+                         curr_idx, keyframe_observations.size());
+
+            // Two-view triangulation with best parallax pair selection
+            if (keyframe_observations.size() >= 2) {
+                // Find best pair: current frame + keyframe with largest parallax
+                std::shared_ptr<Frame> best_obs_frame = nullptr;
+                int best_obs_feature_idx = -1;
+                float max_parallax_score = 0.0f;
+                
+                Eigen::Vector2f curr_normalized = feature->get_normalized_coord();
+                Eigen::Vector3f curr_bearing(curr_normalized.x(), curr_normalized.y(), 1.0f);
+                curr_bearing.normalize();
+                
+                Eigen::Vector3f curr_camera_center = frame->get_Twc().block<3,1>(0,3);
+                
+                for (const auto& obs_frame : keyframe_observations) {
+                    // Get observation feature index
+                    int obs_feature_idx = -1;
+                    for (const auto& obs : observation) {
+                        if (obs.frame.get() == obs_frame.get()) {
+                            obs_feature_idx = obs.feature_index;
+                            break;
+                        }
+                    }
+                    
+                    if (obs_feature_idx < 0) 
+                    {
+                        spdlog::warn("[MONO_KF] Observation feature index not found for keyframe");
+                        continue;
+                    }
+                    auto obs_feature = obs_frame->get_feature(obs_feature_idx);
+                    if (!obs_feature || !obs_feature->is_valid()) 
+                    {
+                        spdlog::warn("[MONO_KF] Observation feature invalid in keyframe");
+                        continue;
+                    }
+                    // Calculate parallax score
+                    Eigen::Vector3f obs_camera_center = obs_frame->get_Twc().block<3,1>(0,3);
+                    float baseline = (curr_camera_center - obs_camera_center).norm();
+                    
+                    // Get observation bearing
+                    Eigen::Vector2f obs_normalized = obs_feature->get_normalized_coord();
+                    Eigen::Vector3f obs_bearing(obs_normalized.x(), obs_normalized.y(), 1.0f);
+                    obs_bearing.normalize();
+                    
+                    // Transform bearings to world frame
+                    Eigen::Matrix3f R_wc_curr = frame->get_Twc().block<3,3>(0,0);
+                    Eigen::Matrix3f R_wc_obs = obs_frame->get_Twc().block<3,3>(0,0);
+                    Eigen::Vector3f curr_bearing_world = R_wc_curr * curr_bearing;
+                    Eigen::Vector3f obs_bearing_world = R_wc_obs * obs_bearing;
+                    
+                    // Parallax angle (cosine of angle between bearings)
+                    float cos_parallax = curr_bearing_world.dot(obs_bearing_world);
+                    float parallax_angle = std::acos(std::min(1.0f, std::max(-1.0f, cos_parallax)));
+                    
+                    // Parallax score: baseline * sin(parallax_angle)
+                    // Larger is better (good baseline + good viewing angle)
+                    float parallax_score = baseline * std::sin(parallax_angle);
+                    
+                    if (parallax_score > max_parallax_score) {
+                        max_parallax_score = parallax_score;
+                        best_obs_frame = obs_frame;
+                        best_obs_feature_idx = obs_feature_idx;
+                    }
+                }
+                
+                // Minimum parallax threshold (e.g., 0.01 rad ≈ 0.57° with 1m baseline)
+                const float min_parallax_score = 0.0001f;
+
+                spdlog::info("[MONO_KF] Max parallax score for feature {}: {:.4f}", curr_idx, max_parallax_score);
+                
+                if (best_obs_frame && max_parallax_score > min_parallax_score) {
+                    // Two-view triangulation using DLT
+                    auto best_obs_feature = best_obs_frame->get_feature(best_obs_feature_idx);
+                    
+                    // Get normalized coordinates
+                    Eigen::Vector2f curr_norm = feature->get_normalized_coord();
+                    Eigen::Vector2f obs_norm = best_obs_feature->get_normalized_coord();
+                    
+                    Eigen::Vector3f curr_bearing_norm(curr_norm.x(), curr_norm.y(), 1.0f);
+                    Eigen::Vector3f obs_bearing_norm(obs_norm.x(), obs_norm.y(), 1.0f);
+                    curr_bearing_norm.normalize();
+                    obs_bearing_norm.normalize();
+                    
+                    // Get poses
+                    Eigen::Matrix4f T_wc_curr = frame->get_Twc();
+                    Eigen::Matrix4f T_wc_obs = best_obs_frame->get_Twc();
+                    
+                    // Build projection matrices P = [R | t]
+                    Eigen::Matrix<float, 3, 4> P_curr, P_obs;
+                    
+                    P_curr.block<3, 3>(0, 0) = T_wc_curr.block<3, 3>(0, 0).transpose();
+                    P_curr.block<3, 1>(0, 3) = -P_curr.block<3, 3>(0, 0) * T_wc_curr.block<3, 1>(0, 3);
+                    
+                    P_obs.block<3, 3>(0, 0) = T_wc_obs.block<3, 3>(0, 0).transpose();
+                    P_obs.block<3, 1>(0, 3) = -P_obs.block<3, 3>(0, 0) * T_wc_obs.block<3, 1>(0, 3);
+                    
+                    // Build 4x4 DLT matrix
+                    Eigen::Matrix4f A;
+                    A.row(0) = curr_bearing_norm.x() * P_curr.row(2) - curr_bearing_norm.z() * P_curr.row(0);
+                    A.row(1) = curr_bearing_norm.y() * P_curr.row(2) - curr_bearing_norm.z() * P_curr.row(1);
+                    A.row(2) = obs_bearing_norm.x() * P_obs.row(2) - obs_bearing_norm.z() * P_obs.row(0);
+                    A.row(3) = obs_bearing_norm.y() * P_obs.row(2) - obs_bearing_norm.z() * P_obs.row(1);
+                    
+                    // Solve using SVD
+                    Eigen::JacobiSVD<Eigen::Matrix4f> svd(A, Eigen::ComputeFullV);
+                    Eigen::Vector4f X_homogeneous = svd.matrixV().col(3);
+                    
+                    // Convert to 3D
+                    if (std::abs(X_homogeneous(3)) > 1e-6) {
+                        Eigen::Vector3f P_world = X_homogeneous.head<3>() / X_homogeneous(3);
+                        
+                        // Validate depth in both frames
+                        Eigen::Matrix4f T_cw_curr = T_wc_curr.inverse();
+                        Eigen::Matrix4f T_cw_obs = T_wc_obs.inverse();
+                        
+                        Eigen::Vector4f P_world_h(P_world.x(), P_world.y(), P_world.z(), 1.0f);
+                        Eigen::Vector4f P_cam_curr = T_cw_curr * P_world_h;
+                        Eigen::Vector4f P_cam_obs = T_cw_obs * P_world_h;
+                        
+                        if (P_cam_curr.z() > 0.0f && P_cam_obs.z() > 0.0f) {
+                            // Create MapPoint
+                            auto new_mp = std::make_shared<MapPoint>(P_world);
+                            
+                            // Add observations from all valid keyframes
+                            for (const auto& obs : observation) {
+                                if (obs.frame && obs.frame->is_keyframe()) {
+                                    Eigen::Matrix4f T_cw_obs_kf = obs.frame->get_Twc().inverse();
+                                    Eigen::Vector4f P_camera_h = T_cw_obs_kf * P_world_h;
+                                    
+                                    if (P_camera_h.z() > 0.0f) {
+                                        new_mp->add_observation(obs.frame, obs.feature_index);
+                                        obs.frame->set_map_point(obs.feature_index, new_mp);
+                                    }
+                                }
+                            }
+                            
+                            // Set for current frame
+                            frame->set_map_point(curr_idx, new_mp);
+                            
+                            // Transform to current camera frame for feature
+                            feature->set_3d_point(P_cam_curr.head<3>());
+                            
+                            // Add to global map points
+                            {
+                                std::lock_guard<std::mutex> lock(m_map_points_mutex);
+                                m_map_points.push_back(new_mp);
+                            }
+                            
+                            num_new_map_points++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    spdlog::info("[MONO_KF] Reused {} existing map points from observations", num_reused_map_points);
+    spdlog::info("[MONO_KF] Created {} new map points via triangulation", num_new_map_points);
+
+    // Thread-safe keyframe management
+    {
+        std::lock_guard<std::mutex> lock(m_keyframes_mutex);
+        m_keyframes.push_back(frame);
+        
+        const int max_keyframes = Config::getInstance().m_keyframe_window_size;
+        if (m_keyframes.size() > static_cast<size_t>(max_keyframes)) {
+            auto oldest_keyframe = m_keyframes.front();
+            
+            // Mark oldest keyframe as inactive (removed from sliding window)
+            oldest_keyframe->set_active(false);
+            
+            // Clean up observations from oldest keyframe
+            const auto& oldest_features = oldest_keyframe->get_features();
+            for (size_t i = 0; i < oldest_features.size(); ++i) {
+                auto feature = oldest_features[i];
+                auto map_point = oldest_keyframe->get_map_point(i);
+                
+                if (feature && feature->is_valid() && map_point && !map_point->is_bad()) {
+                    map_point->remove_observation(oldest_keyframe);
+                    
+                    if (map_point->get_observation_count() == 0) {
+                        map_point->set_bad();
+                    }
+                }
+            }
+            
+            oldest_keyframe->release_images();
+            m_keyframes.erase(m_keyframes.begin());
+        }
+    }
+    
+    // Update track counts for keyframe features
+    for (auto& feature : features) {
+        if (feature && feature->is_valid()) {
+            feature->increment_track_count();
+        }
+    }
+    
+    // Update grid coverage and last keyframe reference
+    m_last_keyframe_grid_coverage = calculate_grid_coverage_with_map_points(frame);
+
+    spdlog::info("[MONO_KF] Keyframe grid coverage: {:.2f}", m_last_keyframe_grid_coverage);
+
+    m_last_keyframe = frame;
+    
+    // Notify sliding window optimizer
+    notify_sliding_window_thread();
+    
+    spdlog::info("[MONO_KF] Keyframe {} created: {} reused + {} triangulated = {} total map points",
+                frame->get_frame_id(), num_reused_map_points, num_new_map_points, 
+                num_reused_map_points + num_new_map_points);
+    
+    return num_new_map_points;
+}
+
 
 OptimizationResult lightweight_vio::Estimator::optimize_pose(std::shared_ptr<Frame> frame) {
     // Create pose optimizer - uses global Config internally
@@ -2326,18 +2583,8 @@ void Estimator::predict_state() {
         // VO Mode: Use visual odometry motion model
         Eigen::Matrix4f predicted_pose = m_previous_frame->get_Twb() * m_transform_from_last;
 
-        std::cout<<"Twb of previous frame:\n"<<m_previous_frame->get_Twb()<<std::endl;
         m_predicted_pose = predicted_pose; // Store for comparison
         m_current_frame->set_Twb(predicted_pose);
-        
-        spdlog::debug("[PREDICT] VO mode prediction:");
-        spdlog::debug("[PREDICT]   Previous pose: ({:.3f}, {:.3f}, {:.3f})", 
-                     m_previous_frame->get_Twb()(0,3), m_previous_frame->get_Twb()(1,3), m_previous_frame->get_Twb()(2,3));
-        spdlog::debug("[PREDICT]   Predicted pose: ({:.3f}, {:.3f}, {:.3f})", 
-                     predicted_pose(0,3), predicted_pose(1,3), predicted_pose(2,3));
-
-        std::cout << "Predicted current frame pose: \n"
-                  << predicted_pose << std::endl;
 
         // Keep velocity zero in VO mode
         m_current_frame->set_velocity(Eigen::Vector3f::Zero());
@@ -2358,10 +2605,6 @@ void Estimator::update_transform_from_last() {
     Eigen::Matrix4f Twb_curr = m_current_frame->get_Twb();
     m_transform_from_last = Twb_prev.inverse() * Twb_curr;
 
-    std::cout<<"[TRANSFORM_UPDATE] Updated transform from frame " 
-             << m_previous_frame->get_frame_id() << " to frame " 
-             << m_current_frame->get_frame_id() << ":\n" 
-             << m_transform_from_last << std::endl;
 }
 
 double lightweight_vio::Estimator::calculate_grid_coverage_with_map_points(std::shared_ptr<Frame> frame) {

@@ -59,24 +59,15 @@ bool MonocularInitializer::add_frame(std::shared_ptr<Frame> frame, bool* init_at
     // First frame - keep as reference
     if (!m_reference_frame) {
         m_reference_frame = frame;
-        spdlog::info("[MONO_INIT] Frame {}: Set as reference frame", frame->get_frame_id());
         return true;
     }
     
     // Check parallax with reference frame
     ParallaxInfo parallax_info = compute_parallax(m_reference_frame, frame);
     
-    spdlog::debug("[MONO_INIT] Frame {} parallax with reference {}: median={:.2f}px, avg={:.2f}px, tracked={}",
-                 frame->get_frame_id(), 
-                 m_reference_frame->get_frame_id(),
-                 parallax_info.median_parallax_pixels,
-                 parallax_info.average_parallax_pixels,
-                 parallax_info.num_tracked_features);
     
     // Sufficient parallax - attempt initialization
     if (parallax_info.median_parallax_pixels >= m_min_parallax_pixels) {
-        spdlog::info("[MONO_INIT] Sufficient parallax ({:.2f}px >= {:.2f}px), attempting initialization...",
-                    parallax_info.median_parallax_pixels, m_min_parallax_pixels);
         
         // Set flag indicating initialization was attempted
         if (init_attempted) {
@@ -186,12 +177,6 @@ bool MonocularInitializer::add_frame(std::shared_ptr<Frame> frame, bool* init_at
             return false;
         }
     } else {
-        // Insufficient parallax - KEEP reference frame, just return false
-        // Don't update reference! We want to accumulate parallax from the same reference
-        spdlog::debug("[MONO_INIT] Insufficient parallax ({:.2f}px < {:.2f}px)",
-                     parallax_info.median_parallax_pixels, m_min_parallax_pixels);
-        spdlog::debug("[MONO_INIT] Keeping frame {} as reference, waiting for more parallax",
-                     m_reference_frame->get_frame_id());
         return false;  // Frame not used for initialization
     }
 }
@@ -229,8 +214,6 @@ MonocularInitializer::ParallaxInfo MonocularInitializer::compute_parallax(
     for (const auto& f : features2) {
         if (f->has_tracked_feature()) frame2_tracked++;
     }
-    spdlog::debug("[MONO_INIT] compute_parallax: frame1 has {} tracked, frame2 has {} tracked", 
-                  frame1_tracked, frame2_tracked);
     
     // FIXED: Iterate through frame2 (newer frame with tracked_feature_id)
     // instead of frame1 (older reference frame)
@@ -254,9 +237,6 @@ MonocularInitializer::ParallaxInfo MonocularInitializer::compute_parallax(
         cv::Point2f pt1 = feat1->get_undistorted_coord();
         cv::Point2f pt2 = feat2->get_undistorted_coord();
         
-        // DEBUG: Print ALL matches to see coordinate distribution
-        spdlog::debug("[PARALLAX] Match feat2_id={}, tracked_id={}: pt1=({:.2f},{:.2f}), pt2=({:.2f},{:.2f})", 
-                     feat2->get_feature_id(), tracked_id, pt1.x, pt1.y, pt2.x, pt2.y);
         
         double dx = pt2.x - pt1.x;
         double dy = pt2.y - pt1.y;
@@ -271,8 +251,6 @@ MonocularInitializer::ParallaxInfo MonocularInitializer::compute_parallax(
         matched_pts2.push_back(feat2->get_pixel_coord());
     }
     
-    spdlog::debug("[PARALLAX] Total matches: {}, zero_displacement: {}", 
-                 pixel_displacements.size(), zero_displacement_count);
     
     // === VISUAL DEBUG: Show parallax computation (DISABLED) ===
     // if (!matched_pts1.empty() && !frame1->get_image().empty() && !frame2->get_image().empty()) {
@@ -486,9 +464,6 @@ bool MonocularInitializer::initialize_two_views(
             }
         }
         
-        spdlog::debug("[MonocularInitializer]   Solution {}: R={}, t={} → {} points in front",
-                     sol, (sol < 2 ? "R1" : "R2"), (sol % 2 == 0 ? "+t" : "-t"), num_good);
-        
         if (num_good > best_num_inliers) {
             best_num_inliers = num_good;
             best_solution_idx = sol;
@@ -563,8 +538,6 @@ bool MonocularInitializer::initialize_two_views(
     }
     
     int num_triangulated = triangulate_two_views(frame1, frame2, R_21, t_21, points_3d, inlier_indices);
-    
-    spdlog::info("[MonocularInitializer] Triangulation: {}/{} successful", num_triangulated, inlier_indices.size());
     
     return (num_triangulated >= 50);
 }

@@ -214,9 +214,9 @@ namespace lightweight_vio
                     default: termination_str = "UNKNOWN"; break;
                 }
                 
-                spdlog::debug("[POSE_OPT] Round {}: termination={} ({}), initial_cost={:.3e}, final_cost={:.3e}, iterations={}", 
-                             round, termination_str, (int)summary.termination_type, 
-                             summary.initial_cost, summary.final_cost, summary.iterations.size());
+                // spdlog::debug("[POSE_OPT] Round {}: termination={} ({}), initial_cost={:.3e}, final_cost={:.3e}, iterations={}", 
+                //              round, termination_str, (int)summary.termination_type, 
+                //              summary.initial_cost, summary.final_cost, summary.iterations.size());
 
                 // Store costs for summary
                 if (round == 0) {

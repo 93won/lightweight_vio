@@ -115,6 +115,7 @@ public:
     const Eigen::Matrix3f& get_rotation() const { return m_rotation; }
     const Eigen::Vector3f& get_translation() const { return m_translation; }
     bool is_keyframe() const { return m_is_keyframe; }
+    bool is_active() const { return m_is_active; }  // Check if keyframe is in sliding window
     bool is_stereo() const { return m_frame_type == FrameType::STEREO; } // Updated to check frame type
 
     // Pose management
@@ -144,6 +145,7 @@ public:
     void set_dt_from_last_keyframe(double dt) { m_dt_from_last_keyframe = dt; }
     
     void set_keyframe(bool is_keyframe) { m_is_keyframe = is_keyframe; }
+    void set_active(bool is_active) { m_is_active = is_active; }  // Set active status (in sliding window)
     
     // Reference keyframe management
     void set_reference_keyframe(std::shared_ptr<Frame> reference_kf);
@@ -328,6 +330,7 @@ private:
     Eigen::Matrix3f m_rotation;    // Rotation matrix (DEPRECATED - use reference keyframe approach)
     Eigen::Vector3f m_translation; // Translation vector (DEPRECATED - use reference keyframe approach)
     bool m_is_keyframe;           // Whether this is a keyframe
+    bool m_is_active;             // Whether keyframe is in sliding window (active for triangulation)
     
     // VIO-specific members for optimization
     Sophus::SE3f m_world_pose;     // SE3 world pose for optimization

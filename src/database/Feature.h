@@ -14,8 +14,20 @@
 #include <opencv2/opencv.hpp>
 #include <Eigen/Dense>
 #include <vector>
+#include <memory>
 
 namespace lightweight_vio {
+
+class Frame;  // Forward declaration
+
+// Frame observation: which frame and which feature index (for monocular tracking)
+struct FrameObservation {
+    std::shared_ptr<Frame> frame;    // Shared pointer to keep frame alive
+    int feature_index;               // Feature index in that frame
+    
+    FrameObservation(std::shared_ptr<Frame> f, int feat_idx) 
+        : frame(f), feature_index(feat_idx) {}
+};
 
 class Feature {
 public:
@@ -66,6 +78,15 @@ public:
     void increment_track_count() { m_track_count++; }
     void increment_observations_accumulated() { m_num_observations_accumulated++; }
     
+    // Frame observation management (Monocular only - added by FeatureTracker)
+    void add_observation(std::shared_ptr<Frame> frame, int feature_index) {
+        m_observations.emplace_back(frame, feature_index);
+    }
+    const std::vector<FrameObservation>& get_observations() const { return m_observations; }
+    int get_observation_count() const { return m_observations.size(); }
+    bool has_observations() const { return !m_observations.empty(); }
+    void clear_observations() { m_observations.clear(); }
+    
     // Stereo operations
     void set_stereo_match(const cv::Point2f& right_coord, float disparity) {
         m_right_coord = right_coord;
@@ -100,6 +121,10 @@ private:
     float m_reprojection_error;   // Reprojection error in pixels
     bool m_is_valid;               // Whether this feature is valid
     bool m_has_3d_point;           // Whether 3D point is available
+    
+    // Frame observations: which frames observed this feature (Monocular only)
+    // FeatureTracker adds observations, Estimator filters for keyframes during triangulation
+    std::vector<FrameObservation> m_observations;
     
     // Stereo matching data
     cv::Point2f m_right_coord;     // Pixel coordinates in right image

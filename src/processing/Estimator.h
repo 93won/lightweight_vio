@@ -391,10 +391,17 @@ private:
     
     
     /**
-     * @brief Create a new keyframe
+     * @brief Convert frame to keyframe
      * @param frame Frame to convert to keyframe
      */
     void create_keyframe(std::shared_ptr<Frame> frame);
+    
+    /**
+     * @brief Create monocular keyframe with direct optical flow matching to last keyframe
+     * @param frame Frame to convert to keyframe
+     * @return Number of new map points created via triangulation
+     */
+    int create_keyframe_monocular(std::shared_ptr<Frame> frame);
     
     /**
      * @brief Transfer accumulated IMU data to keyframe and clear buffer

@@ -42,7 +42,7 @@ camera:
 keyframe_management:
   keyframe_window_size: 5
   grid_coverage_ratio: 0.7  # Add keyframe when coverage drops to 80% of last keyframe's coverage
-  time_threshold: 0.05
+  time_threshold: 10000000
 
 # Monocular Initialization Parameters
 # Controls two-frame initialization for monocular VO

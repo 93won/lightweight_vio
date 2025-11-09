@@ -65,6 +65,7 @@ Frame::Frame(double timestamp, int frame_id, std::shared_ptr<Camera> camera)
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
+    , m_is_active(true)
     , m_world_pose(Sophus::SE3f())
     , m_velocity(Eigen::Vector3f::Zero())
     , m_accel_bias(Eigen::Vector3f::Zero())
@@ -103,18 +104,12 @@ Frame::Frame(double timestamp, int frame_id,
     , m_camera(camera)
     , m_right_camera(nullptr)
 {
-    spdlog::debug("[FRAME] Monocular constructor started: frame_id={}, timestamp={}", frame_id, timestamp);
-    spdlog::debug("[FRAME] Image properties: {}x{}, channels={}, type={}, empty={}", 
-                 image.rows, image.cols, image.channels(), image.type(), image.empty());
-    spdlog::debug("[FRAME] About to clone image...");
-    
     m_left_image = image.clone();
-    
-    spdlog::debug("[FRAME] Image cloned successfully");
     
     m_rotation = Eigen::Matrix3f::Identity();
     m_translation = Eigen::Vector3f::Zero();
     m_is_keyframe = false;
+    m_is_active = true;
     m_world_pose = Sophus::SE3f();
     m_velocity = Eigen::Vector3f::Zero();
     m_accel_bias = Eigen::Vector3f::Zero();
@@ -122,22 +117,15 @@ Frame::Frame(double timestamp, int frame_id,
     m_dt_from_last_keyframe = 0.0;
     m_T_relative_from_ref = Eigen::Matrix4f::Identity();
     
-    spdlog::debug("[FRAME] About to get camera parameters...");
     m_fx = camera->get_fx();
     m_fy = camera->get_fy();
     m_cx = camera->get_cx();
     m_cy = camera->get_cy();
     m_distortion_coeffs = camera->get_distortion_coeffs();
     
-    spdlog::debug("[FRAME] Camera parameters retrieved: fx={}, fy={}, cx={}, cy={}", m_fx, m_fy, m_cx, m_cy);
-    
     // Get T_BC from config and convert to T_CB (body to camera)
-    spdlog::debug("[FRAME] About to access Config for T_BC...");
     const Config& config = Config::getInstance();
     cv::Mat T_bc_cv = config.left_T_BC();
-    spdlog::debug("[FRAME] T_BC retrieved successfully");
-
-    std::cout<<T_bc_cv<<std::endl;
     
     Eigen::Matrix4d T_bc;
     for (int i = 0; i < 4; ++i) {
@@ -146,8 +134,6 @@ Frame::Frame(double timestamp, int frame_id,
         }
     }
     m_T_CB = T_bc.inverse();
-    
-    spdlog::debug("[FRAME] T_CB computed successfully");
     
     // Set reference keyframe to last keyframe if available
     if (m_last_keyframe) {
@@ -172,6 +158,7 @@ Frame::Frame(double timestamp, int frame_id,
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
+    , m_is_active(true)
     , m_world_pose(Sophus::SE3f())
     , m_velocity(Eigen::Vector3f::Zero())
     , m_accel_bias(Eigen::Vector3f::Zero())
@@ -215,6 +202,7 @@ Frame::Frame(double timestamp, int frame_id,
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
+    , m_is_active(true)
     , m_world_pose(Sophus::SE3f())
     , m_velocity(Eigen::Vector3f::Zero())
     , m_accel_bias(Eigen::Vector3f::Zero())
@@ -263,6 +251,7 @@ Frame::Frame(double timestamp, int frame_id,
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
+    , m_is_active(true)
     , m_world_pose(Sophus::SE3f())  // Initialize as identity
     , m_velocity(Eigen::Vector3f::Zero())  // Initialize velocity as zero
     , m_accel_bias(Eigen::Vector3f::Zero())  // Initialize accel bias as zero
@@ -303,6 +292,7 @@ Frame::Frame(double timestamp, int frame_id,
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
+    , m_is_active(true)
     , m_world_pose(Sophus::SE3f())  // Initialize as identity
     , m_velocity(Eigen::Vector3f::Zero())  // Initialize velocity as zero
     , m_accel_bias(Eigen::Vector3f::Zero())  // Initialize accel bias as zero
@@ -346,6 +336,7 @@ Frame::Frame(double timestamp, int frame_id,
     , m_rotation(Eigen::Matrix3f::Identity())
     , m_translation(Eigen::Vector3f::Zero())
     , m_is_keyframe(false)
+    , m_is_active(true)
     , m_world_pose(Sophus::SE3f())  // Initialize as identity
     , m_velocity(Eigen::Vector3f::Zero())  // Initialize velocity as zero
     , m_accel_bias(Eigen::Vector3f::Zero())  // Initialize accel bias as zero
