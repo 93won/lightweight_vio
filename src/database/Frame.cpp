@@ -57,7 +57,7 @@ void Frame::release_images() {
 // NEW CONSTRUCTORS WITH CAMERA CLASS
 // ============================================================================
 
-Frame::Frame(long long timestamp, int frame_id, std::shared_ptr<Camera> camera)
+Frame::Frame(double timestamp, int frame_id, std::shared_ptr<Camera> camera)
     : m_timestamp(timestamp)
     , m_frame_id(frame_id)
     , m_frame_type(FrameType::STEREO)
@@ -94,7 +94,7 @@ Frame::Frame(long long timestamp, int frame_id, std::shared_ptr<Camera> camera)
 }
 
 // Monocular constructor with image
-Frame::Frame(long long timestamp, int frame_id,
+Frame::Frame(double timestamp, int frame_id,
              const cv::Mat& image,
              std::shared_ptr<Camera> camera)
     : m_timestamp(timestamp)
@@ -102,23 +102,43 @@ Frame::Frame(long long timestamp, int frame_id,
     , m_frame_type(FrameType::MONOCULAR)
     , m_camera(camera)
     , m_right_camera(nullptr)
-    , m_left_image(image.clone())
-    , m_rotation(Eigen::Matrix3f::Identity())
-    , m_translation(Eigen::Vector3f::Zero())
-    , m_is_keyframe(false)
-    , m_world_pose(Sophus::SE3f())
-    , m_velocity(Eigen::Vector3f::Zero())
-    , m_accel_bias(Eigen::Vector3f::Zero())
-    , m_gyro_bias(Eigen::Vector3f::Zero())
-    , m_dt_from_last_keyframe(0.0)
-    , m_T_relative_from_ref(Eigen::Matrix4f::Identity())
-    , m_fx(camera->get_fx()), m_fy(camera->get_fy())
-    , m_cx(camera->get_cx()), m_cy(camera->get_cy())
-    , m_distortion_coeffs(camera->get_distortion_coeffs())
 {
+    spdlog::debug("[FRAME] Monocular constructor started: frame_id={}, timestamp={}", frame_id, timestamp);
+    spdlog::debug("[FRAME] Image properties: {}x{}, channels={}, type={}, empty={}", 
+                 image.rows, image.cols, image.channels(), image.type(), image.empty());
+    spdlog::debug("[FRAME] About to clone image...");
+    
+    m_left_image = image.clone();
+    
+    spdlog::debug("[FRAME] Image cloned successfully");
+    
+    m_rotation = Eigen::Matrix3f::Identity();
+    m_translation = Eigen::Vector3f::Zero();
+    m_is_keyframe = false;
+    m_world_pose = Sophus::SE3f();
+    m_velocity = Eigen::Vector3f::Zero();
+    m_accel_bias = Eigen::Vector3f::Zero();
+    m_gyro_bias = Eigen::Vector3f::Zero();
+    m_dt_from_last_keyframe = 0.0;
+    m_T_relative_from_ref = Eigen::Matrix4f::Identity();
+    
+    spdlog::debug("[FRAME] About to get camera parameters...");
+    m_fx = camera->get_fx();
+    m_fy = camera->get_fy();
+    m_cx = camera->get_cx();
+    m_cy = camera->get_cy();
+    m_distortion_coeffs = camera->get_distortion_coeffs();
+    
+    spdlog::debug("[FRAME] Camera parameters retrieved: fx={}, fy={}, cx={}, cy={}", m_fx, m_fy, m_cx, m_cy);
+    
     // Get T_BC from config and convert to T_CB (body to camera)
+    spdlog::debug("[FRAME] About to access Config for T_BC...");
     const Config& config = Config::getInstance();
     cv::Mat T_bc_cv = config.left_T_BC();
+    spdlog::debug("[FRAME] T_BC retrieved successfully");
+
+    std::cout<<T_bc_cv<<std::endl;
+    
     Eigen::Matrix4d T_bc;
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
@@ -126,6 +146,8 @@ Frame::Frame(long long timestamp, int frame_id,
         }
     }
     m_T_CB = T_bc.inverse();
+    
+    spdlog::debug("[FRAME] T_CB computed successfully");
     
     // Set reference keyframe to last keyframe if available
     if (m_last_keyframe) {
@@ -137,7 +159,7 @@ Frame::Frame(long long timestamp, int frame_id,
     undistort_corner_points();
 }
 
-Frame::Frame(long long timestamp, int frame_id,
+Frame::Frame(double timestamp, int frame_id,
              const cv::Mat& left_image, const cv::Mat& right_image,
              std::shared_ptr<Camera> left_camera, std::shared_ptr<Camera> right_camera)
     : m_timestamp(timestamp)
@@ -181,7 +203,7 @@ Frame::Frame(long long timestamp, int frame_id,
     undistort_corner_points();
 }
 
-Frame::Frame(long long timestamp, int frame_id,
+Frame::Frame(double timestamp, int frame_id,
              const cv::Mat &rgb_image, const cv::Mat &depth_map,
              std::shared_ptr<Camera> camera, bool is_rgbd)
     : m_timestamp(timestamp)
@@ -232,7 +254,7 @@ Frame::Frame(long long timestamp, int frame_id,
 // DEPRECATED CONSTRUCTORS (for backward compatibility)
 // ============================================================================
 
-Frame::Frame(long long timestamp, int frame_id, 
+Frame::Frame(double timestamp, int frame_id, 
              double fx, double fy, double cx, double cy, 
              const std::vector<double>& distortion_coeffs)
     : m_timestamp(timestamp)
@@ -269,7 +291,7 @@ Frame::Frame(long long timestamp, int frame_id,
     }
 }
 
-Frame::Frame(long long timestamp, int frame_id,
+Frame::Frame(double timestamp, int frame_id,
              const cv::Mat& left_image, const cv::Mat& right_image,
              double fx, double fy, double cx, double cy, 
              const std::vector<double>& distortion_coeffs)
@@ -314,7 +336,7 @@ Frame::Frame(long long timestamp, int frame_id,
 
 
 // RGBD constructor - directly takes both images, uses Config for camera params
-Frame::Frame(long long timestamp, int frame_id,
+Frame::Frame(double timestamp, int frame_id,
              const cv::Mat &rgb_image, const cv::Mat &depth_map,
              double fx, double fy, double cx, double cy, const std::vector<double> &distortion_coeffs, bool is_rgbd)
     : m_timestamp(timestamp)
@@ -382,6 +404,11 @@ void Frame::set_Twc(const Eigen::Matrix4f& T_wc) {
     
     // Apply camera-to-body transformation if available
     Eigen::Matrix4f T_cb = m_T_CB.cast<float>();
+
+    // debug
+
+    std::cout<<T_cb<<"\n";
+
     Eigen::Matrix4f T_wb = T_wc * T_cb;
     
     m_rotation = T_wb.block<3, 3>(0, 0);

@@ -60,6 +60,8 @@ bool PnPFactor::Evaluate(double const* const* parameters, double* residuals, dou
     double x = point_camera.x();
     double y = point_camera.y();
     double z = point_camera.z();
+
+
     
     // Check for valid depth
     if (z <= 1e-6) {
@@ -79,7 +81,7 @@ bool PnPFactor::Evaluate(double const* const* parameters, double* residuals, dou
     // Compute residuals: observation - projection
     Eigen::Vector2d residual_vec;
     residual_vec << m_observation.x() - u, m_observation.y() - v;
-    
+
     // Apply information matrix weighting to residuals: r_weighted = sqrt(Info) * r
     Eigen::LLT<Eigen::Matrix2d> llt(m_information);
     if (llt.info() == Eigen::Success) {

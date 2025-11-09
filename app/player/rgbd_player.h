@@ -109,7 +109,7 @@ struct RGBDPlayerResult {
 struct RGBDFrameContext {
     size_t current_idx = 0;
     size_t processed_frames = 0;
-    long long previous_frame_timestamp = 0;
+    double previous_frame_timestamp = 0.0;  // Changed to seconds
     std::vector<Eigen::Matrix4f> gt_poses;
     
     // UI control

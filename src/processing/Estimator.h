@@ -91,41 +91,41 @@ public:
     ~Estimator();
 
     /**
-     * @brief Process a new stereo frame
+     * @brief Process a new stereo frame (VO mode only)
      * @param left_image Left stereo image
      * @param right_image Right stereo image  
-     * @param timestamp Frame timestamp in nanoseconds
+     * @param timestamp Frame timestamp in seconds
      * @return Estimation result
      */
-    EstimationResult process_frame(const cv::Mat& left_image, const cv::Mat& right_image, long long timestamp);
+    EstimationResult process_frame(const cv::Mat& left_image, const cv::Mat& right_image, double timestamp);
 
     /**
      * @brief Process a new stereo frame with IMU data
      * @param left_image Left stereo image
      * @param right_image Right stereo image  
-     * @param timestamp Frame timestamp in nanoseconds
+     * @param timestamp Frame timestamp in seconds
      * @param imu_data_from_last_frame IMU measurements between last frame and current frame
      * @return Estimation result
      */
     EstimationResult process_frame(const cv::Mat& left_image, const cv::Mat& right_image, 
-                                 long long timestamp, const std::vector<IMUData>& imu_data_from_last_frame);
+                                 double timestamp, const std::vector<IMUData>& imu_data_from_last_frame);
 
     /**
      * @brief Process a new RGBD frame (VO mode only)
      * @param rgb_image RGB image
      * @param depth_map Depth map (CV_16UC1 or CV_32FC1)
-     * @param timestamp Frame timestamp in nanoseconds
+     * @param timestamp Frame timestamp in seconds
      * @return Estimation result
      */
-    EstimationResult process_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, long long timestamp);
+    EstimationResult process_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, double timestamp);
 
     /**
      * @brief Process a new monocular frame (VO mode only)
      * @param image Monocular image
-     * @param timestamp Frame timestamp in nanoseconds
+     * @param timestamp Frame timestamp in seconds
      * @return Estimation result
      */
-    EstimationResult process_monocular_frame(const cv::Mat& image, long long timestamp);
+    EstimationResult process_monocular_frame(const cv::Mat& image, double timestamp);
 
     /**
      * @brief Reset the estimator state
@@ -207,6 +207,8 @@ public:
      * @return True if data is available
      */
     bool get_gravity_visualization_data(Eigen::Vector3f& g_world, Eigen::Vector3f& origin) const;
+
+   
 
 private:
     // System components
@@ -294,10 +296,10 @@ private:
      * @brief Initialize a new stereo frame
      * @param left_image Left stereo image
      * @param right_image Right stereo image
-     * @param timestamp Frame timestamp
+     * @param timestamp Frame timestamp in seconds
      * @return New frame
      */
-    std::shared_ptr<Frame> create_frame(const cv::Mat& left_image, const cv::Mat& right_image, long long timestamp);
+    std::shared_ptr<Frame> create_frame(const cv::Mat& left_image, const cv::Mat& right_image, double timestamp);
     
     /**
      * @brief Initialize a new RGBD frame
@@ -306,7 +308,7 @@ private:
      * @param timestamp Frame timestamp
      * @return New frame
      */
-    std::shared_ptr<Frame> create_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, long long timestamp);
+    std::shared_ptr<Frame> create_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, double timestamp);
     
     /**
      * @brief Initialize a new monocular frame
@@ -314,7 +316,7 @@ private:
      * @param timestamp Frame timestamp
      * @return New frame
      */
-    std::shared_ptr<Frame> create_monocular_frame(const cv::Mat& image, long long timestamp);
+    std::shared_ptr<Frame> create_monocular_frame(const cv::Mat& image, double timestamp);
     
     /**
      * @brief Predict current frame pose using motion model

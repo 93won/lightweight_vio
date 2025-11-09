@@ -35,7 +35,10 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
         return;
     }
 
-    
+    spdlog::debug("[FEATURE_TRACKER] track_features called: current_frame={}, previous_frame={}, current has {} features", 
+                 current_frame->get_frame_id(), 
+                 previous_frame ? previous_frame->get_frame_id() : -1,
+                 current_frame->get_feature_count());
 
     int tracked_features = 0;
     int new_map_points_from_tracking = 0;
@@ -47,6 +50,7 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
     auto mask_creation_time = 0.0;
 
     if (previous_frame) {
+        spdlog::debug("[FEATURE_TRACKER] Previous frame exists, performing optical flow tracking...");
         // Track existing features
         auto tracking_start = std::chrono::high_resolution_clock::now();
         auto tracking_stats = optical_flow_tracking(current_frame, previous_frame);
@@ -61,7 +65,10 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
     }
 
     // Extract new features if needed
+    spdlog::debug("[FEATURE_TRACKER] Current feature count: {}, max: {}", 
+                 current_frame->get_feature_count(), m_config.m_max_features);
     if (current_frame->get_feature_count() < m_config.m_max_features) {
+        spdlog::debug("[FEATURE_TRACKER] Extracting new features...");
         auto mask_start = std::chrono::high_resolution_clock::now();
         set_mask(current_frame);
         auto mask_end = std::chrono::high_resolution_clock::now();
@@ -74,6 +81,7 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
         
         new_extracted_features = extraction_stats.first;
         new_map_points_from_extraction = extraction_stats.second;
+        spdlog::debug("[FEATURE_TRACKER] Extracted {} new features", new_extracted_features);
     }
 
     // Note: Stereo matching is now handled by Frame::compute_stereo_depth() in Estimator

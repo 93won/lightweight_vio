@@ -652,7 +652,9 @@ double RGBDPlayer::process_single_frame(Estimator& estimator,
     
     // Process RGBD frame through estimator
     // Pass processed grayscale for tracking, but keep original RGB for visualization
-    estimator.process_rgbd_frame(processed_gray, depth_image, image_data[context.current_idx].timestamp);
+    // Convert nanosecond timestamp to seconds
+    double timestamp_sec = image_data[context.current_idx].timestamp * 1e-9;
+    estimator.process_rgbd_frame(processed_gray, depth_image, timestamp_sec);
     
     // IMPORTANT: Store original RGB image in the frame (for dense point cloud coloring)
     // Use std::move to transfer ownership and avoid extra copy

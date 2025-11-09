@@ -58,14 +58,15 @@ public:
     /**
      * @brief Add a candidate frame and attempt initialization
      * @param frame New frame to consider
+     * @param init_attempted Optional output parameter - set to true if initialization was attempted
      * @return true if frame was kept as reference (not necessarily initialized)
      * 
      * Behavior:
      * - If no reference: keep as reference
-     * - If parallax sufficient: attempt initialization
-     * - If parallax insufficient: discard old reference, keep new as reference
+     * - If parallax sufficient: attempt initialization, set init_attempted=true
+     * - If parallax insufficient: return false (Estimator keeps reference frame)
      */
-    bool add_frame(std::shared_ptr<Frame> frame);
+    bool add_frame(std::shared_ptr<Frame> frame, bool* init_attempted = nullptr);
     
     /**
      * @brief Check if initialization succeeded
@@ -135,6 +136,12 @@ private:
         const Eigen::Vector3f& t_21,
         std::vector<Eigen::Vector3f>& points_3d,
         std::vector<int>& inlier_indices);
+    
+    /**
+     * @brief Set the initial body-to-world transform
+     * @param T_wb Initial body-to-world transformation matrix
+     */
+    void set_Twb_init(const Eigen::Matrix4f& T_wb) { m_Twb_init = T_wb; }
 
 private:
     // Configuration
@@ -153,6 +160,9 @@ private:
     // Triangulation parameters
     double m_min_triangulation_angle;   // Minimum angle for triangulation (degrees)
     double m_max_reprojection_error;    // Maximum reprojection error (pixels)
+
+    Eigen::Matrix4f m_Twb_init;
+
 };
 
 } // namespace lightweight_vio

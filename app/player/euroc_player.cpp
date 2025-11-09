@@ -453,25 +453,30 @@ double EurocPlayer::process_single_frame(Estimator& estimator,
     
     if (camera_type == CameraType::MONOCULAR) {
         // ⭐ Monocular mode - use dedicated monocular function (VO only for now)
-        result = estimator.process_monocular_frame(processed_left, 
-                                                  image_data[context.current_idx].timestamp);
+        // Convert nanosecond timestamp to seconds
+        double timestamp_sec = image_data[context.current_idx].timestamp * 1e-9;
+        result = estimator.process_monocular_frame(processed_left, timestamp_sec);
     } else if (use_vio_mode && context.processed_frames > 0) {
         // VIO mode with IMU data (stereo/rgbd)
+        // Convert current timestamp to seconds
+        double current_timestamp_sec = image_data[context.current_idx].timestamp * 1e-9;
+        
         auto imu_data = get_imu_data_between_frames(context.previous_frame_timestamp, 
-                                                   image_data[context.current_idx].timestamp);
+                                                   current_timestamp_sec);
         
         if (!imu_data.empty()) {
             result = estimator.process_frame(processed_left, processed_right, 
-                                           image_data[context.current_idx].timestamp, imu_data);
+                                           current_timestamp_sec, imu_data);
         } else {
             // Fallback to VO mode if no IMU data
             result = estimator.process_frame(processed_left, processed_right, 
-                                           image_data[context.current_idx].timestamp);
+                                           current_timestamp_sec);
         }
     } else {
         // VO mode (stereo/rgbd)
-        result = estimator.process_frame(processed_left, processed_right, 
-                                       image_data[context.current_idx].timestamp);
+        // Convert timestamp to seconds for first frame or VO mode
+        double timestamp_sec_vo = image_data[context.current_idx].timestamp * 1e-9;
+        result = estimator.process_frame(processed_left, processed_right, timestamp_sec_vo);
     }
     
     // Handle ground truth pose
@@ -488,8 +493,8 @@ double EurocPlayer::process_single_frame(Estimator& estimator,
     processed_left.release();
     processed_right.release();
     
-    // Update frame timestamp
-    context.previous_frame_timestamp = image_data[context.current_idx].timestamp;
+    // Update frame timestamp (convert nanoseconds to seconds)
+    context.previous_frame_timestamp = image_data[context.current_idx].timestamp * 1e-9;
     
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
@@ -515,9 +520,13 @@ cv::Mat EurocPlayer::preprocess_image(const cv::Mat& input_image) {
     return upsampled;
 }
 
-std::vector<IMUData> EurocPlayer::get_imu_data_between_frames(long long previous_timestamp, 
-                                                             long long current_timestamp) {
-    return EurocUtils::get_imu_between_timestamps(previous_timestamp, current_timestamp);
+std::vector<IMUData> EurocPlayer::get_imu_data_between_frames(double previous_timestamp, 
+                                                             double current_timestamp) {
+    // EurocUtils expects nanoseconds, so convert from seconds
+    long long previous_timestamp_ns = static_cast<long long>(previous_timestamp * 1e9);
+    long long current_timestamp_ns = static_cast<long long>(current_timestamp * 1e9);
+    
+    return EurocUtils::get_imu_between_timestamps(previous_timestamp_ns, current_timestamp_ns);
 }
 
 bool EurocPlayer::handle_viewer_controls(PangolinViewer& viewer, FrameContext& context) {

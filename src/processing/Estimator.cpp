@@ -71,32 +71,21 @@ Estimator::Estimator()
     
     // Extract camera parameters from cv::Mat
     cv::Mat left_K = config.left_camera_matrix();
-    cv::Mat right_K = config.right_camera_matrix();
     cv::Mat left_dist = config.left_dist_coeffs();
-    cv::Mat right_dist = config.right_dist_coeffs();
     
     double fx0 = left_K.at<double>(0, 0);
     double fy0 = left_K.at<double>(1, 1);
     double cx0 = left_K.at<double>(0, 2);
     double cy0 = left_K.at<double>(1, 2);
     
-    double fx1 = right_K.at<double>(0, 0);
-    double fy1 = right_K.at<double>(1, 1);
-    double cx1 = right_K.at<double>(0, 2);
-    double cy1 = right_K.at<double>(1, 2);
-    
     // Convert cv::Mat distortion coefficients to std::vector
-    std::vector<double> left_dist_vec, right_dist_vec;
+    std::vector<double> left_dist_vec;
     
     // Handle both row vector (1xN) and column vector (Nx1)
     int left_dist_count = left_dist.rows * left_dist.cols;
-    int right_dist_count = right_dist.rows * right_dist.cols;
     
     for (int i = 0; i < left_dist_count; ++i) {
         left_dist_vec.push_back(left_dist.at<double>(i));
-    }
-    for (int i = 0; i < right_dist_count; ++i) {
-        right_dist_vec.push_back(right_dist.at<double>(i));
     }
     
     // OpenCV expects 5 distortion coefficients for pinhole [k1, k2, p1, p2, k3]
@@ -106,21 +95,52 @@ Estimator::Estimator()
             left_dist_vec.push_back(0.0);  // k3 = 0
             spdlog::info("[ESTIMATOR] Padded left distortion coefficients: 4 -> 5");
         }
-        if (right_dist_vec.size() == 4) {
-            right_dist_vec.push_back(0.0);  // k3 = 0
-            spdlog::info("[ESTIMATOR] Padded right distortion coefficients: 4 -> 5");
-        }
     }
     
     spdlog::info("[ESTIMATOR] Left dist coeffs size: {}", left_dist_vec.size());
-    spdlog::info("[ESTIMATOR] Right dist coeffs size: {}", right_dist_vec.size());
     
+    // Create left camera
     if (config.get_camera_model() == CameraModel::FISHEYE) {
         m_left_camera = std::make_shared<Fisheye>(fx0, fy0, cx0, cy0, left_dist_vec);
-        m_right_camera = std::make_shared<Fisheye>(fx1, fy1, cx1, cy1, right_dist_vec);
     } else {
         m_left_camera = std::make_shared<Rectlinear>(fx0, fy0, cx0, cy0, left_dist_vec);
-        m_right_camera = std::make_shared<Rectlinear>(fx1, fy1, cx1, cy1, right_dist_vec);
+    }
+    
+    spdlog::info("[ESTIMATOR] Left camera created: fx={}, fy={}, cx={}, cy={}", fx0, fy0, cx0, cy0);
+    
+    // Create right camera only for stereo
+    if (config.get_camera_type() == CameraType::STEREO) {
+        cv::Mat right_K = config.right_camera_matrix();
+        cv::Mat right_dist = config.right_dist_coeffs();
+        
+        double fx1 = right_K.at<double>(0, 0);
+        double fy1 = right_K.at<double>(1, 1);
+        double cx1 = right_K.at<double>(0, 2);
+        double cy1 = right_K.at<double>(1, 2);
+        
+        std::vector<double> right_dist_vec;
+        int right_dist_count = right_dist.rows * right_dist.cols;
+        for (int i = 0; i < right_dist_count; ++i) {
+            right_dist_vec.push_back(right_dist.at<double>(i));
+        }
+        
+        if (config.get_camera_model() == CameraModel::PINHOLE) {
+            if (right_dist_vec.size() == 4) {
+                right_dist_vec.push_back(0.0);  // k3 = 0
+                spdlog::info("[ESTIMATOR] Padded right distortion coefficients: 4 -> 5");
+            }
+        }
+        
+        spdlog::info("[ESTIMATOR] Right dist coeffs size: {}", right_dist_vec.size());
+        
+        if (config.get_camera_model() == CameraModel::FISHEYE) {
+            m_right_camera = std::make_shared<Fisheye>(fx1, fy1, cx1, cy1, right_dist_vec);
+        } else {
+            m_right_camera = std::make_shared<Rectlinear>(fx1, fy1, cx1, cy1, right_dist_vec);
+        }
+    } else {
+        // Monocular or RGBD - no right camera needed
+        m_right_camera = nullptr;
     }
     
     // // // Start sliding window optimization thread
@@ -134,7 +154,7 @@ Estimator::Estimator()
     }
 }
 
-Estimator::EstimationResult Estimator::process_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, long long timestamp) {
+Estimator::EstimationResult Estimator::process_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, double timestamp) {
     EstimationResult result;
     auto total_start_time = std::chrono::high_resolution_clock::now();
 
@@ -277,7 +297,7 @@ Estimator::EstimationResult Estimator::process_rgbd_frame(const cv::Mat& rgb_ima
 
 }
 
-Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& image, long long timestamp) {
+Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& image, double timestamp) {
     EstimationResult result;
     auto total_start_time = std::chrono::high_resolution_clock::now();
 
@@ -292,7 +312,9 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
 
     // Create new monocular frame
     auto frame_creation_start = std::chrono::high_resolution_clock::now();
+    spdlog::info("[ESTIMATOR] Creating monocular frame at timestamp {}", timestamp);
     m_current_frame = create_monocular_frame(image, timestamp);
+    spdlog::info("[ESTIMATOR] Monocular frame created with {} features", m_current_frame ? m_current_frame->get_feature_count() : 0);
     auto frame_creation_end = std::chrono::high_resolution_clock::now();
     auto frame_creation_time = std::chrono::duration_cast<std::chrono::microseconds>(frame_creation_end - frame_creation_start).count() / 1000.0;
 
@@ -304,20 +326,35 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
 
     // ⭐ Monocular initialization: If not yet initialized
     if (!m_monocular_initialized) {
-        // Extract or track features first
+
+        // Set initial pose
+        m_current_frame->set_Twb(m_initial_gt_pose);
+
+        // Extract or track features
+        spdlog::debug("[MONO_INIT] Before feature tracking: {} features", m_current_frame->get_feature_count());
         if (m_previous_frame) {
-            // Track features from previous frame
+            spdlog::debug("[MONO_INIT] Tracking features from previous frame (prev has {} features)", 
+                         m_previous_frame->get_feature_count());
+            // Track features from previous frame (which is the reference frame)
             m_feature_tracker->track_features(m_current_frame, m_previous_frame);
         } else {
+            spdlog::debug("[MONO_INIT] Extracting features for first frame (no previous frame)");
             // Extract features for first frame
             m_feature_tracker->track_features(m_current_frame, nullptr);
+            // Set first frame as reference for tracking in subsequent frames
+            m_previous_frame = m_current_frame;
         }
+        spdlog::debug("[MONO_INIT] After feature tracking: {} features", m_current_frame->get_feature_count());
+        
+        // Undistort features for parallax computation
+        m_current_frame->undistort_features();
         
         spdlog::info("[MONO_INIT] Frame {}: Adding to initializer (features: {})...", 
                     m_frame_id_counter, m_current_frame->get_feature_count());
         
         // Add current frame to initializer (may trigger initialization)
-        m_monocular_initializer->add_frame(m_current_frame);
+        bool init_attempted = false;
+        m_monocular_initializer->add_frame(m_current_frame, &init_attempted);
         
         // Check if initialization succeeded
         if (m_monocular_initializer->is_initialized()) {
@@ -340,9 +377,23 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
             // Set the last initialized frame as the last keyframe
             if (!init_result.initialized_keyframes.empty()) {
                 m_last_keyframe = init_result.initialized_keyframes.back();
-                m_previous_frame = m_last_keyframe;
                 m_current_pose = m_last_keyframe->get_Twb();
             }
+            
+            // Update previous frame to current frame for next tracking
+            // (current frame is the second initialized keyframe)
+
+            // set both frames as keyframes
+            m_current_frame->set_keyframe(true);
+            if (m_previous_frame)
+                m_previous_frame->set_keyframe(true);
+
+            // set m_last_keyframe to current frame
+            m_last_keyframe = m_current_frame;
+
+            update_transform_from_last();
+
+            m_previous_frame = m_current_frame;
             
             // Mark as initialized
             m_monocular_initialized = true;
@@ -350,10 +401,22 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
             result.success = true;
             result.num_features = m_current_frame->get_feature_count();
             result.num_inliers = init_result.initialized_mappoints.size();
+
+
+            
+
+
             return result;
         }
         
-        // Not yet initialized - just return
+        // If initialization was attempted but failed (parallax sufficient but too few inliers),
+        // reset reference frame to current frame and try again from here
+        if (init_attempted) {
+            spdlog::warn("[MONO_INIT] Initialization attempted but failed - resetting reference frame");
+            m_previous_frame = m_current_frame;
+        }
+        // Otherwise, keep m_previous_frame as the reference frame for tracking
+        
         result.success = false;
         return result;
     }
@@ -373,6 +436,8 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         auto tracking_time = std::chrono::duration_cast<std::chrono::microseconds>(tracking_end - tracking_start).count() / 1000.0;
         
         result.num_features = m_current_frame->get_feature_count();
+
+        m_current_frame->undistort_features();
         
         // Count how many features have associated map points
         int num_tracked_with_map_points = count_features_with_map_points(m_current_frame);
@@ -470,7 +535,7 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
     return result;
 }
 
-Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, const cv::Mat& right_image, long long timestamp) {
+Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, const cv::Mat& right_image, double timestamp) {
     EstimationResult result;
     auto total_start_time = std::chrono::high_resolution_clock::now();
 
@@ -990,7 +1055,7 @@ Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, 
 
 // IMU process_frame overload
 Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, const cv::Mat& right_image, 
-                                                    long long timestamp, const std::vector<IMUData>& imu_data_from_last_frame) {
+                                                    double timestamp, const std::vector<IMUData>& imu_data_from_last_frame) {
     // ===== IMU-SPECIFIC PROCESSING =====
     // Accumulate IMU data from last frame
     for (const auto& imu_data : imu_data_from_last_frame) {
@@ -1021,9 +1086,9 @@ Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, 
         
         // 🎯 Use FRAME timestamps for dt calculation (not IMU timestamp range)
         // This ensures dt matches the actual frame interval (0.05s)
-        double current_frame_time = static_cast<double>(timestamp) / 1e9;
+        double current_frame_time = timestamp;  // Already in seconds
         double previous_frame_time = m_previous_frame ? 
-            static_cast<double>(m_previous_frame->get_timestamp()) / 1e9 : current_frame_time;
+            m_previous_frame->get_timestamp() : current_frame_time;  // Already in seconds
         
         auto frame_to_frame_preint = m_imu_handler->preintegrate(imu_data_from_last_frame, previous_frame_time, current_frame_time);
         if (frame_to_frame_preint && frame_to_frame_preint->is_valid()) {
@@ -1035,8 +1100,8 @@ Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, 
     
     // Compute from-last-keyframe preintegration for more stable state prediction
     if (!m_imu_vec_from_last_keyframe.empty() && m_imu_handler && m_last_keyframe) {
-        double current_frame_time = static_cast<double>(timestamp) / 1e9;
-        double last_keyframe_time = static_cast<double>(m_last_keyframe->get_timestamp()) / 1e9;
+        double current_frame_time = timestamp;  // Already in seconds
+        double last_keyframe_time = m_last_keyframe->get_timestamp();  // Already in seconds
         
         // Create preintegration from last keyframe to current frame using accumulated IMU data
         auto keyframe_to_frame_preint = m_imu_handler->preintegrate(m_imu_vec_from_last_keyframe, last_keyframe_time, current_frame_time);
@@ -1340,7 +1405,7 @@ std::vector<std::shared_ptr<MapPoint>> Estimator::get_map_points_safe() const {
     return m_map_points;  // Return a copy
 }
 
-std::shared_ptr<Frame> Estimator::create_frame(const cv::Mat& left_image, const cv::Mat& right_image, long long timestamp) {
+std::shared_ptr<Frame> Estimator::create_frame(const cv::Mat& left_image, const cv::Mat& right_image, double timestamp) {
     if (left_image.empty()) {
         return nullptr;
     }
@@ -1409,20 +1474,39 @@ std::shared_ptr<Frame> Estimator::create_frame(const cv::Mat& left_image, const 
     return frame;
 }
 
-std::shared_ptr<Frame> Estimator::create_monocular_frame(const cv::Mat& image, long long timestamp) {
+std::shared_ptr<Frame> Estimator::create_monocular_frame(const cv::Mat& image, double timestamp) {
     if (image.empty()) {
         return nullptr;
     }
     
+    // Check if left camera is initialized
+    if (!m_left_camera) {
+        spdlog::error("[ESTIMATOR] Left camera is nullptr! Cannot create monocular frame.");
+        return nullptr;
+    }
+    
+
+    spdlog::debug("[ESTIMATOR] Creating monocular frame ID {}", m_frame_id_counter);
     // Player already passes preprocessed grayscale image, so just use it directly
     const cv::Mat& gray_image = image;  // Direct reference (no copy)
     
+    spdlog::debug("[ESTIMATOR] Image properties: rows={}, cols={}, channels={}, type={}, empty={}", 
+                 gray_image.rows, gray_image.cols, gray_image.channels(), 
+                 gray_image.type(), gray_image.empty());
+    
+    spdlog::debug("[ESTIMATOR] Left camera fx: {}, fy: {}, cx: {}, cy: {}",
+                  m_left_camera->get_fx(), m_left_camera->get_fy(),
+                  m_left_camera->get_cx(), m_left_camera->get_cy());
+
+    spdlog::debug("[ESTIMATOR] About to create Frame object...");
     auto frame = std::make_shared<Frame>(
         timestamp,
         m_frame_id_counter++,
         gray_image,
         m_left_camera  // Monocular uses left camera parameters
     );
+
+    spdlog::debug("[ESTIMATOR] Created monocular frame with ID {}", frame->get_frame_id());
 
     // Set initial pose and velocity
     if (m_previous_frame) {
@@ -1443,16 +1527,18 @@ std::shared_ptr<Frame> Estimator::create_monocular_frame(const cv::Mat& image, l
         // First frame velocity is zero
         frame->set_velocity(Eigen::Vector3f::Zero());
     }
-    
+    spdlog::debug("[ESTIMATOR] Set initial pose for monocular frame ID {}", frame->get_frame_id());
     // Inherit IMU bias from the last keyframe (if available)
     if (m_last_keyframe && m_imu_handler) {
         m_imu_handler->inherit_bias_from_keyframe(frame.get(), m_last_keyframe.get());
     }
+
+    spdlog::debug("[ESTIMATOR] Inherited IMU bias for monocular frame ID {}", frame->get_frame_id());
     
     return frame;
 }
 
-std::shared_ptr<Frame> Estimator::create_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, long long timestamp) {
+std::shared_ptr<Frame> Estimator::create_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, double timestamp) {
     if (rgb_image.empty() || depth_map.empty()) {
         return nullptr;
     }
@@ -1882,8 +1968,8 @@ bool lightweight_vio::Estimator::should_create_keyframe(std::shared_ptr<Frame> f
     // Time-based keyframe creation policy
     // Force keyframe creation if time since last keyframe exceeds threshold
     if (m_last_keyframe) {
-        double current_time = static_cast<double>(frame->get_timestamp()) / 1e9;  // Convert nanoseconds to seconds
-        double last_keyframe_time = static_cast<double>(m_last_keyframe->get_timestamp()) / 1e9;
+        double current_time = frame->get_timestamp();  // Already in seconds
+        double last_keyframe_time = m_last_keyframe->get_timestamp();  // Already in seconds
         double time_diff = current_time - last_keyframe_time;
         
         if (time_diff >= Config::getInstance().m_keyframe_time_threshold) {
@@ -1930,8 +2016,8 @@ void lightweight_vio::Estimator::create_keyframe(std::shared_ptr<Frame> frame) {
     // Calculate time difference from last keyframe
     double dt_from_last_kf = 0.0;
     if (m_last_keyframe) {
-        double current_time = static_cast<double>(frame->get_timestamp()) / 1e9;  // Convert ns to seconds
-        double last_kf_time = static_cast<double>(m_last_keyframe->get_timestamp()) / 1e9;
+        double current_time = frame->get_timestamp();  // Already in seconds
+        double last_kf_time = m_last_keyframe->get_timestamp();  // Already in seconds
         dt_from_last_kf = current_time - last_kf_time;
         
     } 
@@ -2163,8 +2249,16 @@ void lightweight_vio::Estimator::compute_reprojection_error_statistics(std::shar
 
 void Estimator::predict_state() {
     if (!m_current_frame || !m_previous_frame) {
+        spdlog::warn("[PREDICT] Cannot predict: current_frame={}, previous_frame={}", 
+                     (bool)m_current_frame, (bool)m_previous_frame);
         return;
     }
+    
+    spdlog::debug("[PREDICT] Frame {} → {}, m_transform_from_last:", 
+                 m_previous_frame->get_frame_id(), m_current_frame->get_frame_id());
+    spdlog::debug("[PREDICT]   Translation: ({:.3f}, {:.3f}, {:.3f})", 
+                 m_transform_from_last(0,3), m_transform_from_last(1,3), m_transform_from_last(2,3));
+
     
     const auto& config = Config::getInstance();
     
@@ -2231,8 +2325,20 @@ void Estimator::predict_state() {
     {
         // VO Mode: Use visual odometry motion model
         Eigen::Matrix4f predicted_pose = m_previous_frame->get_Twb() * m_transform_from_last;
+
+        std::cout<<"Twb of previous frame:\n"<<m_previous_frame->get_Twb()<<std::endl;
         m_predicted_pose = predicted_pose; // Store for comparison
+        m_current_frame->set_Twb(predicted_pose);
         
+        spdlog::debug("[PREDICT] VO mode prediction:");
+        spdlog::debug("[PREDICT]   Previous pose: ({:.3f}, {:.3f}, {:.3f})", 
+                     m_previous_frame->get_Twb()(0,3), m_previous_frame->get_Twb()(1,3), m_previous_frame->get_Twb()(2,3));
+        spdlog::debug("[PREDICT]   Predicted pose: ({:.3f}, {:.3f}, {:.3f})", 
+                     predicted_pose(0,3), predicted_pose(1,3), predicted_pose(2,3));
+
+        std::cout << "Predicted current frame pose: \n"
+                  << predicted_pose << std::endl;
+
         // Keep velocity zero in VO mode
         m_current_frame->set_velocity(Eigen::Vector3f::Zero());
         
@@ -2241,8 +2347,21 @@ void Estimator::predict_state() {
 
 
 void Estimator::update_transform_from_last() {
-    // No visual velocity calculation - velocity is handled by IMU or set to zero
-    // This function is kept for compatibility but doesn't perform any calculations
+    // Update the transform from the previous frame to the current frame
+    if (!m_current_frame || !m_previous_frame) {
+        spdlog::warn("[TRANSFORM_UPDATE] Cannot update transform: current_frame={}, previous_frame={}", 
+                     (bool)m_current_frame, (bool)m_previous_frame);
+        return;
+    }
+
+    Eigen::Matrix4f Twb_prev = m_previous_frame->get_Twb();
+    Eigen::Matrix4f Twb_curr = m_current_frame->get_Twb();
+    m_transform_from_last = Twb_prev.inverse() * Twb_curr;
+
+    std::cout<<"[TRANSFORM_UPDATE] Updated transform from frame " 
+             << m_previous_frame->get_frame_id() << " to frame " 
+             << m_current_frame->get_frame_id() << ":\n" 
+             << m_transform_from_last << std::endl;
 }
 
 double lightweight_vio::Estimator::calculate_grid_coverage_with_map_points(std::shared_ptr<Frame> frame) {
@@ -2388,7 +2507,7 @@ void lightweight_vio::Estimator::transfer_imu_data_to_keyframe(std::shared_ptr<F
         // Log time range for verification
         double first_time = m_imu_vec_from_last_keyframe.front().timestamp;
         double last_time = m_imu_vec_from_last_keyframe.back().timestamp;
-        double frame_time = static_cast<double>(keyframe->get_timestamp()) / 1e9;
+        double frame_time = keyframe->get_timestamp();  // Already in seconds
         
         // spdlog::debug("[IMU] IMU data range: {:.6f}s to {:.6f}s, Keyframe time: {:.6f}s", first_time, last_time, frame_time);
         

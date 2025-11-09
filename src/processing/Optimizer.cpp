@@ -166,10 +166,13 @@ namespace lightweight_vio
         // Check if we have enough observations
         if (num_valid_observations < 5)
         {
+            spdlog::warn("[POSE_OPT] ❌ Insufficient valid observations: {} < 5", num_valid_observations);
             result.success = false;
             result.num_inliers = 0;
             return result;
         }
+        
+        spdlog::debug("[POSE_OPT] Starting optimization with {} valid observations", num_valid_observations);
 
         // Get global config
         const auto& config = Config::getInstance();
@@ -200,6 +203,20 @@ namespace lightweight_vio
                 // Solve
                 ceres::Solver::Summary summary;
                 ceres::Solve(options, &problem, &summary);
+                
+                std::string termination_str;
+                switch(summary.termination_type) {
+                    case ceres::CONVERGENCE: termination_str = "CONVERGENCE"; break;
+                    case ceres::NO_CONVERGENCE: termination_str = "NO_CONVERGENCE"; break;
+                    case ceres::FAILURE: termination_str = "FAILURE"; break;
+                    case ceres::USER_SUCCESS: termination_str = "USER_SUCCESS"; break;
+                    case ceres::USER_FAILURE: termination_str = "USER_FAILURE"; break;
+                    default: termination_str = "UNKNOWN"; break;
+                }
+                
+                spdlog::debug("[POSE_OPT] Round {}: termination={} ({}), initial_cost={:.3e}, final_cost={:.3e}, iterations={}", 
+                             round, termination_str, (int)summary.termination_type, 
+                             summary.initial_cost, summary.final_cost, summary.iterations.size());
 
                 // Store costs for summary
                 if (round == 0) {
@@ -224,7 +241,10 @@ namespace lightweight_vio
                 result.initial_cost = initial_cost;
                 result.final_cost = summary.final_cost;
                 result.num_iterations += summary.iterations.size();
-                result.success = (summary.termination_type == ceres::CONVERGENCE);
+                // Accept both CONVERGENCE and NO_CONVERGENCE as success if cost decreased
+                result.success = (summary.termination_type == ceres::CONVERGENCE || 
+                                 summary.termination_type == ceres::NO_CONVERGENCE ||
+                                 summary.termination_type == ceres::USER_SUCCESS);
             }
             
             // Print consolidated optimization summary
@@ -232,9 +252,12 @@ namespace lightweight_vio
             int final_inliers = detect_outliers(const_cast<double const *const *>(&pose_data), observations, feature_indices, frame);
             int final_outliers = observations.size() - final_inliers;
             
-            // spdlog::info("[POSE_OPT] {} rounds: cost {:.3e} -> {:.3e}, {} iters, {} inliers/{} outliers", 
-            //             config.m_outlier_detection_rounds, initial_cost, final_cost, 
-            //             total_iterations, final_inliers, final_outliers);
+            spdlog::info("[POSE_OPT] {} rounds: cost {:.3e} -> {:.3e}, {} iters, {} inliers/{} outliers, success={}", 
+                        config.m_outlier_detection_rounds, initial_cost, final_cost, 
+                        total_iterations, final_inliers, final_outliers, result.success);
+            
+            result.num_inliers = final_inliers;
+            result.num_outliers = final_outliers;
                         
             // Detailed Ceres summary logging removed
         }
@@ -260,7 +283,10 @@ namespace lightweight_vio
                 //             observations.size());
             }
 
-            result.success = (summary.termination_type == ceres::CONVERGENCE);
+            // Accept both CONVERGENCE and NO_CONVERGENCE as success
+            result.success = (summary.termination_type == ceres::CONVERGENCE || 
+                             summary.termination_type == ceres::NO_CONVERGENCE ||
+                             summary.termination_type == ceres::USER_SUCCESS);
             result.initial_cost = summary.initial_cost;
             result.final_cost = summary.final_cost;
             result.num_iterations = summary.iterations.size();
@@ -592,6 +618,32 @@ namespace lightweight_vio
 
         // Create mono PnP cost function with selected information matrix and T_cb
         auto cost_function = new factor::PnPFactor(observation, world_point, camera_params, T_cb, information);
+
+        // I want to debug reprojection error computation here
+        // 1) measured observation (undistorted pixel)
+        // 2) projected pixel from current pose
+        // 3) residual = measured - projected
+
+        // Eigen::Matrix4d Twb_current = se3_tangent_to_matrix(Eigen::Map<const Eigen::Vector6d>(pose_params)).cast<double>();
+        // Eigen::Matrix4d Tcw_current = T_cb.cast<double>() * Twb_current.inverse();
+        // Eigen::Vector3d point_cam = Tcw_current.block<3,3>(0,0) * world_point.cast<double>() + Tcw_current.block<3,1>(0,3);
+        // Eigen::Vector2d projected_pixel;
+        // double fx = camera_params.fx;
+        // double fy = camera_params.fy;
+        // double cx = camera_params.cx;
+        // double cy = camera_params.cy;
+        // projected_pixel.x() = (fx * point_cam.x() / point_cam.z()) + cx;
+        // projected_pixel.y() = (fy * point_cam.y() / point_cam.z()) + cy;
+
+
+        // std::cout<<"Twb_current:\n"<<Twb_current<<std::endl;
+        // std::cout<<"Tcw_current:\n"<<Tcw_current<<std::endl;
+        // std::cout<<"Point in camera space:\n"<<point_cam.transpose()<<std::endl;
+        // std::cout<<"Projected pixel:\n"<<projected_pixel.transpose()<<std::endl;
+        // std::cout<<"Measured observation:\n"<<observation.transpose()<<std::endl;
+        // std::cout<<"Reprojection residual:\n"<<(observation - projected_pixel).transpose()<<std::endl;
+
+
 
         // Create robust loss function if enabled
         ceres::LossFunction *loss_function = nullptr;

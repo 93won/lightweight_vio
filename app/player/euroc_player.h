@@ -109,7 +109,7 @@ struct EurocPlayerResult {
 struct FrameContext {
     size_t current_idx = 0;
     size_t processed_frames = 0;
-    long long previous_frame_timestamp = 0;
+    double previous_frame_timestamp = 0.0;  // Changed to seconds
     std::vector<Eigen::Matrix4f> gt_poses;
     
     // UI control
@@ -229,14 +229,14 @@ private:
     cv::Mat preprocess_image(const cv::Mat& input_image);
     
     /**
-     * @brief Get IMU data between timestamps for VIO mode
-     * @param previous_timestamp Previous frame timestamp
-     * @param current_timestamp Current frame timestamp
-     * @return Vector of IMU data
+     * @brief Get IMU data between two timestamps
+     * @param previous_timestamp Previous frame timestamp (seconds)
+     * @param current_timestamp Current frame timestamp (seconds)
+     * @return Vector of IMU measurements
      */
-    std::vector<IMUData> get_imu_data_between_frames(long long previous_timestamp, 
-                                                    long long current_timestamp);
-
+    std::vector<IMUData> get_imu_data_between_frames(double previous_timestamp, 
+                                                     double current_timestamp);
+    
     // === Viewer Updates ===
     
     /**

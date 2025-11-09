@@ -431,8 +431,8 @@ bool IMUHandler::estimate_gravity_with_stereo_constraints(
     // Step 1: Create preintegrations (without gravity compensation first)
     std::vector<std::shared_ptr<IMUPreintegration>> preintegrations;
     for (size_t i = 0; i < frames.size() - 1; i++) {
-        double start_time = static_cast<double>(frames[i]->get_timestamp()) / 1e9;
-        double end_time = static_cast<double>(frames[i + 1]->get_timestamp()) / 1e9;
+        double start_time = frames[i]->get_timestamp();  // Already in seconds
+        double end_time = frames[i + 1]->get_timestamp();  // Already in seconds
         
         auto preint = preintegrate(all_imu_data, start_time, end_time);
         if (!preint) continue;
@@ -634,8 +634,8 @@ bool IMUHandler::debug_velocity_comparison(
         Frame* frame1 = frames[i];
         Frame* frame2 = frames[i + 1];
         
-        double start_time = static_cast<double>(frame1->get_timestamp()) / 1e9;
-        double end_time = static_cast<double>(frame2->get_timestamp()) / 1e9;
+        double start_time = frame1->get_timestamp();  // Already in seconds
+        double end_time = frame2->get_timestamp();  // Already in seconds
         float dt = static_cast<float>(end_time - start_time);
         
         if (dt <= 0.001f) continue;

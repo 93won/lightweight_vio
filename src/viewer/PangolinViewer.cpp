@@ -967,26 +967,48 @@ void PangolinViewer::update_tracking_with_frame(std::shared_ptr<Frame> frame) {
         display_image = raw_image.clone();
     }
     
-    // Draw features directly on the image
+    // Draw features directly on the image with MapPoint IDs
     int drawn_count = 0;
+    int with_map_point_count = 0;
+    
     for (size_t i = 0; i < features.size(); ++i) {
         const auto& feature = features[i];
         if (feature && feature->is_valid()) {
             const cv::Point2f& pt = feature->get_pixel_coord();
             
-            // Determine color based on map point validity
-            cv::Scalar color;
+            // Determine color and label based on map point validity
+            cv::Scalar circle_color;
+            cv::Scalar text_color;
+            std::string label;
+            bool has_map_point = false;
+            
             if (i < map_points.size() && map_points[i] && !map_points[i]->is_bad()) {
-                color = cv::Scalar(0, 255, 0);  // Green (BGR) for valid map points
+                circle_color = cv::Scalar(255, 255, 0);  // Cyan (BGR) for valid map points
+                text_color = cv::Scalar(0, 0, 255);      // Red (BGR) for MapPoint ID text
+                label = std::to_string(map_points[i]->get_id());
+                has_map_point = true;
+                with_map_point_count++;
             } else {
-                color = cv::Scalar(0, 0, 255);  // Red (BGR) for no map point
+                circle_color = cv::Scalar(0, 255, 0);  // Green (BGR) for no map point
+                text_color = cv::Scalar(0, 255, 0);    // Green (BGR) for text
+                label = "-";
             }
             
             // Draw circle
-            cv::circle(display_image, pt, 3, color, -1);
+            cv::circle(display_image, pt, 3, circle_color, -1);
+            
+            // Draw MapPoint ID text - larger and in red for better visibility
+            cv::putText(display_image, label, cv::Point(pt.x + 6, pt.y - 6),
+                       cv::FONT_HERSHEY_SIMPLEX, 0.5, text_color, 2);
+            
             drawn_count++;
         }
     }
+    
+    // Draw info text
+    std::string info = cv::format("Features: %d, with MPs: %d", drawn_count, with_map_point_count);
+    cv::putText(display_image, info, cv::Point(10, 30),
+               cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 255), 2);
     
     
     // Update texture with drawn image

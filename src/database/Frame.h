@@ -49,34 +49,34 @@ struct IMUData {
 class Frame {
 public:
     // Constructors
-    Frame(long long timestamp, int frame_id, std::shared_ptr<Camera> camera);
-    Frame(long long timestamp, int frame_id, 
+    Frame(double timestamp, int frame_id, std::shared_ptr<Camera> camera);
+    Frame(double timestamp, int frame_id, 
           double fx, double fy, double cx, double cy, 
           const std::vector<double>& distortion_coeffs);  // DEPRECATED: for backward compatibility
     
     // Monocular constructor - single image with Camera object
-    Frame(long long timestamp, int frame_id,
+    Frame(double timestamp, int frame_id,
           const cv::Mat& image,
           std::shared_ptr<Camera> camera);
     
     // Stereo constructor - directly takes both images with Camera objects (left and right)
-    Frame(long long timestamp, int frame_id,
+    Frame(double timestamp, int frame_id,
           const cv::Mat& left_image, const cv::Mat& right_image,
           std::shared_ptr<Camera> left_camera, std::shared_ptr<Camera> right_camera);
     
     // Stereo constructor - DEPRECATED (backward compatibility)
-    Frame(long long timestamp, int frame_id,
+    Frame(double timestamp, int frame_id,
           const cv::Mat& left_image, const cv::Mat& right_image,
           double fx, double fy, double cx, double cy, 
           const std::vector<double>& distortion_coeffs);
 
     // RGBD constructor - directly takes both images with single Camera object
-    Frame(long long timestamp, int frame_id,
+    Frame(double timestamp, int frame_id,
           const cv::Mat& rgb_image, const cv::Mat& depth_map, 
           std::shared_ptr<Camera> camera, bool is_rgbd = true);
 
     // RGBD constructor - DEPRECATED (backward compatibility)
-    Frame(long long timestamp, int frame_id,
+    Frame(double timestamp, int frame_id,
           const cv::Mat& rgb_image, const cv::Mat& depth_map, 
           double fx, double fy, double cx, double cy, const std::vector<double>& distortion_coeffs, bool is_rgbd);
 
@@ -94,7 +94,7 @@ public:
 
 
     // Getters
-    long long get_timestamp() const { return m_timestamp; }
+    double get_timestamp() const { return m_timestamp; }
     int get_frame_id() const { return m_frame_id; }
     const cv::Mat& get_left_image() const { return m_left_image; }
     const cv::Mat& get_right_image() const { return m_right_image; }
@@ -258,6 +258,9 @@ public:
     cv::Mat draw_features() const;
     cv::Mat draw_tracks(const Frame& previous_frame) const;
     cv::Mat draw_stereo_matches() const;
+    
+    // Feature processing
+    void undistort_features();  // Undistort feature coordinates
 
     // IMU data management
     void set_imu_data_from_last_frame(const std::vector<IMUData>& imu_data);
@@ -283,7 +286,7 @@ public:
 
 private:
     // Frame information
-    long long m_timestamp;         // Timestamp in nanoseconds
+    double m_timestamp;            // Timestamp in seconds
     int m_frame_id;               // Unique frame ID
     FrameType m_frame_type;       // ⭐ Frame type (STEREO or RGBD)
     cv::Mat m_left_image;          // Left camera grayscale image (or RGB for RGBD)
@@ -371,7 +374,6 @@ private:
     // Internal processing methods
     void extract_features(int max_features = 150);
     void compute_stereo_matches();
-    void undistort_features();
     void triangulate_stereo_points();
     double compute_disparity_at_point(const cv::Point2f& pixel_coord) const;
     

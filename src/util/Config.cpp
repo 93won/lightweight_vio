@@ -251,8 +251,8 @@ bool Config::load(const std::string& config_file) {
         cv::FileNode left_T_BC = m_camera_type == CameraType::RGBD ? camera["rgb_T_BC"] : camera["left_T_BC"];
         cv::FileNode right_T_BC = camera["right_T_BC"];
         
-        // For RGBD, only left_T_BC (rgb_T_BC) is needed
-        if (m_camera_type == CameraType::RGBD) {
+        // For RGBD and MONOCULAR, only left_T_BC is needed
+        if (m_camera_type == CameraType::RGBD || m_camera_type == CameraType::MONOCULAR) {
             if (!left_T_BC.empty() && left_T_BC.size() == 16) {
                 m_T_left_BC = (cv::Mat_<double>(4, 4) << 
                     (double)left_T_BC[0], (double)left_T_BC[1], (double)left_T_BC[2], (double)left_T_BC[3],
@@ -261,7 +261,7 @@ bool Config::load(const std::string& config_file) {
                     (double)left_T_BC[12], (double)left_T_BC[13], (double)left_T_BC[14], (double)left_T_BC[15]);
             }
         } else {
-            // For stereo, both left and right T_BC are needed
+            // For STEREO, both left and right T_BC are needed
             if (!left_T_BC.empty() && !right_T_BC.empty() && 
                 left_T_BC.size() == 16 && right_T_BC.size() == 16) {
                 
