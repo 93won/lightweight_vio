@@ -172,8 +172,6 @@ namespace lightweight_vio
             return result;
         }
         
-        spdlog::debug("[POSE_OPT] Starting optimization with {} valid observations", num_valid_observations);
-
         // Get global config
         const auto& config = Config::getInstance();
 

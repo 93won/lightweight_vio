@@ -1,6 +1,6 @@
 %YAML:1.0
 ---
-# EuRoC Dataset Configuration for Lightweight VIO
+# TUM RGB-D Dataset Configuration for Monocular VO (RGB only)
 
 # System Mode Configuration
 # Controls whether to run as VO (Visual Odometry) or VIO (Visual-Inertial Odometry)
@@ -17,46 +17,36 @@ viewer:
 performance:
   enable_debug_output: 1  # Print debug messages and feature counts
 
-# Camera Parameters (EuRoC dataset specific)
+# Camera Parameters (TUM RGB-D Freiburg2 dataset)
 # Image dimensions and processing parameters
 camera:
   model: "pinhole"            # Camera model: "pinhole" or "fisheye"
-  type: "monocular"                # ⭐ Camera type: "stereo" or "rgbd" or "monocular"
-  image_width: 752            # Image width in pixels (EuRoC standard)
-  image_height: 480           # Image height in pixels (EuRoC standard)  
+  type: "monocular"           # Camera type: "monocular" (RGB only)
+  image_width: 640            # Image width in pixels (TUM RGB-D standard)
+  image_height: 480           # Image height in pixels (TUM RGB-D standard)  
   border_size: 1              # Border size to exclude from feature detection (pixels)
   
-  # Left camera (cam0) intrinsics
-  left_intrinsics: [458.654, 457.296, 367.215, 248.375]  # [fx, fy, cx, cy]
-  left_distortion: [-0.28340811, 0.07395907, 0.00019359, 1.76187114e-05]  # [k1, k2, p1, p2]
+  # Left camera (RGB camera) intrinsics - Freiburg2 parameters
+  left_intrinsics: [520.908620, 521.007327, 325.141442, 249.701764]  # [fx, fy, cx, cy]
+  left_distortion: [0.231222, -0.784899, -0.003257, -0.000105, 0.917205]  # [k1, k2, p1, p2, k3]
+  
+
+
   
   # Left camera extrinsics (T_BC - camera to body transform)
-  left_T_BC: [0.0148655429818, -0.999880929698, 0.00414029679422, -0.0216401454975,
-              0.999557249008, 0.0149672133247, 0.025715529948, -0.064676986768,
-              -0.0257744366974, 0.00375618835797, 0.999660727178, 0.00981073058949,
+  # Identity for TUM RGB-D monocular (body frame = camera frame)
+  left_T_BC: [1, 0, 0, 0, 
+              0, 1, 0, 0, 
+              0, 0, 1, 0, 
               0.0, 0.0, 0.0, 1.0]
-  
-  
+
+  pixel_to_meter_scalefactor: 5208.0  # Not used in monocular mode
+
 # Keyframe and Windowing Parameters
 # Controls keyframe selection and sliding window management
 keyframe_management:
   keyframe_window_size: 5
-  grid_coverage_ratio: 0.7  # Add keyframe when coverage drops to 80% of last keyframe's coverage
-  time_threshold: 10000000
-
-# Monocular Initialization Parameters
-# Controls two-frame initialization for monocular VO
-initialization:
-  min_parallax_pixels: 30.0          # Minimum median pixel displacement for initialization (pixels)
-  
-  # Two-view geometry parameters
-  ransac_threshold: 1.0              # RANSAC inlier threshold (pixels)
-  ransac_confidence: 0.99            # RANSAC confidence level
-  ransac_max_iterations: 1000        # Maximum RANSAC iterations
-  
-  # Triangulation parameters
-  min_triangulation_angle: 2.0       # Minimum parallax angle for triangulation (degrees)
-  max_reprojection_error: 2.0        # Maximum reprojection error (pixels)   
+  grid_coverage_ratio: 0.3  # Add keyframe when coverage drops to 70% of last keyframe's coverage
   
 # Feature Detection Parameters
 # Controls how corner features are detected using goodFeaturesToTrack
@@ -67,7 +57,7 @@ feature_detection:
   
   # Grid-based feature distribution parameters
   grid_cols: 20               # Number of grid columns for feature distribution
-  grid_rows: 10               # Number of grid rows for feature distribution  
+  grid_rows: 15               # Number of grid rows for feature distribution  
   max_features_per_grid: 4   # Maximum features allowed per grid cell
 
 # Optical Flow Tracking Parameters  
@@ -82,38 +72,31 @@ optical_flow:
   min_eigen_threshold: 1e-3   # Minimum eigenvalue threshold for optical flow
   F_threshold: 1.0            # Fundamental matrix RANSAC distance threshold (pixels)
 
-# Global Depth Parameters
+# Global Depth Parameters (not used in monocular mode, but required for config)
 # Controls depth validation throughout the entire VIO system
 depth:
-  min_depth: 0.1              # Minimum depth for valid 3D points (meters) - used in all depth validation
-  max_depth: 100.0            # Maximum depth for valid 3D points (meters) - used in all depth validation
-
-
+  min_depth: 0.1              # Minimum depth for valid 3D points (meters)
+  max_depth: 100.0            # Maximum depth for valid 3D points (meters)
 
 # Optimization Parameters
 # Controls Ceres-based optimization behavior for both PnP and Sliding Window
 optimization:
   # PnP Optimization Parameters
   pnp_max_iterations: 10               # Maximum optimization iterations for PnP
-  sliding_window_max_iterations: 10  # Maximum optimization iterations for sliding window
-  function_tolerance: 1e-6         # Function tolerance for convergence
-  gradient_tolerance: 1e-10        # Gradient tolerance for convergence  
-  parameter_tolerance: 1e-8        # Parameter tolerance for convergence
+  sliding_window_max_iterations: 10    # Maximum optimization iterations for sliding window
+  function_tolerance: 1e-6             # Function tolerance for convergence
+  gradient_tolerance: 1e-10            # Gradient tolerance for convergence  
+  parameter_tolerance: 1e-8            # Parameter tolerance for convergence
   
   # Robust kernel parameters
-  use_robust_kernel: true          # Enable robust kernel for outlier handling (delta=5.991 hardcoded)
+  use_robust_kernel: true              # Enable robust kernel for outlier handling
   
   # Outlier detection (mainly for PnP)
-  enable_outlier_detection: true   # Enable outlier detection
-  outlier_detection_rounds: 4      # Number of optimization rounds with outlier detection
-  
-  # Information weighting parameters - now using logarithmic scaling (saturation_point=20)
-  # Removed pnp_max_observation_weight and sliding_window_max_observation_weight
+  enable_outlier_detection: true       # Enable outlier detection
+  outlier_detection_rounds: 4          # Number of optimization rounds with outlier detection
 
-# MapPoint Uncertainty Parameters
-# Controls uncertainty propagation for 3D map points
+# MapPoint Uncertainty Parameters (not used in basic monocular VO)
 uncertainty:
-  enable: 1                  # Enable uncertainty propagation for MapPoints
+  enable: 0                  # Disable uncertainty propagation for MapPoints
   max_eigenvalue: 1e-1       # Maximum covariance matrix eigenvalue
   min_eigenvalue: 1e-5       # Minimum covariance matrix eigenvalue
-

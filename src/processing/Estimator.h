@@ -381,6 +381,14 @@ private:
      * @return True if should create keyframe
      */
     bool should_create_keyframe(std::shared_ptr<Frame> frame);
+
+
+    /**
+     * @brief Decide whether to create a new keyframe for monocular VO
+     * @param frame Current frame
+     * @return True if should create keyframe
+     */
+    bool should_create_keyframe_monocular(std::shared_ptr<Frame> frame);
     
     /**
      * @brief Calculate grid coverage ratio with features that have map points
