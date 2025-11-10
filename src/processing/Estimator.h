@@ -120,12 +120,14 @@ public:
     EstimationResult process_rgbd_frame(const cv::Mat& rgb_image, const cv::Mat& depth_map, double timestamp);
 
     /**
-     * @brief Process a new monocular frame (VO mode only)
+     * @brief Process a new monocular frame with IMU data (VIO mode)
      * @param image Monocular image
      * @param timestamp Frame timestamp in seconds
+     * @param imu_data_from_last_frame IMU measurements between last frame and current frame
      * @return Estimation result
      */
-    EstimationResult process_monocular_frame(const cv::Mat& image, double timestamp);
+    EstimationResult process_monocular_frame(const cv::Mat& image, double timestamp,
+                                            const std::vector<IMUData>& imu_data_from_last_frame);
 
     /**
      * @brief Reset the estimator state

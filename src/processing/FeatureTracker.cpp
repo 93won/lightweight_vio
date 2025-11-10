@@ -58,6 +58,10 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
         // Removed: update_feature_track_count(current_frame);
     }
 
+    spdlog::debug("[FeatureTracker] Tracked {} features from previous frame {}", 
+                  tracked_features, 
+                  previous_frame ? previous_frame->get_frame_id() : -1);
+
     // Extract new features if needed
     if (current_frame->get_feature_count() < m_config.m_max_features) {
         auto mask_start = std::chrono::high_resolution_clock::now();
@@ -305,8 +309,8 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
         new_feature->set_tracked_feature_id(prev_feature->get_feature_id());
         
         // Inherit accumulated observations from previous feature (without incrementing)
-        int prev_accumulated_obs = prev_feature->get_num_observations_accumulated();
-        new_feature->set_num_observations_accumulated(prev_accumulated_obs);
+        // int prev_accumulated_obs = prev_feature->get_num_observations_accumulated();
+        // new_feature->set_num_observations_accumulated(prev_accumulated_obs);
         
         // Update velocity
         Eigen::Vector2f velocity(dx, dy);
@@ -315,17 +319,31 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
         // Propagate outlier flag from previous frame
         bool was_outlier = previous_frame->get_outlier_flag(original_feature_idx);
         current_frame->add_feature(new_feature);
-        
-        // ✅ Add observations for monocular tracking
-        // 1. Inherit all observations from previous feature
-        const auto& prev_observations = prev_feature->get_observations();
-        for (const auto& obs : prev_observations) {
+
+        int current_feature_idx = current_frame->get_feature_count() - 1;
+
+        // ✅ Simplified observation chain (단방향 forward + backward)
+        const auto &prev_observations = prev_feature->get_observations();
+
+        // 1. Forward: Inherit observations from previous feature
+        for (const auto &obs : prev_observations)
+        {
             new_feature->add_observation(obs.frame, obs.feature_index);
         }
-        
+
         // 2. Add current frame observation
-        int current_feature_idx = current_frame->get_feature_count() - 1;
         new_feature->add_observation(current_frame, current_feature_idx);
+
+        // 3. Backward: Let all past features know about current frame
+        for (const auto &obs : prev_observations)
+        {
+            auto previous_feature = obs.frame->get_feature(obs.feature_index);
+            if (previous_feature)
+            {
+                previous_feature->add_observation(current_frame, current_feature_idx);
+            }
+        }
+
         
         current_frame->set_outlier_flag(current_feature_idx, was_outlier);
         new_feature->set_track_count(prev_feature->get_track_count() + 1);

@@ -11,7 +11,7 @@ This guide provides detailed instructions for running the Lightweight Stereo VIO
 # Visual Odometry (VO) mode
 ./build/euroc_stereo config/euroc_vo.yaml /path/to/EuRoC/MH_01_easy
 
-# Visual-Inertial Odometry (VIO) mode
+# VIO mode (with IMU):
 ./build/euroc_stereo config/euroc_vio.yaml /path/to/EuRoC/MH_01_easy
 ```
 

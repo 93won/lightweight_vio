@@ -106,8 +106,8 @@ file(GLOB_RECURSE SOURCES
 
 
 
-# Add unified stereo pipeline (VO/VIO configurable via YAML)
-add_executable(euroc_stereo app/euroc_stereo.cpp 
+# Add EuRoC example pipeline
+add_executable(euroc_example app/euroc_example.cpp 
     app/player/euroc_player.cpp
     src/database/Frame.cpp
     src/database/Feature.cpp
@@ -171,30 +171,9 @@ add_executable(rgbd_example app/rgbd_example.cpp
     src/viewer/PangolinViewer.cpp
 )
 
-# Add TUM Monocular pipeline (RGB only from RGB-D dataset)
-add_executable(tum_monocular app/tum_monocular.cpp 
-    app/player/tum_monocular_player.cpp
-    src/database/Frame.cpp
-    src/database/Feature.cpp
-    src/database/MapPoint.cpp
-    src/camera/Camera.cpp
-    src/camera/Rectlinear.cpp
-    src/camera/Fisheye.cpp
-    src/processing/FeatureTracker.cpp
-    src/processing/Optimizer.cpp
-    src/processing/Estimator.cpp
-    src/processing/MonocularInitializer.cpp
-    src/processing/IMUHandler.cpp
-    src/optimization/Factors.cpp
-    src/optimization/Parameters.cpp
-    src/util/Config.cpp
-    src/util/StringUtils.cpp
-    src/viewer/PangolinViewer.cpp
-)
-
 
 # Link libraries
-target_link_libraries(euroc_stereo 
+target_link_libraries(euroc_example 
     ${OpenCV_LIBS} 
     yaml-cpp 
     OpenGL::GL 
@@ -245,35 +224,16 @@ target_link_libraries(rgbd_example
     m  # Math library for M_PI
 )
 
-target_link_libraries(tum_monocular 
-    ${OpenCV_LIBS} 
-    yaml-cpp 
-    OpenGL::GL 
-    GLEW::GLEW
-    Threads::Threads
-    ceres
-    Sophus::Sophus
-    spdlog::spdlog
-    pango_display
-    pango_windowing
-    pango_opengl
-    pango_core
-    pango_image
-    m  # Math library for M_PI
-)
-
 # Link Eigen3 to all targets
 if(TARGET Eigen3::Eigen)
-    target_link_libraries(euroc_stereo Eigen3::Eigen)
+    target_link_libraries(euroc_example Eigen3::Eigen)
     target_link_libraries(tum_stereo Eigen3::Eigen)
     target_link_libraries(rgbd_example Eigen3::Eigen)
-    target_link_libraries(tum_monocular Eigen3::Eigen)
 else()
     # Fallback for older CMake versions
-    target_include_directories(euroc_stereo PRIVATE ${EIGEN3_INCLUDE_DIR})
+    target_include_directories(euroc_example PRIVATE ${EIGEN3_INCLUDE_DIR})
     target_include_directories(tum_stereo PRIVATE ${EIGEN3_INCLUDE_DIR})
     target_include_directories(rgbd_example PRIVATE ${EIGEN3_INCLUDE_DIR})
-    target_include_directories(tum_monocular PRIVATE ${EIGEN3_INCLUDE_DIR})
 endif()
 
 # Print OpenCV information for debugging

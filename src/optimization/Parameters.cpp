@@ -180,7 +180,8 @@ bool BiasParameterization::ComputeJacobian(const double* x,
 }
 
 // ===============================================================================
-// GRAVITY PARAMETERIZATION IMPLEMENTATION (ORB-SLAM3 Style)
+// GRAVITY PARAMETERIZATION IMPLEMENTATION
+// Uses SO(3) manifold for gravity direction optimization
 // ===============================================================================
 
 Eigen::Matrix3d GravityParameterization::ExpSO3(const Eigen::Vector3d& w) {

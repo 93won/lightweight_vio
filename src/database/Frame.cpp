@@ -105,7 +105,7 @@ Frame::Frame(double timestamp, int frame_id,
     , m_right_camera(nullptr)
 {
     m_left_image = image.clone();
-    
+
     m_rotation = Eigen::Matrix3f::Identity();
     m_translation = Eigen::Vector3f::Zero();
     m_is_keyframe = false;

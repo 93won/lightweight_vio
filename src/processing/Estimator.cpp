@@ -297,15 +297,10 @@ Estimator::EstimationResult Estimator::process_rgbd_frame(const cv::Mat& rgb_ima
 
 }
 
-Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& image, double timestamp) {
+Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& image, double timestamp,
+                                                              const std::vector<IMUData>& imu_data_from_last_frame) {
     EstimationResult result;
     auto total_start_time = std::chrono::high_resolution_clock::now();
-
-    // Frame processing starts
-    if (Config::getInstance().m_enable_debug_output) {
-        std::cout << "\n";
-        spdlog::info("============================== Frame {} ==============================\n", m_frame_id_counter);
-    }
 
     // Increment frame counter since last keyframe for every new frame
     m_frames_since_last_keyframe++;
@@ -322,7 +317,7 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         return result;
     }
 
-    // ⭐ Monocular initialization: If not yet initialized
+    // Monocular initialization: If not yet initialized
     if (!m_monocular_initialized) {
 
         // Set initial pose
@@ -336,7 +331,6 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
             // Extract features for first frame
             m_feature_tracker->track_features(m_current_frame, nullptr);
             // Set first frame as reference for tracking in subsequent frames
-            m_previous_frame = m_current_frame;
         }
         
         // Undistort features for parallax computation
@@ -345,8 +339,10 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         
         // Add current frame to initializer (may trigger initialization)
         bool init_attempted = false;
-        m_monocular_initializer->add_frame(m_current_frame, &init_attempted);
-        
+        m_monocular_initializer->try_initialize_visual_sfm(m_current_frame, &init_attempted);
+
+        m_previous_frame = m_current_frame;
+
         // Check if initialization succeeded
         if (m_monocular_initializer->is_initialized()) {
             auto init_result = m_monocular_initializer->get_result();
@@ -382,7 +378,6 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
             // set m_last_keyframe to current frame
             m_last_keyframe = m_current_frame;
 
-
             m_previous_frame = m_current_frame;
             
             // Mark as initialized
@@ -393,10 +388,6 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
             result.num_inliers = init_result.initialized_mappoints.size();
 
             update_transform_from_last();
-
-
-            
-
 
             return result;
         }
@@ -417,7 +408,7 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         return result;
     }
 
-    // After initialization: Normal tracking
+    // ⭐ After initialization: Normal VIO tracking
     if (m_previous_frame) {
         // Predict state using motion model
         auto prediction_start = std::chrono::high_resolution_clock::now();
@@ -476,7 +467,6 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
             }
             // Fallback: use current pose as-is
             m_current_pose = m_current_frame->get_Twb();
-            // update_transform_from_last();
             
             result.success = true;
             result.num_inliers = num_tracked_with_map_points;
@@ -1484,7 +1474,6 @@ std::shared_ptr<Frame> Estimator::create_monocular_frame(const cv::Mat& image, d
 
     const cv::Mat& gray_image = image;  // Direct reference (no copy)
     
-
     auto frame = std::make_shared<Frame>(
         timestamp,
         m_frame_id_counter++,
@@ -1988,7 +1977,7 @@ bool lightweight_vio::Estimator::should_create_keyframe_monocular(std::shared_pt
         avg_parallax = sum_parallax / parallaxes.size();
     }
 
-    if(avg_parallax > 10.0) // Threshold in pixels
+    if(avg_parallax > 30.0) // Threshold in pixels
     {
         return true;
     }

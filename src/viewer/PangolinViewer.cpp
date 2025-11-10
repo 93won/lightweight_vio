@@ -67,7 +67,7 @@ PangolinViewer::PangolinViewer()
     , m_min_uncertainty_size(0.01f)
     , m_frame_id("ui.Frame ID", 0)
     , m_successful_matches("ui.Num Tracked Map Points", 0, 0, get_max_features_from_config())
-    , m_auto_mode_checkbox("ui.1. Auto Mode", true, true)
+    , m_auto_mode_checkbox("ui.1. Auto Mode", false, true)
     , m_show_map_point_indices("ui.2. Show Map Point IDs", true, true)
     , m_show_accumulated_map_points("ui.3. Show Local Map Points", true, true)
     , m_show_current_map_points("ui.4. Show Current Map Points", true, true)
@@ -397,7 +397,7 @@ void PangolinViewer::render() {
     // while still allowing user to zoom and rotate around it
     static bool was_follow_active = false;  // Track follow mode state across frames
     
-    // Follow Frame mode - based on ORB-SLAM2 implementation
+    // Follow Frame mode - smooth camera tracking
     static bool bFollow = false;       // Track if currently following
     static bool bFirstTime = true;     // Track if this is the first time ever
     

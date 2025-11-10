@@ -82,6 +82,8 @@ namespace lightweight_vio
         {
             std::lock_guard<std::mutex> lock(s_mappoint_mutex);
             const auto &map_points = frame->get_map_points();
+
+            spdlog::info("[POSE_OPT] Frame {} has {} map points for PnP", frame->get_frame_id(), map_points.size());
             
             for (size_t i = 0; i < map_points.size(); ++i)
             {
@@ -350,11 +352,7 @@ namespace lightweight_vio
         }
 
         // Summary is already printed in the optimization loop above
-        // if (config.m_print_summary)
-        // {
-        //     spdlog::info("[POSE] Optimization: {} inliers, {} outliers", 
-        //                 result.num_inliers, result.num_outliers);
-        // }
+        spdlog::info("[POSE] Optimization: {} inliers, {} outliers", result.num_inliers, result.num_outliers);
 
         return result;
     }
@@ -632,12 +630,6 @@ namespace lightweight_vio
         double cy = camera_params.cy;
         projected_pixel.x() = (fx * point_cam.x() / point_cam.z()) + cx;
         projected_pixel.y() = (fy * point_cam.y() / point_cam.z()) + cy;
-
-        // 소수점 2자리까지 출력
-        spdlog::info("Check projected, observed, residual in a line: {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}", 
-                     projected_pixel.x(), projected_pixel.y(),
-                     observation.x(), observation.y(),
-                     (observation - projected_pixel).x(), (observation - projected_pixel).y());
 
 
         // std::cout<<"Twb_current:\n"<<Twb_current<<std::endl;
@@ -1710,7 +1702,7 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
                      gyro_bias_params_vec[i][0], gyro_bias_params_vec[i][1], gyro_bias_params_vec[i][2]);
     }   
     
-    // Convert gravity_dir to rotation matrix using ExpSO3 (matching ORB-SLAM3)
+    // Convert gravity_dir to rotation matrix using ExpSO3
     // ExpSO3(x, y, 0) converts 2D gravity direction to SO(3) rotation matrix
     Eigen::Vector3d omega(gravity_dir_params[0], gravity_dir_params[1], 0.0);
     double theta = omega.norm();

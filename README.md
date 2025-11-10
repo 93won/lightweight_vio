@@ -19,10 +19,10 @@ Download sample TUM RGB-D dataset:
 
 ## Usage
 
-### Monocular VO
+### EuRoC Example (Stereo/Mono VIO)
 ```bash
 cd build
-./tum_monocular ../config/tum_mono.yaml /path/to/rgbd_dataset_freiburg2_desk/
+./euroc_example ../config/euroc_vio.yaml /path/to/euroc/MH_01_easy/
 ```
 
 ## License

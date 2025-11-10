@@ -270,13 +270,13 @@ private:
 };
 
 /**
- * @brief Gravity Direction Parameterization using SO(3) manifold (ORB-SLAM3 style)
+ * @brief Gravity Direction Parameterization using SO(3) manifold
  * 
  * Represents gravity direction using 3x3 rotation matrix Rwg (world to gravity-aligned frame)
  * The 2D perturbation [pu[0], pu[1]] is applied as:
  *   Rwg_new = Rwg * ExpSO3(pu[0], pu[1], 0.0)
  * 
- * This follows ORB-SLAM3's approach where:
+ * This approach parameterizes the gravity direction with:
  * - Global size: 9 (3x3 rotation matrix stored as column-major)
  * - Local size: 2 (only 2 DoF for gravity direction, z-axis rotation is constrained)
  * 

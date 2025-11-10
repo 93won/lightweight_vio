@@ -208,6 +208,7 @@ namespace lightweight_vio
         double m_init_ransac_threshold = 1.0;          // RANSAC inlier threshold (pixels)
         double m_init_ransac_confidence = 0.99;        // RANSAC confidence level
         int m_init_ransac_max_iterations = 1000;       // Maximum RANSAC iterations
+        int m_init_min_inliers = 20;                   // Minimum inliers for F-matrix and pose recovery
         
         // Triangulation parameters
         double m_init_min_triangulation_angle = 2.0;   // Minimum parallax angle for triangulation (degrees)

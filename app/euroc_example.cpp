@@ -1,5 +1,5 @@
 /**
- * @file      euroc_stereo.cpp
+ * @file      euroc_example.cpp
  * @brief     Main application entry point for the EuRoC stereo pipeline (VO/VIO configurable via YAML).
  * @author    Seungwon Choi (csw3575@snu.ac.kr)
  * @date      2025-09-16

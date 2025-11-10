@@ -431,6 +431,7 @@ bool Config::load(const std::string& config_file) {
         m_init_ransac_threshold = (double)initialization["ransac_threshold"];
         m_init_ransac_confidence = (double)initialization["ransac_confidence"];
         m_init_ransac_max_iterations = (int)initialization["ransac_max_iterations"];
+        m_init_min_inliers = (int)initialization["min_inliers"];
         
         m_init_min_triangulation_angle = (double)initialization["min_triangulation_angle"];
         m_init_max_reprojection_error = (double)initialization["max_reprojection_error"];
@@ -440,6 +441,7 @@ bool Config::load(const std::string& config_file) {
             spdlog::info("  - Min parallax: {:.1f} pixels (median)", m_init_min_parallax_pixels);
             spdlog::info("  - RANSAC: threshold={:.1f}px, confidence={:.2f}, max_iters={}", 
                         m_init_ransac_threshold, m_init_ransac_confidence, m_init_ransac_max_iterations);
+            spdlog::info("  - Min inliers: {} (F-matrix & pose recovery)", m_init_min_inliers);
             spdlog::info("  - Triangulation: min_angle={:.1f}°, max_reproj_error={:.1f}px",
                         m_init_min_triangulation_angle, m_init_max_reprojection_error);
         }

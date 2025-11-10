@@ -452,10 +452,21 @@ double EurocPlayer::process_single_frame(Estimator& estimator,
     Estimator::EstimationResult result;
     
     if (camera_type == CameraType::MONOCULAR) {
-        // ⭐ Monocular mode - use dedicated monocular function (VO only for now)
+        // ⭐ Monocular VIO mode - use IMU data
         // Convert nanosecond timestamp to seconds
         double timestamp_sec = image_data[context.current_idx].timestamp * 1e-9;
-        result = estimator.process_monocular_frame(processed_left, timestamp_sec);
+        
+        if (context.processed_frames > 0) {
+            // Get IMU data between previous and current frame
+            auto imu_data = get_imu_data_between_frames(context.previous_frame_timestamp, 
+                                                       timestamp_sec);
+            
+            result = estimator.process_monocular_frame(processed_left, timestamp_sec, imu_data);
+        } else {
+            // First frame - no IMU data available
+            std::vector<IMUData> empty_imu_data;
+            result = estimator.process_monocular_frame(processed_left, timestamp_sec, empty_imu_data);
+        }
     } else if (use_vio_mode && context.processed_frames > 0) {
         // VIO mode with IMU data (stereo/rgbd)
         // Convert current timestamp to seconds

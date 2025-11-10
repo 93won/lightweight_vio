@@ -701,7 +701,8 @@ Eigen::Vector3d InertialGravityFactor::log_SO3(const Eigen::Matrix3d& R) const {
 }
 
 Eigen::Matrix3d InertialGravityFactor::gravity_dir_to_rotation(const Eigen::Vector2d& gravity_dir) const {
-    // ⭐ ORB-SLAM3 compatible implementation
+    // Gravity direction parameterization compatible implementation
+    // Gravity is represented as a 2D parameter on SO(3) manifold
     // Convert 2D perturbation to rotation matrix using SO(3) exponential map
     // Rwg = ExpSO3(theta[0], theta[1], 0.0)
     // where theta[0], theta[1] are small angles around Y and X axes respectively
