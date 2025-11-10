@@ -117,8 +117,12 @@ bool MonocularInitializer::try_initialize_visual_sfm(std::shared_ptr<Frame> fram
 
         double dt_total = frame_cur->get_timestamp() - frame_ref->get_timestamp(); 
 
+        // 🎯 Set dt for reference frame (first keyframe has dt=0)
+        frame_ref->set_dt_from_last_keyframe(0.0);
         m_result.initialized_keyframes.push_back(frame_ref);
 
+        // Track previous frame timestamp for dt calculation
+        double prev_timestamp = frame_ref->get_timestamp();
 
         for (size_t i = 1; i < m_frame_window.size()-1; ++i) {
 
@@ -142,10 +146,19 @@ bool MonocularInitializer::try_initialize_visual_sfm(std::shared_ptr<Frame> fram
             frame_i->set_Twb(Twb_i);
             frame_i->set_keyframe(true);
 
+            // 🎯 Set dt from PREVIOUS keyframe (not reference)
+            double dt_from_prev = frame_i->get_timestamp() - prev_timestamp;
+            frame_i->set_dt_from_last_keyframe(dt_from_prev);
+            
+            prev_timestamp = frame_i->get_timestamp();
+
             m_result.initialized_keyframes.push_back(frame_i);
 
         }
 
+        // 🎯 Set dt for last keyframe (from previous intermediate frame)
+        double dt_cur_from_prev = frame_cur->get_timestamp() - prev_timestamp;
+        frame_cur->set_dt_from_last_keyframe(dt_cur_from_prev);
         m_result.initialized_keyframes.push_back(frame_cur);
 
         // Link using feature observations

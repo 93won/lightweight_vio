@@ -450,6 +450,13 @@ private:
     void update_preintegrations_with_new_bias(const InertialOptimizationResult& result);
     
     /**
+     * @brief Apply IMU-based scale correction for monocular initialization
+     * @details Computes scale from IMU translation vs VO translation, applies median scale to all poses and map points
+     * @note Only applicable for monocular mode - stereo/RGBD already have metric scale
+     */
+    void apply_imu_based_scale_correction();
+    
+    /**
      * @brief Visualize gravity direction before transformation
      * @param result Optimization results containing gravity visualization data
      */

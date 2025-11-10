@@ -302,20 +302,63 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
     EstimationResult result;
     auto total_start_time = std::chrono::high_resolution_clock::now();
 
+    for (const auto& imu_data : imu_data_from_last_frame) {
+        m_imu_vec_from_last_keyframe.push_back(imu_data);
+    }
+    
+
     // Increment frame counter since last keyframe for every new frame
     m_frames_since_last_keyframe++;
 
     // Create new monocular frame
-    auto frame_creation_start = std::chrono::high_resolution_clock::now();
     m_current_frame = create_monocular_frame(image, timestamp);
-    auto frame_creation_end = std::chrono::high_resolution_clock::now();
-    auto frame_creation_time = std::chrono::duration_cast<std::chrono::microseconds>(frame_creation_end - frame_creation_start).count() / 1000.0;
 
-    if (!m_current_frame) {
-        spdlog::error("[Estimator] Failed to create monocular frame!");
-        result.success = false;
-        return result;
+    if(m_last_keyframe){
+        m_current_frame->set_accel_bias(m_last_keyframe->get_accel_bias());
+        m_current_frame->set_gyro_bias(m_last_keyframe->get_gyro_bias());
     }
+
+
+    // Set IMU data to the frame (frame-to-frame data)
+    m_current_frame->set_imu_data_from_last_frame(imu_data_from_last_frame);
+    
+    // Compute frame-to-frame preintegration if IMU data is available
+    if (!imu_data_from_last_frame.empty() && m_imu_handler) {
+        // Always compute frame-to-frame preintegration, regardless of IMU initialization status
+        // This is useful for state prediction and velocity estimation
+        
+        // 🎯 Use FRAME timestamps for dt calculation (not IMU timestamp range)
+        // This ensures dt matches the actual frame interval (0.05s)
+        double current_frame_time = timestamp;  // Already in seconds
+        double previous_frame_time = m_previous_frame ? 
+            m_previous_frame->get_timestamp() : current_frame_time;  // Already in seconds
+        
+        auto frame_to_frame_preint = m_imu_handler->preintegrate(imu_data_from_last_frame, previous_frame_time, current_frame_time);
+        if (frame_to_frame_preint && frame_to_frame_preint->is_valid()) {
+            m_current_frame->set_imu_preintegration_from_last_frame(frame_to_frame_preint);
+        } else {
+            spdlog::warn("[IMU] Failed to create frame-to-frame preintegration for frame {}", m_current_frame->get_frame_id());
+        }
+
+        spdlog::debug("[IMU] Frame-to-frame preintegration set for frame {} with {} imu data", m_current_frame->get_frame_id(), imu_data_from_last_frame.size());
+    }
+
+    // Compute from-last-keyframe preintegration for more stable state prediction
+    if (!m_imu_vec_from_last_keyframe.empty() && m_imu_handler && m_last_keyframe) {
+        double current_frame_time = timestamp;  // Already in seconds
+        double last_keyframe_time = m_last_keyframe->get_timestamp();  // Already in seconds
+        
+        // Create preintegration from last keyframe to current frame using accumulated IMU data
+        auto keyframe_to_frame_preint = m_imu_handler->preintegrate(m_imu_vec_from_last_keyframe, last_keyframe_time, current_frame_time);
+        if (keyframe_to_frame_preint && keyframe_to_frame_preint->is_valid()) {
+            m_current_frame->set_imu_preintegration_from_last_keyframe(keyframe_to_frame_preint);
+            // spdlog::debug("[IMU] Created keyframe-to-frame preintegration: dt={:.4f}s", keyframe_to_frame_preint->dt_total);
+        } else {
+            spdlog::warn("[IMU] Failed to create keyframe-to-frame preintegration for frame {}", m_current_frame->get_frame_id());
+        }
+    }
+
+
 
     // Monocular initialization: If not yet initialized
     if (!m_monocular_initialized) {
@@ -361,6 +404,39 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
                 m_map_points.push_back(mp);
             }
             
+            // 🎯 Compute preintegration for initialized keyframes using accumulated IMU data
+            if (m_imu_handler && !m_imu_vec_from_last_keyframe.empty()) {
+                spdlog::info("[MONO_INIT] Computing preintegration for {} initialized keyframes", 
+                            init_result.initialized_keyframes.size());
+                
+                // For each keyframe (except first), compute preintegration from previous keyframe
+                for (size_t i = 1; i < init_result.initialized_keyframes.size(); ++i) {
+                    auto prev_kf = init_result.initialized_keyframes[i-1];
+                    auto curr_kf = init_result.initialized_keyframes[i];
+                    
+                    double t_prev = prev_kf->get_timestamp();
+                    double t_curr = curr_kf->get_timestamp();
+                    
+                    // Extract IMU data in this time interval
+                    std::vector<IMUData> imu_interval;
+                    for (const auto& imu : m_imu_vec_from_last_keyframe) {
+                        if (imu.timestamp >= t_prev && imu.timestamp <= t_curr) {
+                            imu_interval.push_back(imu);
+                        }
+                    }
+                    
+                    if (!imu_interval.empty()) {
+                        // Compute preintegration for this interval
+                        auto preint = m_imu_handler->preintegrate(imu_interval, t_prev, t_curr);
+                        if (preint && preint->is_valid()) {
+                            curr_kf->set_imu_preintegration_from_last_keyframe(preint);
+                            spdlog::debug("[MONO_INIT] Set preintegration for KF {} (dt={:.3f}s, {} IMU samples)", 
+                                        curr_kf->get_frame_id(), preint->dt_total, imu_interval.size());
+                        }
+                    }
+                }
+            }
+            
             // Set the last initialized frame as the last keyframe
             if (!init_result.initialized_keyframes.empty()) {
                 m_last_keyframe = init_result.initialized_keyframes.back();
@@ -382,6 +458,13 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
             
             // Mark as initialized
             m_monocular_initialized = true;
+
+
+            // Try initialize gravity direction first
+
+            spdlog::info("[MONO_INIT] Trying IMU initialization after visual SFM...");
+            auto imu_init_result = try_initialize_imu();
+
             
             result.success = true;
             result.num_features = m_current_frame->get_feature_count();
@@ -705,337 +788,6 @@ Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, 
     
     return result;
 }
-
-// // IMU process_frame overload
-// Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, const cv::Mat& right_image, 
-//                                                     long long timestamp, const std::vector<IMUData>& imu_data_from_last_frame) {
-//     // ===== IMU-SPECIFIC PROCESSING =====
-//     // Accumulate IMU data from last frame
-//     for (const auto& imu_data : imu_data_from_last_frame) {
-//         m_imu_vec_from_last_keyframe.push_back(imu_data);
-//     }
-    
-//     // Create frame first
-//     std::shared_ptr<Frame> frame = create_frame(left_image, right_image, timestamp);
-//     if (!frame) {
-//         EstimationResult result;
-//         result.success = false;
-//         return result;
-//     }
-
-//     if(m_last_keyframe){
-//         frame->set_accel_bias(m_last_keyframe->get_accel_bias());
-//         frame->set_gyro_bias(m_last_keyframe->get_gyro_bias());
-//     }
-
-
-//     // Set IMU data to the frame (frame-to-frame data)
-//     frame->set_imu_data_from_last_frame(imu_data_from_last_frame);
-    
-//     // Compute frame-to-frame preintegration if IMU data is available
-//     if (!imu_data_from_last_frame.empty() && m_imu_handler) {
-//         // Always compute frame-to-frame preintegration, regardless of IMU initialization status
-//         // This is useful for state prediction and velocity estimation
-//         double first_imu_time = imu_data_from_last_frame.front().timestamp;
-//         double last_imu_time = imu_data_from_last_frame.back().timestamp;
-        
-//         auto frame_to_frame_preint = m_imu_handler->preintegrate(imu_data_from_last_frame, first_imu_time, last_imu_time);
-//         if (frame_to_frame_preint && frame_to_frame_preint->is_valid()) {
-//             frame->set_imu_preintegration_from_last_frame(frame_to_frame_preint);
-//         } else {
-//             spdlog::warn("[IMU] Failed to create frame-to-frame preintegration for frame {}", frame->get_frame_id());
-//         }
-//     }
-    
-//     // Set as current frame for the rest of the processing
-//     m_current_frame = frame;
-    
-//     // ===== IDENTICAL VO PROCESSING (SAME AS NON-IMU VERSION) =====
-//     EstimationResult result;
-//     auto total_start_time = std::chrono::high_resolution_clock::now();
-
-//     // Frame processing starts
-//     std::cout<<"\n";
-//     spdlog::info("============================== Frame {} ==============================\n", m_current_frame->get_frame_id());
-
-//     // Increment frame counter since last keyframe for every new frame
-//     m_frames_since_last_keyframe++;
-
-//     // Initialize timing variables
-//     double frame_creation_time = 0.0;
-//     double prediction_time = 0.0;
-//     double tracking_time = 0.0;
-//     double optimization_time = 0.0;
-
-//     // IMU data processed (reduced logging)
-//     if (!imu_data_from_last_frame.empty() && m_current_frame->get_frame_id() % 10 == 0) {
-//         spdlog::info("[IMU] Frame {} processed {} IMU measurements", 
-//                     m_current_frame->get_frame_id(), imu_data_from_last_frame.size());
-//     }
-
-//     if (m_previous_frame) {
-//         auto prediction_start = std::chrono::high_resolution_clock::now();
-//         predict_state();
-//         auto prediction_end = std::chrono::high_resolution_clock::now();
-//         prediction_time = std::chrono::duration_cast<std::chrono::microseconds>(prediction_end - prediction_start).count() / 1000.0;
-        
-//         // Track features from previous frame using FeatureTracker
-//         // FeatureTracker now handles both tracking and map point association/creation
-//         auto tracking_start = std::chrono::high_resolution_clock::now();
-//         m_feature_tracker->track_features(m_current_frame, m_previous_frame);
-//         auto tracking_end = std::chrono::high_resolution_clock::now();
-//         tracking_time = std::chrono::duration_cast<std::chrono::microseconds>(tracking_end - tracking_start).count() / 1000.0;
-        
-//         result.num_features = m_current_frame->get_feature_count();
-        
-//         // Compute stereo depth for all features
-//         m_current_frame->compute_stereo_depth();
-        
-//         // Count how many features have associated map points (already done by FeatureTracker)
-//         int num_tracked_with_map_points = count_features_with_map_points(m_current_frame);
-        
-//         // Log tracking information
-//         spdlog::info("[TRACKING] {} features tracked, {} with map points", 
-//                     result.num_features, num_tracked_with_map_points);
-        
-//         if (num_tracked_with_map_points > 0) {
-//             // ✅ ENABLED: Pose optimization re-enabled after fixing coordinate space mismatch!
-//             if (num_tracked_with_map_points >= 5) {
-//                 auto optimization_start = std::chrono::high_resolution_clock::now();
-//                 auto opt_result = optimize_pose(m_current_frame);
-//                 auto optimization_end = std::chrono::high_resolution_clock::now();
-//                 optimization_time = std::chrono::duration_cast<std::chrono::microseconds>(optimization_end - optimization_start).count() / 1000.0;
-                
-//                 result.success = opt_result.success;
-//                 result.num_inliers = opt_result.num_inliers;
-//                 result.num_outliers = opt_result.num_outliers;
-                
-//                 if (opt_result.success) {
-//                     m_current_pose = opt_result.optimized_pose;
-//                     m_current_frame->set_Twb(m_current_pose);
-                    
-//                     // Log comparison between predicted and optimized pose
-//                     if (!m_predicted_pose.isApprox(Eigen::Matrix4f::Identity())) {
-//                         Eigen::Matrix4f pose_diff = m_current_pose.inverse() * m_predicted_pose;
-//                         Eigen::Vector3f translation_diff = pose_diff.block<3,1>(0,3);
-//                         Eigen::Matrix3f rotation_diff = pose_diff.block<3,3>(0,0);
-                        
-//                         // Compute rotation angle difference
-//                         float rotation_angle = std::acos(std::min(1.0f, (rotation_diff.trace() - 1.0f) / 2.0f));
-//                         rotation_angle = rotation_angle * 180.0f / M_PI;  // Convert to degrees
-                        
-//                         spdlog::info("[POSE_COMPARE] Frame {}: Translation diff=({:.3f}, {:.3f}, {:.3f})m, Rotation diff={:.2f}°", 
-//                                    m_current_frame->get_frame_id(),
-//                                    translation_diff.x(), translation_diff.y(), translation_diff.z(),
-//                                    rotation_angle);
-//                     }
-                    
-//                     // 🎯 Compare frame-to-frame transformations: VO vs IMU prediction
-//                     if (m_previous_frame) {
-//                         // 1. VO-based frame-to-frame transform (optimized result)
-//                         Eigen::Matrix4f T_vo_prev = m_previous_frame->get_Twb();
-//                         Eigen::Matrix4f T_vo_curr = m_current_frame->get_Twb();
-//                         Eigen::Matrix4f delta_T_vo = T_vo_prev.inverse() * T_vo_curr;
-                        
-//                         // 2. IMU-based frame-to-frame transform (predicted)
-//                         Eigen::Matrix4f delta_T_imu = T_vo_prev.inverse() * m_predicted_pose;
-                        
-//                         // 3. Extract relative translations and rotations
-//                         Eigen::Vector3f delta_t_vo = delta_T_vo.block<3,1>(0,3);
-//                         Eigen::Vector3f delta_t_imu = delta_T_imu.block<3,1>(0,3);
-                        
-//                         Eigen::Matrix3f delta_R_vo = delta_T_vo.block<3,3>(0,0);
-//                         Eigen::Matrix3f delta_R_imu = delta_T_imu.block<3,3>(0,0);
-                        
-//                         // Compute translation differences
-//                         Eigen::Vector3f translation_diff_vo_imu = delta_t_vo - delta_t_imu;
-                        
-//                         // Compute rotation differences (angle between rotations)
-//                         Eigen::Matrix3f R_diff = delta_R_vo.transpose() * delta_R_imu;
-//                         float angle_diff = std::acos(std::min(1.0f, std::max(-1.0f, (R_diff.trace() - 1.0f) / 2.0f)));
-//                         float angle_diff_deg = angle_diff * 180.0f / M_PI;
-//                     }
-                    
-//                     // Update transform from last frame for velocity estimation
-//                     update_transform_from_last();
-                    
-//                     spdlog::info("[POSE_OPT] ✅ Optimization successful: {} inliers, {} outliers", opt_result.num_inliers, opt_result.num_outliers);
-//                 } else {
-//                     spdlog::warn("[POSE_OPT] ❌ Optimization failed - keeping previous pose");
-//                 }
-//             } else {
-//                 spdlog::warn("[POSE_OPT] ⚠️ Not enough map point associations for optimization: {} (need ≥5)", num_tracked_with_map_points);
-//                 // Fallback: use current pose as-is
-//                 m_current_pose = m_current_frame->get_Twb();
-                
-//                 // Update transform from last frame for velocity estimation
-//                 update_transform_from_last();
-                
-//                 result.success = true;
-//                 result.num_inliers = num_tracked_with_map_points;
-//                 result.num_outliers = 0;
-//             } 
-//         } else {
-//             // No tracking, keep previous pose (already set in create_frame)
-//             m_current_pose = m_current_frame->get_Twb();
-            
-//             // Update transform from last frame for velocity estimation (even if tracking failed)
-//             update_transform_from_last();
-            
-//             result.success = false;
-//         }
-
-//         // NOTE: FeatureTracker already handles map point association during tracking
-//         // No need to call associate_tracked_features_with_map_points() again
-        
-        
-//         // Decide whether to create keyframe
-//         auto keyframe_decision_start = std::chrono::high_resolution_clock::now();
-//         bool is_keyframe = should_create_keyframe(m_current_frame);
-//         auto keyframe_decision_end = std::chrono::high_resolution_clock::now();
-//         auto keyframe_decision_time = std::chrono::duration_cast<std::chrono::microseconds>(keyframe_decision_end - keyframe_decision_start).count() / 1000.0;
-        
-//         // Only create new map points for keyframes to avoid trajectory drift
-//         if (is_keyframe) {
-//             auto map_points_start = std::chrono::high_resolution_clock::now();
-//             int new_map_points = create_new_map_points(m_current_frame);
-//             auto map_points_end = std::chrono::high_resolution_clock::now();
-//             auto map_points_time = std::chrono::duration_cast<std::chrono::microseconds>(map_points_end - map_points_start).count() / 1000.0;
-            
-//             result.num_new_map_points = new_map_points;
-//             // spdlog::info("[MAP_POINTS] Created {} new map points by new keyframe insertion", new_map_points);
-            
-//             auto keyframe_creation_start = std::chrono::high_resolution_clock::now();
-//             create_keyframe(m_current_frame);
-//             auto keyframe_creation_end = std::chrono::high_resolution_clock::now();
-//             auto keyframe_creation_time = std::chrono::duration_cast<std::chrono::microseconds>(keyframe_creation_end - keyframe_creation_start).count() / 1000.0;
-            
-//             m_frames_since_last_keyframe = 0;  // Reset to 0 after creating keyframe
-            
-//         } else {
-//             result.num_new_map_points = 0;
-//         }
-        
-//         // Count tracked features and features with map points
-//         result.num_tracked_features = m_current_frame->get_feature_count();
-//         result.num_features_with_map_points = count_features_with_map_points(m_current_frame);
-        
-//         // Compute reprojection error statistics for keyframes
-//         if (is_keyframe && count_features_with_map_points(m_current_frame) > 5) {
-//             compute_reprojection_error_statistics(m_current_frame);
-//         }
-        
-      
-//     } else {
-//         // First frame - extract features using FeatureTracker
-//         m_feature_tracker->track_features(m_current_frame, nullptr);
-        
-//         result.num_features = m_current_frame->get_feature_count();
-        
-//         // Compute stereo depth for all features
-//         auto stereo_start = std::chrono::high_resolution_clock::now();
-//         m_current_frame->compute_stereo_depth();
-//         auto stereo_end = std::chrono::high_resolution_clock::now();
-//         auto stereo_time = std::chrono::duration_cast<std::chrono::microseconds>(stereo_end - stereo_start).count() / 1000.0;
-        
-//         // First frame - keep identity pose (already set in create_frame)
-//         m_current_pose = m_current_frame->get_Twb();
-        
-//         // Increment frame counter (first frame processing)
-//         m_frames_since_last_keyframe++;
-        
-//         // Create initial map points (first frame is always considered keyframe)
-//         auto initial_map_points_start = std::chrono::high_resolution_clock::now();
-//         int initial_map_points = create_initial_map_points(m_current_frame);
-//         auto initial_map_points_end = std::chrono::high_resolution_clock::now();
-//         auto initial_map_points_time = std::chrono::duration_cast<std::chrono::microseconds>(initial_map_points_end - initial_map_points_start).count() / 1000.0;
-        
-//         result.num_new_map_points = initial_map_points;
-//         spdlog::info("[MAP_POINTS] Created {} initial map points", initial_map_points);
-        
-//         auto first_keyframe_start = std::chrono::high_resolution_clock::now();
-//         create_keyframe(m_current_frame);
-//         auto first_keyframe_end = std::chrono::high_resolution_clock::now();
-//         auto first_keyframe_time = std::chrono::duration_cast<std::chrono::microseconds>(first_keyframe_end - first_keyframe_start).count() / 1000.0;
-        
-//         m_frames_since_last_keyframe = 0;  // Reset after creating first keyframe
-        
-//         spdlog::info("[TIMING] First frame initialization: stereo={:.2f}ms, initial_map_points={:.2f}ms, keyframe={:.2f}ms", 
-//                     stereo_time, initial_map_points_time, first_keyframe_time);
-        
-//         // Count features for first frame
-//         result.num_tracked_features = m_current_frame->get_feature_count();
-//         result.num_features_with_map_points = count_features_with_map_points(m_current_frame);
-        
-//         result.success = true;
-//     }
-    
-//     // Update result
-//     result.pose = m_current_frame->get_Twb();
-    
-//     // Add processed frame to all frames vector for trajectory export
-//     m_all_frames.push_back(m_current_frame);
-    
-//     // Total frames processed (reduced logging)
-//     if (m_all_frames.size() % 10 == 0 || m_all_frames.size() <= 5) {
-//         spdlog::info("[ESTIMATOR] Processed {} frames", m_all_frames.size());
-//     }
-    
-//     auto end_time = std::chrono::high_resolution_clock::now();
-//     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - total_start_time);
-//     result.optimization_time_ms = duration.count() / 1000.0;
-    
-//     // Set reference keyframe for non-keyframe frames (after pose optimization)
-//     if (!m_current_frame->is_keyframe() && m_last_keyframe) {
-//         m_current_frame->set_reference_keyframe(m_last_keyframe);
-//     }
-    
-//     // Update state
-//     m_previous_frame = m_current_frame;
-    
-//     // ===== IMU-SPECIFIC PROCESSING CONTINUED =====
-//     // Increment frame counter for gravity estimation
-//     m_frame_count_since_start++;
-    
-//     // Log bias values after IMU optimization is enabled
-//     if (m_enable_imu_optimization && m_imu_handler) {
-//         // Get current bias from IMU handler
-//         Eigen::Vector3f accel_bias = m_imu_handler->get_accel_bias();
-//         Eigen::Vector3f gyro_bias = m_imu_handler->get_gyro_bias();
-
-//         spdlog::info("Frame {}: Accel bias: [{:.10f}, {:.10f}, {:.10f}], Gyro bias: [{:.10f}, {:.10f}, {:.10f}]",
-//                      m_frame_count_since_start,
-//                      accel_bias[0], accel_bias[1], accel_bias[2],
-//                      gyro_bias[0], gyro_bias[1], gyro_bias[2]);
-//     }
-
-//     // 🎯 Attempt gravity estimation if conditions are met (already in VIO mode since IMU data is available)
-//     const auto& config = Config::getInstance();
-//     if (!m_success_imu_init && m_keyframes.size() >= 5) {  // Unified condition: keyframes >= 5
-
-//         spdlog::info("[GRAVITY_EST] Attempting gravity estimation with {} keyframes", m_keyframes.size());
-//         m_success_imu_init = try_initialize_imu();
-
-//         if (m_success_imu_init) {
-//             m_gravity_initialized = true;
-//             m_enable_imu_optimization = true;  // Enable bias logging
-//             spdlog::info("✅ [IMU_INIT] IMU initialization successful!");
-            
-//             // Enable IMU optimization in sliding window optimizer
-//             Eigen::Vector3f gravity_vector = m_imu_handler->get_gravity();
-//             std::shared_ptr<IMUHandler> shared_imu_handler = std::shared_ptr<IMUHandler>(m_imu_handler.get(), [](IMUHandler*){});
-//             m_sliding_window_optimizer->enable_imu_optimization(shared_imu_handler, gravity_vector.cast<double>());
-//             spdlog::info("🚀 [SW_IMU] Enabled IMU optimization in sliding window with gravity: ({:.3f}, {:.3f}, {:.3f})",
-//                          gravity_vector.x(), gravity_vector.y(), gravity_vector.z());
-           
-//         } else {
-//             spdlog::warn("❌ [IMU_INIT] IMU initialization failed, will retry later");
-//         }
-
-//     }
-    
-//     return result;
-// }
 
 
 
@@ -1766,18 +1518,27 @@ bool lightweight_vio::Estimator::initialize_imu() {
     // 4. Update preintegrations with new bias
     update_preintegrations_with_new_bias(imu_init_result);
     
-    // 5. Visualize gravity direction (BEFORE transformation)
+    // 5. 🎯 Apply IMU-based scale correction (MONOCULAR ONLY)
+    const auto& config = Config::getInstance();
+    if (config.get_camera_type() == CameraType::MONOCULAR) {
+        spdlog::info("[INIT_IMU] 📏 Monocular mode detected - applying IMU-based scale correction");
+        apply_imu_based_scale_correction();
+    } else {
+        spdlog::info("[INIT_IMU] Stereo/RGBD mode - scale correction not needed (already metric)");
+    }
+    
+    // 6. Visualize gravity direction (BEFORE transformation)
     visualize_gravity_direction(imu_init_result);
     
-    // 6. Apply Tgw transformation to all frames and map points
+    // 7. Apply Tgw transformation to all frames and map points
     apply_gravity_alignment_transform(imu_init_result.Tgw_init);
 
     // imu_init_result.Tgw_init = Eigen::Matrix4f::Identity();  // Reset to identity after application
     
-    // 7. Update gravity visualization to use gravity-aligned frame coordinates
+    // 8. Update gravity visualization to use gravity-aligned frame coordinates
     update_gravity_visualization_after_transform();
     
-    // 8. Enable IMU optimization in sliding window
+    // 9. Enable IMU optimization in sliding window
     std::shared_ptr<IMUHandler> shared_imu_handler = std::shared_ptr<IMUHandler>(
         m_imu_handler.get(), 
         [](IMUHandler*){}  // Non-owning shared_ptr
@@ -2934,6 +2695,10 @@ InertialOptimizationResult lightweight_vio::Estimator::try_initialize_imu() {
     double final_cost = 0.0;
     
     // First estimate gravity, then debug velocity comparison
+
+    spdlog::info("[GRAVITY_EST] Starting gravity estimation with {} keyframes and {} IMU measurements", 
+                 keyframe_ptrs.size(), all_imu_data.size());
+
     bool gravity_success = m_imu_handler->estimate_gravity_with_stereo_constraints(
         keyframe_ptrs, all_imu_data, 9.81f, &initial_cost, &final_cost);
     
@@ -3010,6 +2775,14 @@ InertialOptimizationResult lightweight_vio::Estimator::try_initialize_imu() {
 
             debug_keyframe_to_keyframe_comparison();
             
+            // 🎯 Apply scale correction for monocular camera ONLY
+            if (Config::getInstance().m_camera_type == CameraType::MONOCULAR) {
+                spdlog::info("[IMU_INIT] 📏 Monocular camera detected - applying IMU-based scale correction");
+                apply_imu_based_scale_correction();
+            } else {
+                spdlog::info("[IMU_INIT] ℹ️  Stereo/RGBD camera - skipping scale correction (metric scale already available)");
+            }
+            
             return imu_init_result;  // ✅ Return result struct
         } else {
             spdlog::warn("❌ [IMU_INIT] IMU initialization optimization failed");
@@ -3067,6 +2840,117 @@ void lightweight_vio::Estimator::update_preintegrations_with_new_bias(const Iner
     );
     
     spdlog::info("[ESTIMATOR] ✅ Updated preintegrations with optimized bias");
+}
+
+void lightweight_vio::Estimator::apply_imu_based_scale_correction() {
+    spdlog::info("================================================================================");
+    spdlog::info("[SCALE_CORRECTION] 📏 Starting IMU-Based Scale Correction (Monocular Only)");
+    spdlog::info("  Total keyframes: {}", m_keyframes.size());
+    spdlog::info("================================================================================");
+    
+    if (m_keyframes.size() < 2) {
+        spdlog::warn("[SCALE_CORRECTION] ⚠️  Need at least 2 keyframes, skipping");
+        return;
+    }
+    
+    // VINS-Mono style: Solve for scale using least squares over all keyframe pairs
+    // For each pair: s * (p_j - p_i)_VO = R_i * delta_P_IMU
+    
+    int num_pairs = m_keyframes.size() - 1;
+    Eigen::MatrixXd A(num_pairs * 3, 1);  // Each pair gives 3 equations
+    Eigen::VectorXd b(num_pairs * 3);
+    A.setZero();
+    b.setZero();
+    
+    int valid_pairs = 0;
+    for (size_t i = 1; i < m_keyframes.size(); ++i) {
+        auto kf_prev = m_keyframes[i-1];
+        auto kf_curr = m_keyframes[i];
+        
+        // Get VO translation (scale-ambiguous)
+        Eigen::Vector3f t_vo = kf_curr->get_Twb().block<3,1>(0,3) - kf_prev->get_Twb().block<3,1>(0,3);
+        
+        // Get IMU preintegration (metric scale)
+        auto preint = kf_curr->get_imu_preintegration_from_last_keyframe();
+        if (!preint) {
+            spdlog::warn("[SCALE_CORRECTION] ⚠️  KF pair [{}-{}]: No preintegration, skipping", i-1, i);
+            continue;
+        }
+        
+        // IMU translation in world frame: R_i * delta_P
+        Eigen::Matrix3f R_wb_prev = kf_prev->get_Twb().block<3,3>(0,0);
+        Eigen::Vector3f delta_p_world = R_wb_prev * preint->delta_P;
+        
+        // Setup equation: A * s = b
+        // where A_row = t_vo, b_row = delta_p_world
+        int row = valid_pairs * 3;
+        A.block<3,1>(row, 0) = t_vo.cast<double>();
+        b.segment<3>(row) = delta_p_world.cast<double>();
+        
+        valid_pairs++;
+    }
+    
+    if (scales.empty()) {
+        spdlog::error("[SCALE_CORRECTION] ❌ No valid scale measurements computed");
+        return;
+    }
+    
+    // Use median scale for robustness
+    std::sort(scales.begin(), scales.end());
+    double median_scale = scales[scales.size() / 2];
+    double min_scale = scales.front();
+    double max_scale = scales.back();
+    
+    spdlog::info("--------------------------------------------------------------------------------");
+    spdlog::info("[SCALE_CORRECTION] � Scale Statistics:");
+    spdlog::info("  Measurements: {}", scales.size());
+    spdlog::info("  Min:    {:.6f}x", min_scale);
+    spdlog::info("  Median: {:.6f}x ← USED", median_scale);
+    spdlog::info("  Max:    {:.6f}x", max_scale);
+    spdlog::info("--------------------------------------------------------------------------------");
+    
+    // Apply scale to all keyframe positions
+    int num_kf_updated = 0;
+    for (auto& kf : m_keyframes) {
+        Eigen::Matrix4f Twb = kf->get_Twb();
+        Eigen::Vector3f pos_before = Twb.block<3,1>(0,3);
+        Twb.block<3,1>(0,3) *= median_scale;
+        Eigen::Vector3f pos_after = Twb.block<3,1>(0,3);
+        kf->set_Twb(Twb);
+        num_kf_updated++;
+        
+        if (num_kf_updated <= 3) {  // Log first 3 keyframes
+            spdlog::info("[SCALE_CORRECTION]   KF[{}] pos: [{:.6f}, {:.6f}, {:.6f}] → [{:.6f}, {:.6f}, {:.6f}]",
+                         kf->get_frame_id(),
+                         pos_before.x(), pos_before.y(), pos_before.z(),
+                         pos_after.x(), pos_after.y(), pos_after.z());
+        }
+    }
+    
+    // Apply scale to all keyframe velocities
+    for (auto& kf : m_keyframes) {
+        Eigen::Vector3f vel = kf->get_velocity();
+        vel *= median_scale;
+        kf->set_velocity(vel);
+    }
+    
+    // Apply scale to all map points
+    int num_mp_updated = 0;
+    for (auto& mp : m_map_points) {
+        if (mp && !mp->is_bad()) {
+            Eigen::Vector3f pos = mp->get_position();
+            pos *= median_scale;
+            mp->set_position(pos);
+            num_mp_updated++;
+        }
+    }
+    
+    spdlog::info("[SCALE_CORRECTION] ✅ Applied scale correction:");
+    spdlog::info("  Keyframes:  {} positions updated", num_kf_updated);
+    spdlog::info("  Velocities: {} updated", m_keyframes.size());
+    spdlog::info("  Map points: {} updated", num_mp_updated);
+    spdlog::info("  Scale factor: {:.6f}x", median_scale);
+    spdlog::info("================================================================================\n");
 }
 
 void lightweight_vio::Estimator::visualize_gravity_direction(const InertialOptimizationResult& result) {
