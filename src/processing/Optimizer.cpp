@@ -622,16 +622,22 @@ namespace lightweight_vio
         // 2) projected pixel from current pose
         // 3) residual = measured - projected
 
-        // Eigen::Matrix4d Twb_current = se3_tangent_to_matrix(Eigen::Map<const Eigen::Vector6d>(pose_params)).cast<double>();
-        // Eigen::Matrix4d Tcw_current = T_cb.cast<double>() * Twb_current.inverse();
-        // Eigen::Vector3d point_cam = Tcw_current.block<3,3>(0,0) * world_point.cast<double>() + Tcw_current.block<3,1>(0,3);
-        // Eigen::Vector2d projected_pixel;
-        // double fx = camera_params.fx;
-        // double fy = camera_params.fy;
-        // double cx = camera_params.cx;
-        // double cy = camera_params.cy;
-        // projected_pixel.x() = (fx * point_cam.x() / point_cam.z()) + cx;
-        // projected_pixel.y() = (fy * point_cam.y() / point_cam.z()) + cy;
+        Eigen::Matrix4d Twb_current = se3_tangent_to_matrix(Eigen::Map<const Eigen::Vector6d>(pose_params)).cast<double>();
+        Eigen::Matrix4d Tcw_current = T_cb.cast<double>() * Twb_current.inverse();
+        Eigen::Vector3d point_cam = Tcw_current.block<3,3>(0,0) * world_point.cast<double>() + Tcw_current.block<3,1>(0,3);
+        Eigen::Vector2d projected_pixel;
+        double fx = camera_params.fx;
+        double fy = camera_params.fy;
+        double cx = camera_params.cx;
+        double cy = camera_params.cy;
+        projected_pixel.x() = (fx * point_cam.x() / point_cam.z()) + cx;
+        projected_pixel.y() = (fy * point_cam.y() / point_cam.z()) + cy;
+
+        // 소수점 2자리까지 출력
+        spdlog::info("Check projected, observed, residual in a line: {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}", 
+                     projected_pixel.x(), projected_pixel.y(),
+                     observation.x(), observation.y(),
+                     (observation - projected_pixel).x(), (observation - projected_pixel).y());
 
 
         // std::cout<<"Twb_current:\n"<<Twb_current<<std::endl;
@@ -1197,7 +1203,7 @@ void SlidingWindowOptimizer::apply_marginalization_strategy(
         bool fixed_by_eigenvalue = false;
 
         // Fix map points with too few observations
-        if (obs_count < 3)
+        if (obs_count < 2)
         {
             should_fix = true;
         }

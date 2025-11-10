@@ -173,6 +173,7 @@ bool MonocularInitializer::add_frame(std::shared_ptr<Frame> frame, bool* init_at
             return true;
         } else {
             // Initialization failed - Estimator will reset reference frame
+            m_reference_frame = frame;
             spdlog::warn("[MONO_INIT] ❌ Two-view initialization failed (parallax sufficient but inliers insufficient)");
             return false;
         }
@@ -336,9 +337,20 @@ bool MonocularInitializer::initialize_two_views(
             continue;
         }
         
-        // Use undistorted coordinates for two-view geometry
-        pts1.push_back(feat1->get_undistorted_coord());
-        pts2.push_back(feat2->get_undistorted_coord());
+        // VINS-Mono style: Use normalized coordinates for two-view geometry
+        // Convert undistorted pixel coords to normalized coords
+        cv::Point2f undist1 = feat1->get_undistorted_coord();
+        cv::Point2f undist2 = feat2->get_undistorted_coord();
+        
+        double fx = frame1->get_fx(), fy = frame1->get_fy();
+        double cx = frame1->get_cx(), cy = frame1->get_cy();
+        
+        // Pixel -> Normalized: (x_n, y_n) = ((u - cx) / fx, (v - cy) / fy)
+        cv::Point2f norm1((undist1.x - cx) / fx, (undist1.y - cy) / fy);
+        cv::Point2f norm2((undist2.x - cx) / fx, (undist2.y - cy) / fy);
+        
+        pts1.push_back(norm1);
+        pts2.push_back(norm2);
         feature_indices.push_back(i);
     }
     
@@ -349,178 +361,49 @@ bool MonocularInitializer::initialize_two_views(
     
     spdlog::info("[MonocularInitializer] Found {} matched features for two-view geometry", pts1.size());
     
-    // Get camera intrinsics
+    // VINS-Mono style: Fundamental matrix in normalized space + recoverPose
+    // In normalized coordinates, K = Identity
     cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
-    K.at<double>(0, 0) = frame1->get_fx();
-    K.at<double>(1, 1) = frame1->get_fy();
-    K.at<double>(0, 2) = frame1->get_cx();
-    K.at<double>(1, 2) = frame1->get_cy();
     
-    // Compute Essential matrix using RANSAC
-
-    spdlog::debug("[MonocularInitializer] Estimating Essential matrix with RANSAC: threshold={}, confidence={}",
-                 m_ransac_threshold, m_ransac_confidence);
+    // Compute Fundamental matrix using RANSAC in normalized coordinates
+    // VINS-Mono uses threshold in normalized space (not pixels)
+    double focal_length = (frame1->get_fx() + frame1->get_fy()) / 2.0;
+    double ransac_threshold_normalized = 1.0 / focal_length;
+    
+    spdlog::debug("[MonocularInitializer] Estimating Fundamental matrix with RANSAC: threshold={:.6f} (normalized), {:.2f} (pixels), focal={:.1f}, confidence={}",
+                 ransac_threshold_normalized, m_ransac_threshold, focal_length, m_ransac_confidence);
     cv::Mat mask;
-    cv::Mat E = cv::findEssentialMat(
-        pts1, pts2, K,
-        cv::RANSAC,
+    cv::Mat F = cv::findFundamentalMat(
+        pts1, pts2,
+        cv::FM_RANSAC,
+        ransac_threshold_normalized,  // Normalized threshold
         m_ransac_confidence,
-        m_ransac_threshold,
         mask
     );
     
-    if (E.empty()) {
-        spdlog::error("[MonocularInitializer] Essential matrix estimation failed");
+    if (F.empty()) {
+        spdlog::error("[MonocularInitializer] Fundamental matrix estimation failed");
         return false;
     }
 
-    // I want to check num of inliers here
     int inlier_count = cv::countNonZero(mask);
-    spdlog::info("[MonocularInitializer] Essential matrix inliers: {}/{}", inlier_count, pts1.size());
+    spdlog::info("[MonocularInitializer] Fundamental matrix inliers: {}/{}", inlier_count, pts1.size());
     if (inlier_count < 50) {
-        spdlog::error("[MonocularInitializer] Too few inliers for Essential matrix: {}", inlier_count);
+        spdlog::error("[MonocularInitializer] Too few inliers for Fundamental matrix: {}", inlier_count);
         return false;
     }
     
-    // Manually recover pose from Essential matrix
-    // R_cv, t_cv: Rotation and translation from camera1 to camera2
-    // X_cam2 = R * X_cam1 + t
-    // Note: t is a UNIT VECTOR (normalized), so scale is ambiguous
-    
-    // SVD decomposition of Essential matrix: E = U * Diag(1,1,0) * Vt
-    cv::Mat U, S, Vt;
-    cv::SVD::compute(E, S, U, Vt);
-    
-    // Check determinants (should be +1)
-    if (cv::determinant(U) < 0) U *= -1;
-    if (cv::determinant(Vt) < 0) Vt *= -1;
-    
-    // W matrix for rotation extraction
-    cv::Mat W = (cv::Mat_<double>(3,3) << 0, -1, 0,
-                                           1,  0, 0,
-                                           0,  0, 1);
-    
-    // Two possible rotations: R1 = U*W*Vt, R2 = U*W'*Vt
-    cv::Mat R1 = U * W * Vt;
-    cv::Mat R2 = U * W.t() * Vt;
-    
-    // Translation (up to scale): t = u3 (third column of U)
-    cv::Mat t = U.col(2);
-    
-    // Four possible solutions: (R1,t), (R1,-t), (R2,t), (R2,-t)
-    std::vector<cv::Mat> R_solutions = {R1, R1, R2, R2};
-    std::vector<cv::Mat> t_solutions = {t, -t, t, -t};
-    
-    int best_num_inliers = 0;
-    int best_solution_idx = -1;
+    // Recover pose using cv::recoverPose (VINS-Mono style)
     cv::Mat R_cv, t_cv;
+    int num_inliers = cv::recoverPose(F, pts1, pts2, K, R_cv, t_cv, mask);
     
-    spdlog::debug("[MonocularInitializer] Testing 4 pose solutions...");
-    
-    for (int sol = 0; sol < 4; ++sol) {
-        cv::Mat R_test = R_solutions[sol];
-        cv::Mat t_test = t_solutions[sol];
-        
-        // Check how many points are in front of both cameras
-        int num_good = 0;
-        
-        // Projection matrices: P1 = K*[I|0], P2 = K*[R|t]
-        cv::Mat P1 = K * (cv::Mat_<double>(3,4) << 1,0,0,0, 0,1,0,0, 0,0,1,0);
-        cv::Mat P2_temp = (cv::Mat_<double>(3,4) << 
-            R_test.at<double>(0,0), R_test.at<double>(0,1), R_test.at<double>(0,2), t_test.at<double>(0),
-            R_test.at<double>(1,0), R_test.at<double>(1,1), R_test.at<double>(1,2), t_test.at<double>(1),
-            R_test.at<double>(2,0), R_test.at<double>(2,1), R_test.at<double>(2,2), t_test.at<double>(2));
-        cv::Mat P2 = K * P2_temp;
-        
-        for (size_t i = 0; i < mask.rows; ++i) {
-            if (!mask.at<uchar>(i)) continue;  // Only check RANSAC inliers
-            
-            // Triangulate point
-            cv::Mat pt1_h = (cv::Mat_<double>(3,1) << pts1[i].x, pts1[i].y, 1.0);
-            cv::Mat pt2_h = (cv::Mat_<double>(3,1) << pts2[i].x, pts2[i].y, 1.0);
-            
-            // Build linear system: A * X = 0
-            cv::Mat A(4, 4, CV_64F);
-            A.row(0) = pt1_h.at<double>(0) * P1.row(2) - P1.row(0);
-            A.row(1) = pt1_h.at<double>(1) * P1.row(2) - P1.row(1);
-            A.row(2) = pt2_h.at<double>(0) * P2.row(2) - P2.row(0);
-            A.row(3) = pt2_h.at<double>(1) * P2.row(2) - P2.row(1);
-            
-            cv::Mat u, w, vt;
-            cv::SVD::compute(A, w, u, vt);
-            cv::Mat X = vt.row(3).t();
-            X /= X.at<double>(3);  // Normalize homogeneous coordinate
-            
-            // Check depth in camera 1
-            double z1 = X.at<double>(2);
-            
-            // Check depth in camera 2: z2 = R.row(2) * X + t(2)
-            cv::Mat X_cam2 = R_test * X.rowRange(0,3) + t_test;
-            double z2 = X_cam2.at<double>(2);
-            
-            // Both depths should be positive
-            if (z1 > 0 && z2 > 0) {
-                num_good++;
-            }
-        }
-        
-        if (num_good > best_num_inliers) {
-            best_num_inliers = num_good;
-            best_solution_idx = sol;
-            R_cv = R_test.clone();
-            t_cv = t_test.clone();
-        }
-    }
-    
-    // Update mask with best solution - mark points that pass cheirality check
-    cv::Mat R_best = R_solutions[best_solution_idx];
-    cv::Mat t_best = t_solutions[best_solution_idx];
-    cv::Mat P1 = K * (cv::Mat_<double>(3,4) << 1,0,0,0, 0,1,0,0, 0,0,1,0);
-    cv::Mat P2_temp = (cv::Mat_<double>(3,4) << 
-        R_best.at<double>(0,0), R_best.at<double>(0,1), R_best.at<double>(0,2), t_best.at<double>(0),
-        R_best.at<double>(1,0), R_best.at<double>(1,1), R_best.at<double>(1,2), t_best.at<double>(1),
-        R_best.at<double>(2,0), R_best.at<double>(2,1), R_best.at<double>(2,2), t_best.at<double>(2));
-    cv::Mat P2 = K * P2_temp;
-
-
-
-    
-    for (size_t i = 0; i < mask.rows; ++i) {
-        if (!mask.at<uchar>(i)) continue;
-        
-        // Triangulate point
-        cv::Mat pt1_h = (cv::Mat_<double>(3,1) << pts1[i].x, pts1[i].y, 1.0);
-        cv::Mat pt2_h = (cv::Mat_<double>(3,1) << pts2[i].x, pts2[i].y, 1.0);
-        
-        cv::Mat A(4, 4, CV_64F);
-        A.row(0) = pt1_h.at<double>(0) * P1.row(2) - P1.row(0);
-        A.row(1) = pt1_h.at<double>(1) * P1.row(2) - P1.row(1);
-        A.row(2) = pt2_h.at<double>(0) * P2.row(2) - P2.row(0);
-        A.row(3) = pt2_h.at<double>(1) * P2.row(2) - P2.row(1);
-        
-        cv::Mat u, w, vt;
-        cv::SVD::compute(A, w, u, vt);
-        cv::Mat X = vt.row(3).t();
-        X /= X.at<double>(3);
-        
-        double z1 = X.at<double>(2);
-        cv::Mat X_cam2 = R_best * X.rowRange(0,3) + t_best;
-        double z2 = X_cam2.at<double>(2);
-        
-        // Update mask: only keep points in front of both cameras
-        if (z1 <= 0 || z2 <= 0) {
-            mask.at<uchar>(i) = 0;
-        }
-    }
-    
-    int num_inliers = best_num_inliers;
+    spdlog::info("[MonocularInitializer] Pose recovery: {}/{} inliers passed cheirality check", 
+                 num_inliers, inlier_count);
     
     if (num_inliers < 50) {
         spdlog::error("[MonocularInitializer] Too few inliers after pose recovery: {}", num_inliers);
         return false;
     }
-    
-    spdlog::info("[MonocularInitializer] Pose recovery: {}/{} inliers (best solution)", num_inliers, inlier_count);
     
     // Convert to Eigen
     R_21 << R_cv.at<double>(0,0), R_cv.at<double>(0,1), R_cv.at<double>(0,2),

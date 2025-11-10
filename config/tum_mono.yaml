@@ -92,11 +92,11 @@ optimization:
   use_robust_kernel: true              # Enable robust kernel for outlier handling
   
   # Outlier detection (mainly for PnP)
-  enable_outlier_detection: true       # Enable outlier detection
+  enable_outlier_detection: 1       # Enable outlier detection
   outlier_detection_rounds: 4          # Number of optimization rounds with outlier detection
 
 # MapPoint Uncertainty Parameters (not used in basic monocular VO)
 uncertainty:
-  enable: 0                  # Disable uncertainty propagation for MapPoints
+  enable: 0                 # Disable uncertainty propagation for MapPoints
   max_eigenvalue: 1e-1       # Maximum covariance matrix eigenvalue
   min_eigenvalue: 1e-5       # Minimum covariance matrix eigenvalue

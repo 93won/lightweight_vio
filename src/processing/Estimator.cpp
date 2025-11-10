@@ -392,6 +392,8 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
             result.num_features = m_current_frame->get_feature_count();
             result.num_inliers = init_result.initialized_mappoints.size();
 
+            update_transform_from_last();
+
 
             
 
@@ -521,6 +523,9 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
     if (m_previous_frame && !m_previous_frame->is_keyframe()) {
         m_previous_frame->release_images();
     }
+
+    update_transform_from_last();
+
     m_previous_frame = m_current_frame;
 
     return result;
@@ -1940,14 +1945,62 @@ bool lightweight_vio::Estimator::should_create_keyframe_monocular(std::shared_pt
         return true;
     }
 
-    // Grid-based keyframe creation policy
-    // Create keyframe when grid coverage drops to configured ratio of last keyframe's coverage
-    double current_grid_coverage = calculate_grid_coverage_with_map_points(frame);
 
-    spdlog::error("Current grid coverage: {:.2f}", current_grid_coverage);
+    // Check average parallax since last keyframe
 
-    if(current_grid_coverage < 0.2)
+    std::vector<double> parallaxes;
+
+    if(m_last_keyframe)
+    {
+        auto features = frame->get_features();
+
+        for(auto& feature : features)
+        {
+            auto observations = feature->get_observations();
+
+            for(auto& obs : observations)
+            {
+                if(obs.frame == m_last_keyframe)
+                {
+                    auto feature_last_kf = obs.frame->get_feature(obs.feature_index);
+
+                    auto pt_curr = feature->get_undistorted_coord();
+                    auto pt_last = feature_last_kf->get_undistorted_coord();
+
+                    double parallax = cv::norm(pt_curr - pt_last);
+
+                    parallaxes.push_back(parallax);
+
+
+
+                }
+            }
+        }
+    }
+
+    double avg_parallax = 0.0;
+    if(!parallaxes.empty())
+    {
+        double sum_parallax = 0.0;
+        for(auto& p : parallaxes)
+            sum_parallax += p;
+
+        avg_parallax = sum_parallax / parallaxes.size();
+    }
+
+    if(avg_parallax > 10.0) // Threshold in pixels
+    {
         return true;
+    }
+
+    // // Grid-based keyframe creation policy
+    // // Create keyframe when grid coverage drops to configured ratio of last keyframe's coverage
+    // double current_grid_coverage = calculate_grid_coverage_with_map_points(frame);
+
+    // spdlog::error("Current grid coverage: {:.2f}", current_grid_coverage);
+
+    // if(current_grid_coverage < 0.2)
+    //     return true;
 
 
     return false;
@@ -2193,7 +2246,7 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
                 continue; // No need to triangulate
 
             // Multi-view triangulation using SVD
-            if (keyframe_observations.size() >= 3) {
+            if (keyframe_observations.size() >= 2) {
                 // Build SVD matrix A for multi-view triangulation
                 int num_observations = keyframe_observations.size();
                 Eigen::MatrixXf svd_A(2 * num_observations, 4);
@@ -2264,8 +2317,28 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
                         if (valid_depth) {
                             // Create MapPoint
                             auto new_mp = std::make_shared<MapPoint>(P_world);
+
+                            // check depth validation for all observed active keyframes
+                            bool is_valid = true;
+                             // Add observations from all keyframes
+                            for (const auto& obs : observation) {
+                                if (obs.frame && obs.frame->is_keyframe()) {
+
+                                    // Check it is also valid depth here
+                                    Eigen::Matrix4f T_cw_obs = obs.frame->get_Twc().inverse();
+                                    Eigen::Vector4f P_camera_h = T_cw_obs * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
+                                    if (P_camera_h.z() <= 0.0f) {
+                                        is_valid = false; // Skip if behind camera
+
+                                        break;
+                                    }
+
+                                }
+                            }
                             
                             // Add observations from all keyframes
+
+                            if(is_valid){
                             for (const auto& obs : observation) {
                                 if (obs.frame && obs.frame->is_keyframe()) {
 
@@ -2280,16 +2353,23 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
 
                                     new_mp->add_observation(obs.frame, obs.feature_index);
                                     obs.frame->set_map_point(obs.feature_index, new_mp);
+
+
+                                    Eigen::Matrix4f T_cw_obs_curr = obs.frame->get_Twc().inverse();
+                                    Eigen::Vector4f P_camera_h_curr = T_cw_obs_curr * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f
+);
+                                    obs.frame->get_feature(obs.feature_index)->set_3d_point(P_camera_h_curr.head<3>());
                                 }
                             }
+                        }
                             
-                            // Set for current frame
-                            frame->set_map_point(curr_idx, new_mp);
+                            // // Set for current frame
+                            // frame->set_map_point(curr_idx, new_mp);
                             
-                            // Transform to current camera frame for feature
-                            Eigen::Matrix4f T_cw_curr = frame->get_Twc().inverse();
-                            Eigen::Vector4f P_camera_h = T_cw_curr * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
-                            feature->set_3d_point(P_camera_h.head<3>());
+                            // // Transform to current camera frame for feature
+                            // Eigen::Matrix4f T_cw_curr = frame->get_Twc().inverse();
+                            // Eigen::Vector4f P_camera_h = T_cw_curr * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
+                            // feature->set_3d_point(P_camera_h.head<3>());
                             
                             // Add to global map points
                             {

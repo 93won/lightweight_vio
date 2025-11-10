@@ -355,7 +355,8 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
             new_feature->set_3d_point(mp_in_camera.head<3>());
             
             // Map point creation is now handled only by Estimator during keyframe creation
-        } 
+        }
+        
     }
     auto feature_creation_end = std::chrono::high_resolution_clock::now();
     auto feature_creation_time = std::chrono::duration_cast<std::chrono::microseconds>(feature_creation_end - feature_creation_start).count() / 1000.0;
