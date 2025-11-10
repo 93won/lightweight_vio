@@ -419,8 +419,8 @@ bool IMUHandler::estimate_gravity_with_stereo_constraints(
     double* initial_cost,
     double* final_cost) {
     
-    if (frames.size() < 3) {
-        spdlog::warn("[IMU_HANDLER] Need at least 3 frames for gravity estimation");
+    if (frames.size() < 2) {
+        spdlog::warn("[IMU_HANDLER] Need at least 2 frames for gravity estimation");
         return false;
     }
     

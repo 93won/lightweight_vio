@@ -460,10 +460,9 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
             m_monocular_initialized = true;
 
 
-            // Try initialize gravity direction first
 
-            spdlog::info("[MONO_INIT] Trying IMU initialization after visual SFM...");
-            auto imu_init_result = try_initialize_imu();
+            initialize_imu();
+
 
             
             result.success = true;
@@ -568,6 +567,8 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         } else {
             result.num_new_map_points = 0;
         }
+
+
         
         // Count tracked features and features with map points
         result.num_tracked_features = m_current_frame->get_feature_count();
@@ -1485,6 +1486,8 @@ bool lightweight_vio::Estimator::initialize_imu() {
         return false;
     }
     
+    const auto& config = Config::getInstance();
+    
     spdlog::info("================================================================================");
     spdlog::info("[INIT_IMU] Starting IMU Initialization");
     spdlog::info("[INIT_IMU] Keyframes available: {}", m_keyframes.size());
@@ -1496,7 +1499,6 @@ bool lightweight_vio::Estimator::initialize_imu() {
     if (!imu_init_result.success) {
         spdlog::warn("================================================================================");
         spdlog::warn("[INIT_IMU] IMU Initialization FAILED");
-        spdlog::warn("[INIT_IMU] Will retry with more keyframes");
         spdlog::warn("================================================================================\n");
         return false;
     }
@@ -1519,7 +1521,6 @@ bool lightweight_vio::Estimator::initialize_imu() {
     update_preintegrations_with_new_bias(imu_init_result);
     
     // 5. 🎯 Apply IMU-based scale correction (MONOCULAR ONLY)
-    const auto& config = Config::getInstance();
     if (config.get_camera_type() == CameraType::MONOCULAR) {
         spdlog::info("[INIT_IMU] 📏 Monocular mode detected - applying IMU-based scale correction");
         apply_imu_based_scale_correction();
@@ -1558,6 +1559,22 @@ bool lightweight_vio::Estimator::initialize_imu() {
     spdlog::info("[INIT_IMU] IMU Initialization SUCCESSFUL!");
     spdlog::info("================================================================================\n");
     
+    return true;
+}
+
+bool lightweight_vio::Estimator::initialize_imu_monocular() {
+    spdlog::info("================================================================================");
+    spdlog::info("[INIT_IMU_MONO] Starting Monocular IMU Initialization");
+    spdlog::info("[INIT_IMU_MONO] Using first 2 keyframes for initialization");
+    spdlog::info("================================================================================");
+    
+    // Check if we have exactly 2 keyframes (from monocular initialization)
+    if (m_keyframes.size() < 2) {
+        spdlog::warn("[INIT_IMU_MONO] Need at least 2 keyframes, have {}", m_keyframes.size());
+        return false;
+    }
+
+    auto imu_init_result = try_initialize_imu();
     return true;
 }
 
@@ -2652,7 +2669,7 @@ InertialOptimizationResult lightweight_vio::Estimator::try_initialize_imu() {
     const auto& config = Config::getInstance();
     
     // Check if we have enough keyframes for gravity estimation
-    if (m_keyframes.size() < 5) {
+    if (m_keyframes.size() < 2) {
         spdlog::debug("[GRAVITY_EST] Not enough keyframes: {} < 5", m_keyframes.size());
         return result;
     }
@@ -2853,84 +2870,54 @@ void lightweight_vio::Estimator::apply_imu_based_scale_correction() {
         return;
     }
     
-    // VINS-Mono style: Solve for scale using least squares over all keyframe pairs
-    // For each pair: s * (p_j - p_i)_VO = R_i * delta_P_IMU
+    // Use first two keyframes (from two-view initialization)
+    auto kf_prev = m_keyframes[0];
+    auto kf_curr = m_keyframes[1];
     
-    int num_pairs = m_keyframes.size() - 1;
-    Eigen::MatrixXd A(num_pairs * 3, 1);  // Each pair gives 3 equations
-    Eigen::VectorXd b(num_pairs * 3);
-    A.setZero();
-    b.setZero();
+    // Get VO translation (scale-ambiguous)
+    Eigen::Matrix4f Twb_prev = kf_prev->get_Twb();
+    Eigen::Matrix4f Twb_curr = kf_curr->get_Twb();
+    Eigen::Matrix4f T_vo = Twb_prev.inverse() * Twb_curr;
+
+    Eigen::Vector3f t_vo = T_vo.block<3,1>(0,3);
+    double t_vo_norm = t_vo.norm();
     
-    int valid_pairs = 0;
-    for (size_t i = 1; i < m_keyframes.size(); ++i) {
-        auto kf_prev = m_keyframes[i-1];
-        auto kf_curr = m_keyframes[i];
-        
-        // Get VO translation (scale-ambiguous)
-        Eigen::Vector3f t_vo = kf_curr->get_Twb().block<3,1>(0,3) - kf_prev->get_Twb().block<3,1>(0,3);
-        
-        // Get IMU preintegration (metric scale)
-        auto preint = kf_curr->get_imu_preintegration_from_last_keyframe();
-        if (!preint) {
-            spdlog::warn("[SCALE_CORRECTION] ⚠️  KF pair [{}-{}]: No preintegration, skipping", i-1, i);
-            continue;
-        }
-        
-        // IMU translation in world frame: R_i * delta_P
-        Eigen::Matrix3f R_wb_prev = kf_prev->get_Twb().block<3,3>(0,0);
-        Eigen::Vector3f delta_p_world = R_wb_prev * preint->delta_P;
-        
-        // Setup equation: A * s = b
-        // where A_row = t_vo, b_row = delta_p_world
-        int row = valid_pairs * 3;
-        A.block<3,1>(row, 0) = t_vo.cast<double>();
-        b.segment<3>(row) = delta_p_world.cast<double>();
-        
-        valid_pairs++;
-    }
-    
-    if (scales.empty()) {
-        spdlog::error("[SCALE_CORRECTION] ❌ No valid scale measurements computed");
+    // Get IMU preintegration (metric scale)
+    auto preint = kf_curr->get_imu_preintegration_from_last_keyframe();
+    if (!preint) {
+        spdlog::error("[SCALE_CORRECTION] ❌ No preintegration for second keyframe");
         return;
     }
     
-    // Use median scale for robustness
-    std::sort(scales.begin(), scales.end());
-    double median_scale = scales[scales.size() / 2];
-    double min_scale = scales.front();
-    double max_scale = scales.back();
+    // IMU translation in world frame: R_prev * delta_P
+    Eigen::Matrix3f R_wb_prev = kf_prev->get_Twb().block<3,3>(0,0);
+    Eigen::Vector3f delta_p_world = R_wb_prev * preint->delta_P;
+    double t_imu_norm = delta_p_world.norm();
     
-    spdlog::info("--------------------------------------------------------------------------------");
-    spdlog::info("[SCALE_CORRECTION] � Scale Statistics:");
-    spdlog::info("  Measurements: {}", scales.size());
-    spdlog::info("  Min:    {:.6f}x", min_scale);
-    spdlog::info("  Median: {:.6f}x ← USED", median_scale);
-    spdlog::info("  Max:    {:.6f}x", max_scale);
-    spdlog::info("--------------------------------------------------------------------------------");
-    
-    // Apply scale to all keyframe positions
-    int num_kf_updated = 0;
-    for (auto& kf : m_keyframes) {
-        Eigen::Matrix4f Twb = kf->get_Twb();
-        Eigen::Vector3f pos_before = Twb.block<3,1>(0,3);
-        Twb.block<3,1>(0,3) *= median_scale;
-        Eigen::Vector3f pos_after = Twb.block<3,1>(0,3);
-        kf->set_Twb(Twb);
-        num_kf_updated++;
-        
-        if (num_kf_updated <= 3) {  // Log first 3 keyframes
-            spdlog::info("[SCALE_CORRECTION]   KF[{}] pos: [{:.6f}, {:.6f}, {:.6f}] → [{:.6f}, {:.6f}, {:.6f}]",
-                         kf->get_frame_id(),
-                         pos_before.x(), pos_before.y(), pos_before.z(),
-                         pos_after.x(), pos_after.y(), pos_after.z());
-        }
+    // Compute scale: s = ||t_imu|| / ||t_vo||
+    if (t_vo_norm < 1e-6) {
+        spdlog::error("[SCALE_CORRECTION] ❌ VO translation too small: {:.6f}m", t_vo_norm);
+        return;
     }
+    
+    double scale = t_imu_norm / t_vo_norm;
+    
+    spdlog::info("--------------------------------------------------------------------------------");
+    spdlog::info("[SCALE_CORRECTION] 📊 Scale Computation:");
+    spdlog::info("  VO translation norm:  {:.6f} m", t_vo_norm);
+    spdlog::info("  IMU translation norm: {:.6f} m", t_imu_norm);
+    spdlog::info("  Computed scale:       {:.6f}x", scale);
+    spdlog::info("--------------------------------------------------------------------------------");
+    
+    T_vo.block<3,1>(0,3) *= scale;
+    Eigen::Matrix4f Twb_curr_scaled = Twb_prev * T_vo;
+    kf_curr->set_Twb(Twb_curr_scaled);
+
     
     // Apply scale to all keyframe velocities
     for (auto& kf : m_keyframes) {
         Eigen::Vector3f vel = kf->get_velocity();
-        vel *= median_scale;
+        vel *= scale;
         kf->set_velocity(vel);
     }
     
@@ -2939,17 +2926,16 @@ void lightweight_vio::Estimator::apply_imu_based_scale_correction() {
     for (auto& mp : m_map_points) {
         if (mp && !mp->is_bad()) {
             Eigen::Vector3f pos = mp->get_position();
-            pos *= median_scale;
+            pos *= scale;
             mp->set_position(pos);
             num_mp_updated++;
         }
     }
     
     spdlog::info("[SCALE_CORRECTION] ✅ Applied scale correction:");
-    spdlog::info("  Keyframes:  {} positions updated", num_kf_updated);
-    spdlog::info("  Velocities: {} updated", m_keyframes.size());
+    spdlog::info("  Keyframes:  {} updated", m_keyframes.size());
     spdlog::info("  Map points: {} updated", num_mp_updated);
-    spdlog::info("  Scale factor: {:.6f}x", median_scale);
+    spdlog::info("  Scale factor: {:.6f}x", scale);
     spdlog::info("================================================================================\n");
 }
 

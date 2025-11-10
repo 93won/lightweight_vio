@@ -357,6 +357,12 @@ private:
     bool initialize_imu();
     
     /**
+     * @brief Initialize IMU system for monocular (uses first 2 keyframes)
+     * @return True if IMU initialization successful
+     */
+    bool initialize_imu_monocular();
+    
+    /**
      * @brief Create initial map points from stereo or motion
      * @param frame Frame to create map points for
      * @return Number of created map points

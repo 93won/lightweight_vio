@@ -1490,8 +1490,8 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     
     InertialOptimizationResult result;
     
-    if (frames.size() < 5) {
-        spdlog::warn("[IMU_INIT] Need at least 5 frames for IMU initialization");
+    if (frames.size() < 2) {
+        spdlog::warn("[IMU_INIT] Need at least 2 frames for IMU initialization");
         return result;
     }
     
@@ -1985,6 +1985,8 @@ int InertialOptimizer::add_inertial_gravity_factors(
     // Add InertialGravityFactor factors between consecutive optimization frames
     // Note: pose_params_vec and velocity_bias_params_vec only contain optimization frames (excluding first keyframe)
     size_t num_opt_frames = pose_params_vec.size();
+
+    spdlog::error("🔧 [IMU_INIT] Adding InertialGravityFactor factors for {} optimization frames", num_opt_frames);
     
     for (size_t opt_idx = 0; opt_idx < num_opt_frames - 1; ++opt_idx) {
         // Map optimization indices to actual frame indices (skip first frame)
