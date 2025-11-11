@@ -84,7 +84,7 @@ EurocPlayerResult EurocPlayer::run(const EurocPlayerConfig& config) {
         // spdlog::info("[EurocPlayer] Processing frames {} to {} ({} mode)", 
         //             start_frame_idx, end_frame_idx, config.use_vio_mode ? "VIO" : "VO");
         
-        context.current_idx = 0;//start_frame_idx;
+        context.current_idx = start_frame_idx;
         while (context.current_idx < end_frame_idx) {
             // Handle viewer controls first
             if (viewer && !handle_viewer_controls(*viewer, context)) {
@@ -446,7 +446,8 @@ double EurocPlayer::process_single_frame(Estimator& estimator,
     
     // Preprocess images
     cv::Mat processed_left = preprocess_image(left_image);
-    cv::Mat processed_right = right_image.empty() ? cv::Mat() : preprocess_image(right_image);
+    cv::Mat processed_right;
+    
     
     // Process frame based on camera type
     Estimator::EstimationResult result;
@@ -468,6 +469,8 @@ double EurocPlayer::process_single_frame(Estimator& estimator,
             result = estimator.process_monocular_frame(processed_left, timestamp_sec, empty_imu_data);
         }
     } else if (use_vio_mode && context.processed_frames > 0) {
+
+        processed_right = right_image.empty() ? cv::Mat() : preprocess_image(right_image);
         // VIO mode with IMU data (stereo/rgbd)
         // Convert current timestamp to seconds
         double current_timestamp_sec = image_data[context.current_idx].timestamp * 1e-9;

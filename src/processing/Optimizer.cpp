@@ -166,9 +166,9 @@ namespace lightweight_vio
         //              std::accumulate(m_pnp_info_y_sqrt.begin(), m_pnp_info_y_sqrt.end(), 0.0) / m_pnp_info_y_sqrt.size());
 
         // Check if we have enough observations
-        if (num_valid_observations < 20)
+        if (num_valid_observations < 10)
         {
-            spdlog::warn("[POSE_OPT] ❌ Insufficient valid observations: {} < 5", num_valid_observations);
+            spdlog::warn("[POSE_OPT] ❌ Insufficient valid observations: {} < 10", num_valid_observations);
             result.success = false;
             result.num_inliers = 0;
             return result;
@@ -2855,19 +2855,37 @@ void SlidingWindowOptimizer::update_imu_optimized_values(
             velocity_params_vec[i][2]
         );
         frame->set_velocity(optimized_velocity);
+    }
         
         // Calculate real velocity from pose change (if not the first frame)
 
-        if (!m_first_imu_opt_done)
+        // Check velocity optimized and velocity from pose (last pose only)
+
+    Eigen::Vector3f delta_trans = (keyframes[keyframes.size()-1]->get_Twb().inverse() - keyframes[keyframes.size()-2]->get_Twb()).block<3, 1>(0, 3);
+    float dt = static_cast<float>(keyframes[keyframes.size()-1]->get_timestamp() - keyframes[keyframes.size()-2]->get_timestamp());
+
+    Eigen::Vector3f velocity_from_pose = (delta_trans) / dt;
+
+    float ratio = (keyframes[keyframes.size()-1]->get_velocity().norm())/velocity_from_pose.norm();
+
+    bool need_fix_vel = false;
+    if(ratio < 0.01 || ratio > 100.0)
+        need_fix_vel = true;
+
+
+
+    if (!m_first_imu_opt_done || need_fix_vel)
+    {
+        for (size_t i = 0; i < keyframes.size(); ++i) 
         {
             if (i > 0)
             {
                 auto prev_frame = keyframes[i - 1];
-                Eigen::Vector3f pos_i = frame->get_Twb().block<3, 1>(0, 3);
-                Eigen::Vector3f pos_prev = prev_frame->get_Twb().block<3, 1>(0, 3);
+                auto frame = keyframes[i];
+                Eigen::Vector3f delta_trans = (prev_frame->get_Twb().inverse()*frame->get_Twb()).block<3, 1>(0, 3);
                 double dt = frame->get_timestamp() - prev_frame->get_timestamp();
 
-                Eigen::Vector3f real_velocity = (pos_i - pos_prev) / dt;
+                Eigen::Vector3f real_velocity = delta_trans / static_cast<float>(dt);
 
                 frame->set_velocity(real_velocity);
 
@@ -2875,22 +2893,9 @@ void SlidingWindowOptimizer::update_imu_optimized_values(
                 {
                     keyframes[0]->set_velocity(real_velocity);
                 }
-                // Log velocity comparison
-                spdlog::info("[VEL_UPDATE] Frame {} ID={}: Predicted [{:.3f}, {:.3f}, {:.3f}] -> [{:.3f}, {:.3f}, {:.3f}], Real from pose: [{:.3f}, {:.3f}, {:.3f}], dt={:.4f}",
-                             i, frame->get_frame_id(),
-                             old_velocity.x(), old_velocity.y(), old_velocity.z(),
-                             optimized_velocity.x(), optimized_velocity.y(), optimized_velocity.z(),
-                             real_velocity.x(), real_velocity.y(), real_velocity.z(),
-                             dt);
+                
             }
-            else
-            {
-                // First frame - no previous frame to compare
-                spdlog::info("[VEL_UPDATE] Frame {} ID={}: [{:.3f}, {:.3f}, {:.3f}] -> [{:.3f}, {:.3f}, {:.3f}] (first frame)",
-                             i, frame->get_frame_id(),
-                             old_velocity.x(), old_velocity.y(), old_velocity.z(),
-                             optimized_velocity.x(), optimized_velocity.y(), optimized_velocity.z());
-            }
+        
         }
     }
 

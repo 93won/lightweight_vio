@@ -418,6 +418,9 @@ private:
      * @return Number of new map points created via triangulation
      */
     int create_keyframe_monocular(std::shared_ptr<Frame> frame);
+
+    int create_temporary_map_points(std::shared_ptr<Frame> frame);
+
     
     /**
      * @brief Transfer accumulated IMU data to keyframe and clear buffer
