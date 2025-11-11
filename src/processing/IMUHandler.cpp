@@ -425,7 +425,7 @@ bool IMUHandler::estimate_gravity_with_stereo_constraints(
     }
     
     if (Config::getInstance().m_enable_debug_output) {
-        spdlog::info("[IMU_HANDLER] 🎯 Starting gravity estimation with {} frames", frames.size());
+        spdlog::info("[IMU_HANDLER] Starting gravity estimation with {} frames", frames.size());
     }
     
     // Step 1: Create preintegrations (without gravity compensation first)
@@ -441,6 +441,7 @@ bool IMUHandler::estimate_gravity_with_stereo_constraints(
     
     const int N = frames.size();
     const int M = preintegrations.size();
+
     
     // Step 2: Setup linear system for gravity estimation
     // Variables: [g_x, g_y, g_z, v0_x, v0_y, v0_z, ..., v_{N-1}_x, v_{N-1}_y, v_{N-1}_z]
@@ -515,10 +516,14 @@ bool IMUHandler::estimate_gravity_with_stereo_constraints(
         Eigen::VectorXf residuals = A * zero_solution - b;
         *initial_cost = static_cast<double>(residuals.squaredNorm());
     }
+
+    spdlog::info("[IMU_HANDLER] Initial Cost: {:.6f}", initial_cost ? *initial_cost : 0.0);
     
     // Step 3: Solve the linear system using least squares
     Eigen::MatrixXf AtA = A.transpose() * A;
     Eigen::VectorXf Atb = A.transpose() * b;
+
+    
     // Add damping (Tikhonov regularization) to ensure the matrix is invertible
     AtA += 1e-6f * Eigen::MatrixXf::Identity(num_unknowns, num_unknowns);
     
@@ -530,7 +535,14 @@ bool IMUHandler::estimate_gravity_with_stereo_constraints(
         Eigen::VectorXf residuals = A * solution - b;
         *final_cost = static_cast<double>(residuals.squaredNorm());
     }
-    
+
+    spdlog::info("[IMU_HANDLER] Final Cost: {:.6f}", final_cost ? *final_cost : 0.0);
+   
+    spdlog::info("Estimated gravity (before normalization): ({:.6f}, {:.6f}, {:.6f}) m/s², Magnitude: {:.6f} m/s²",
+                 estimated_gravity.x(), estimated_gravity.y(), estimated_gravity.z(),
+                 estimated_gravity.norm());
+
+
     // Step 4: Normalize the estimated gravity and apply the known magnitude
     if (estimated_gravity.norm() < 1.0f) {
         return false;

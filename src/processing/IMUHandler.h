@@ -197,6 +197,8 @@ public:
      * @return True if initialized
      */
     bool is_initialized() const { return m_initialized; }
+
+    void set_initialized(bool initialized) { m_initialized = initialized; }
     
     /**
      * @brief Get gravity vector in world frame

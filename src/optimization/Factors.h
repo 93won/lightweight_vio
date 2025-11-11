@@ -172,6 +172,16 @@ private:
 // ===============================================================================
 // INERTIAL OPTIMIZATION COST FUNCTIONS
 // ===============================================================================
+
+/**
+ * @brief Inertial factor for stereo/RGBD systems (fixed scale)
+ * 
+ * Optimizes gravity direction with IMU preintegration constraints.
+ * Used for systems where scale is known from depth/stereo measurements.
+ * 
+ * Residual: [rotation_error(3), velocity_error(3), position_error(3)] = 9D
+ * Parameters: pose1[6], velocity1[3], gyro_bias[3], accel_bias[3], pose2[6], velocity2[3], gravity_dir[2]
+ */
 class InertialGravityFactor : public ceres::SizedCostFunction<9, 6, 3, 3, 3, 6, 3, 2> {
 public:
     /**
@@ -230,6 +240,87 @@ private:
      * @return 3x3 rotation matrix Rgw (world to gravity frame)
      */
     Eigen::Matrix3d gravity_dir_to_rotation(const Eigen::Vector2d& gravity_dir) const;
+};
+
+/**
+ * @brief Inertial factor for monocular systems with scale estimation
+ * 
+ * Extends InertialGravityFactor to include monocular scale estimation.
+ * Scale is applied to visual motion (positions, velocities) to align with metric IMU measurements.
+ * 
+ * Key differences from InertialGravityFactor:
+ * - Adds scale parameter [1]
+ * - Velocity residual: r_V = R_i^T * (s*(v_j - v_i) - g*dt) - dV
+ * - Position residual: r_P = R_i^T * (s*(t_j - t_i - v_i*dt) - 0.5*g*dt^2) - dP
+ * - Rotation residual: unchanged (scale-invariant)
+ * 
+ * Residual: [rotation_error(3), velocity_error(3), position_error(3)] = 9D
+ * Parameters: pose1[6], velocity1[3], gyro_bias[3], accel_bias[3], pose2[6], velocity2[3], gravity_dir[2], scale[1]
+ */
+class InertialGravityScaleFactor : public ceres::SizedCostFunction<9, 6, 3, 3, 3, 6, 3, 2, 1> {
+public:
+    /**
+     * @brief Constructor
+     * @param preintegration IMU preintegration data
+     * @param gravity_magnitude Magnitude of gravity (default: 9.81)
+     */
+    InertialGravityScaleFactor(std::shared_ptr<IMUPreintegration> preintegration,
+                               double gravity_magnitude = 9.81);
+
+    /**
+     * @brief Evaluate residual and Jacobians
+     * Residual: [rotation_error, velocity_error, position_error] (9D)
+     * Body frame approach for better numerical stability
+     * 
+     * @param parameters[0] SE3 pose1 in tangent space [6]
+     * @param parameters[1] velocity1 [3]
+     * @param parameters[2] shared gyro bias [3]
+     * @param parameters[3] shared accel bias [3]
+     * @param parameters[4] SE3 pose2 in tangent space [6]
+     * @param parameters[5] velocity2 [3]
+     * @param parameters[6] gravity direction [2]
+     * @param parameters[7] scale [1]
+     */
+    virtual bool Evaluate(double const* const* parameters,
+                         double* residuals,
+                         double** jacobians) const override;
+
+private:
+    std::shared_ptr<IMUPreintegration> m_preintegration;
+    double m_gravity_magnitude;
+    Eigen::Matrix<double, 9, 9> m_sqrt_information;  // Square root information matrix for weighting
+
+    /**
+     * @brief Skew-symmetric matrix
+     */
+    Eigen::Matrix3d skew_symmetric(const Eigen::Vector3d& v) const;
+
+    /**
+     * @brief Right Jacobian of SO(3)
+     */
+    Eigen::Matrix3d right_jacobian_SO3(const Eigen::Vector3d& phi) const;
+
+    /**
+     * @brief Left Jacobian of SO(3)
+     */
+    Eigen::Matrix3d left_jacobian_SO3(const Eigen::Vector3d& phi) const;
+
+    /**
+     * @brief Logarithm map of SO(3) (rotation matrix to axis-angle)
+     */
+    Eigen::Vector3d log_SO3(const Eigen::Matrix3d& R) const;
+
+    /**
+     * @brief Convert 2D gravity direction to rotation matrix
+     * @param gravity_dir 2D parameterization [theta_x, theta_y]
+     * @return 3x3 rotation matrix Rgw (world to gravity frame)
+     */
+    Eigen::Matrix3d gravity_dir_to_rotation(const Eigen::Vector2d& gravity_dir) const;
+    
+    /**
+     * @brief Rodrigues formula for SO(3)
+     */
+    Eigen::Matrix3d rodrigues_SO3(const Eigen::Vector3d& omega) const;
 };
 
 /**

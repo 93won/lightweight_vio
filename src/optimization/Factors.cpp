@@ -732,5 +732,324 @@ Eigen::Matrix3d InertialGravityFactor::gravity_dir_to_rotation(const Eigen::Vect
     
     return Rwg;
 }
+
+// ===============================================================================
+// INERTIAL GRAVITY SCALE FACTOR IMPLEMENTATION (Monocular)
+// ===============================================================================
+
+InertialGravityScaleFactor::InertialGravityScaleFactor(std::shared_ptr<IMUPreintegration> preintegration,
+                                                       double gravity_magnitude)
+    : m_preintegration(preintegration), m_gravity_magnitude(gravity_magnitude) {
+    // Extract covariance for rotation, velocity, and position (9x9 block)
+    Eigen::Matrix<double, 9, 9> covariance_9x9 = m_preintegration->covariance.block<9, 9>(0, 0).cast<double>();
+    
+    // Compute information matrix (covariance inverse) with numerical stability check
+    Eigen::JacobiSVD<Eigen::Matrix<double, 9, 9>> svd(covariance_9x9, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    
+    // Apply regularization for numerical stability
+    const double min_singular_value = 1e-6;
+    Eigen::Matrix<double, 9, 1> singular_values = svd.singularValues();
+    for (int i = 0; i < 9; ++i) {
+        if (singular_values(i) < min_singular_value) {
+            singular_values(i) = min_singular_value;
+        }
+    }
+    
+    // Compute regularized inverse
+    Eigen::Matrix<double, 9, 9> information = svd.matrixV() * singular_values.cwiseInverse().asDiagonal() * svd.matrixU().transpose();
+    
+    // Scale down information matrix for better numerical conditioning
+    information *= 1e-6;
+    
+    // Compute square root information matrix using Cholesky decomposition
+    Eigen::LLT<Eigen::Matrix<double, 9, 9>> llt(information);
+    if (llt.info() == Eigen::Success) {
+        m_sqrt_information = llt.matrixL().transpose();
+    } else {
+        m_sqrt_information = Eigen::Matrix<double, 9, 9>::Identity();
+        spdlog::warn("[InertialGravityScaleFactor] Cholesky decomposition failed, using identity weighting");
+    }
+}
+
+bool InertialGravityScaleFactor::Evaluate(double const* const* parameters,
+                                          double* residuals,
+                                          double** jacobians) const {
+    
+    // ===============================================================================
+    // STEP 1: Extract parameters from optimization variables
+    // ===============================================================================
+    
+    // parameters[0]: SE3 posei [ti, Ri] (Twb format)
+    Eigen::Map<const Eigen::Vector6d> posei_tangent(parameters[0]);
+    Sophus::SE3d T_wbi = Sophus::SE3d::exp(posei_tangent);
+    Eigen::Matrix3d R_wbi = T_wbi.rotationMatrix();
+    Eigen::Vector3d t_wbi = T_wbi.translation();
+    Eigen::Matrix3d R_bwi = R_wbi.transpose();
+    
+    // parameters[1]: velocityi [vi]
+    Eigen::Map<const Eigen::Vector3d> vi(parameters[1]);
+    
+    // parameters[2]: shared gyro bias [bg]
+    Eigen::Map<const Eigen::Vector3d> bg(parameters[2]);
+    
+    // parameters[3]: shared accel bias [ba]
+    Eigen::Map<const Eigen::Vector3d> ba(parameters[3]);
+    
+    // parameters[4]: SE3 posej [tj, Rj] (Twb format)
+    Eigen::Map<const Eigen::Vector6d> posej_tangent(parameters[4]);
+    Sophus::SE3d T_wbj = Sophus::SE3d::exp(posej_tangent);
+    Eigen::Matrix3d R_wbj = T_wbj.rotationMatrix();
+    Eigen::Vector3d t_wbj = T_wbj.translation();
+    
+    // parameters[5]: velocityj [vj]
+    Eigen::Map<const Eigen::Vector3d> vj(parameters[5]);
+    
+    // parameters[6]: gravity_dir [2D]
+    Eigen::Map<const Eigen::Vector2d> gravity_dir(parameters[6]);
+    
+    // parameters[7]: scale [1] - NEW for monocular!
+    const double s = parameters[7][0];
+    
+    // ===============================================================================
+    // STEP 2: Compute gravity vector from direction parameterization
+    // ===============================================================================
+    
+    Eigen::Matrix3d R_wg = gravity_dir_to_rotation(gravity_dir);
+    Eigen::Vector3d g_I(0, 0, -m_gravity_magnitude);
+    Eigen::Vector3d g = R_wg * g_I;
+    
+    // ===============================================================================
+    // STEP 3: Get bias-corrected preintegration values
+    // ===============================================================================
+    
+    double dt = m_preintegration->dt_total;
+    
+    Eigen::Matrix3d delta_R = m_preintegration->delta_R.cast<double>();
+    Eigen::Vector3d delta_V = m_preintegration->delta_V.cast<double>();
+    Eigen::Vector3d delta_P = m_preintegration->delta_P.cast<double>();
+    
+    // Apply bias corrections using Jacobians
+    Eigen::Vector3d delta_bg = bg - m_preintegration->gyro_bias.cast<double>();
+    Eigen::Vector3d delta_ba = ba - m_preintegration->accel_bias.cast<double>();
+    
+    if (delta_bg.norm() > 1e-6 || delta_ba.norm() > 1e-6) {
+        Eigen::Matrix3d J_Rg = m_preintegration->J_Rg.cast<double>();
+        Eigen::Matrix3d J_Vg = m_preintegration->J_Vg.cast<double>();
+        Eigen::Matrix3d J_Va = m_preintegration->J_Va.cast<double>();
+        Eigen::Matrix3d J_Pg = m_preintegration->J_Pg.cast<double>();
+        Eigen::Matrix3d J_Pa = m_preintegration->J_Pa.cast<double>();
+        
+        delta_R = delta_R * Sophus::SO3d::exp(J_Rg*delta_bg).matrix();
+        delta_V = delta_V + J_Vg * delta_bg + J_Va * delta_ba;
+        delta_P = delta_P + J_Pg * delta_bg + J_Pa * delta_ba;
+    }
+    
+    // ===============================================================================
+    // STEP 4: Compute residuals WITH SCALE
+    // ===============================================================================
+    
+    Eigen::Map<Eigen::Vector3d> er(residuals);      // rotation residual
+    Eigen::Map<Eigen::Vector3d> ev(residuals + 3);  // velocity residual
+    Eigen::Map<Eigen::Vector3d> ep(residuals + 6);  // position residual
+    
+    // Rotation residual: UNCHANGED (scale-invariant)
+    er = log_SO3(delta_R.transpose() * R_bwi * R_wbj);
+    
+    // Velocity residual: ev = Ri^T * (s*(vj - vi) - g*dt) - delta_V
+    ev = R_bwi * (s * (vj - vi) - g * dt) - delta_V;
+    
+    // Position residual: ep = Ri^T * (s*(tj - ti - vi*dt) - 0.5*g*dt^2) - delta_P
+    ep = R_bwi * (s * (t_wbj - t_wbi - vi * dt) - 0.5 * g * dt * dt) - delta_P;
+    
+    // ===============================================================================
+    // STEP 5: Compute Jacobians
+    // ===============================================================================
+    
+    if (jacobians != nullptr) {
+        
+        Eigen::Vector3d dbg = delta_bg;
+        Eigen::Matrix3d eR = delta_R.transpose() * R_bwi * R_wbj;
+        Eigen::Vector3d er_vec = log_SO3(eR);
+        Eigen::Matrix3d Jr_inv = right_jacobian_SO3(er_vec).inverse();
+        
+        // Jacobian w.r.t posei [0]
+        if (jacobians[0] != nullptr) {
+            Eigen::Map<Eigen::Matrix<double, 9, 6, Eigen::RowMajor>> J_posei(jacobians[0]);
+            J_posei.setZero();
+            
+            // Rotation part (unchanged)
+            J_posei.block<3, 3>(0, 0) = -Jr_inv * R_wbj.transpose() * R_wbi;
+            
+            // Velocity part (with scale)
+            J_posei.block<3, 3>(3, 0) = skew_symmetric(R_bwi * (s * (vj - vi) - g * dt));
+            
+            // Position part (with scale)
+            J_posei.block<3, 3>(6, 0) = skew_symmetric(R_bwi * (s * (t_wbj - t_wbi - vi * dt) - 0.5 * g * dt * dt));
+            J_posei.block<3, 3>(6, 3) = -s * Eigen::Matrix3d::Identity();
+        }
+        
+        // Jacobian w.r.t velocityi [1]
+        if (jacobians[1] != nullptr) {
+            Eigen::Map<Eigen::Matrix<double, 9, 3, Eigen::RowMajor>> J_veli(jacobians[1]);
+            J_veli.setZero();
+            J_veli.block<3, 3>(3, 0) = -s * R_bwi;
+            J_veli.block<3, 3>(6, 0) = -s * R_bwi * dt;
+        }
+        
+        // Jacobian w.r.t gyro_bias [2]
+        if (jacobians[2] != nullptr) {
+            Eigen::Map<Eigen::Matrix<double, 9, 3, Eigen::RowMajor>> J_gyro(jacobians[2]);
+            J_gyro.setZero();
+            
+            Eigen::Matrix3d J_Rg = m_preintegration->J_Rg.cast<double>();
+            Eigen::Matrix3d J_Vg = m_preintegration->J_Vg.cast<double>();
+            Eigen::Matrix3d J_Pg = m_preintegration->J_Pg.cast<double>();
+            
+            J_gyro.block<3, 3>(0, 0) = -Jr_inv * eR.transpose() * right_jacobian_SO3(J_Rg*dbg) * J_Rg;
+            J_gyro.block<3, 3>(3, 0) = -J_Vg;
+            J_gyro.block<3, 3>(6, 0) = -J_Pg;
+        }
+        
+        // Jacobian w.r.t accel_bias [3]
+        if (jacobians[3] != nullptr) {
+            Eigen::Map<Eigen::Matrix<double, 9, 3, Eigen::RowMajor>> J_accel(jacobians[3]);
+            J_accel.setZero();
+            
+            Eigen::Matrix3d J_Va = m_preintegration->J_Va.cast<double>();
+            Eigen::Matrix3d J_Pa = m_preintegration->J_Pa.cast<double>();
+            
+            J_accel.block<3, 3>(3, 0) = -J_Va;
+            J_accel.block<3, 3>(6, 0) = -J_Pa;
+        }
+        
+        // Jacobian w.r.t posej [4]
+        if (jacobians[4] != nullptr) {
+            Eigen::Map<Eigen::Matrix<double, 9, 6, Eigen::RowMajor>> J_posej(jacobians[4]);
+            J_posej.setZero();
+            
+            // Rotation part (unchanged)
+            J_posej.block<3, 3>(0, 0) = Jr_inv;
+            
+            // Translation part (with scale)
+            J_posej.block<3, 3>(6, 3) = s * R_bwi * R_wbj;
+        }
+        
+        // Jacobian w.r.t velocityj [5]
+        if (jacobians[5] != nullptr) {
+            Eigen::Map<Eigen::Matrix<double, 9, 3, Eigen::RowMajor>> J_velj(jacobians[5]);
+            J_velj.setZero();
+            J_velj.block<3, 3>(3, 0) = s * R_bwi;
+        }
+        
+        // Jacobian w.r.t gravity_dir [6]
+        if (jacobians[6] != nullptr) {
+            Eigen::Map<Eigen::Matrix<double, 9, 2, Eigen::RowMajor>> J_gravity(jacobians[6]);
+            J_gravity.setZero();
+            
+            Eigen::Matrix<double, 3, 2> dGdTheta;
+            dGdTheta.setZero();
+            dGdTheta(0, 1) = -m_gravity_magnitude;
+            dGdTheta(1, 0) = m_gravity_magnitude;
+            Eigen::Matrix<double, 3, 2> dg_dtheta = R_wg * dGdTheta;
+            
+            J_gravity.block<3, 2>(3, 0) = -R_bwi * dg_dtheta * dt;
+            J_gravity.block<3, 2>(6, 0) = -0.5 * R_bwi * dg_dtheta * dt * dt;
+        }
+        
+        // Jacobian w.r.t scale [7] - NEW!
+        if (jacobians[7] != nullptr) {
+            Eigen::Map<Eigen::Matrix<double, 9, 1>> J_scale(jacobians[7]);
+            J_scale.setZero();
+            
+            // dr_R / ds = 0 (rotation is scale-invariant)
+            J_scale.block<3, 1>(0, 0).setZero();
+            
+            // dr_V / ds = R_bwi * (vj - vi)
+            J_scale.block<3, 1>(3, 0) = R_bwi * (vj - vi);
+            
+            // dr_P / ds = R_bwi * (tj - ti - vi*dt)
+            J_scale.block<3, 1>(6, 0) = R_bwi * (t_wbj - t_wbi - vi * dt);
+        }
+    }
+    
+    return true;
+}
+
+Eigen::Matrix3d InertialGravityScaleFactor::skew_symmetric(const Eigen::Vector3d& v) const {
+    Eigen::Matrix3d skew = Eigen::Matrix3d::Zero();
+    skew(0, 1) = -v(2);
+    skew(0, 2) =  v(1);
+    skew(1, 0) =  v(2);
+    skew(1, 2) = -v(0);
+    skew(2, 0) = -v(1);
+    skew(2, 1) =  v(0);
+    return skew;
+}
+
+Eigen::Matrix3d InertialGravityScaleFactor::right_jacobian_SO3(const Eigen::Vector3d& phi) const {
+    double theta = phi.norm();
+    if (theta < 1e-6) {
+        return Eigen::Matrix3d::Identity() - 0.5 * skew_symmetric(phi);
+    }
+    
+    double c = cos(theta);
+    double s = sin(theta);
+    Eigen::Matrix3d W = skew_symmetric(phi);
+    
+    return Eigen::Matrix3d::Identity() - 
+           W * (1.0 - c) / (theta * theta) + 
+           W * W * (theta - s) / (theta * theta * theta);
+}
+
+Eigen::Matrix3d InertialGravityScaleFactor::left_jacobian_SO3(const Eigen::Vector3d& phi) const {
+    return right_jacobian_SO3(-phi).transpose();
+}
+
+Eigen::Vector3d InertialGravityScaleFactor::log_SO3(const Eigen::Matrix3d& R) const {
+    // Normalize rotation matrix using SVD
+    Eigen::JacobiSVD<Eigen::Matrix3d> svd(R, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Eigen::Matrix3d R_normalized = svd.matrixU() * svd.matrixV().transpose();
+    
+    return Sophus::SO3d(R_normalized).log();
+}
+
+Eigen::Matrix3d InertialGravityScaleFactor::gravity_dir_to_rotation(const Eigen::Vector2d& gravity_dir) const {
+    double theta_x = gravity_dir[0];
+    double theta_y = gravity_dir[1];
+    
+    Eigen::Vector3d w(theta_x, theta_y, 0.0);
+    const double d2 = w.dot(w);
+    const double d = std::sqrt(d2);
+    
+    Eigen::Matrix3d W;
+    W << 0.0,      -w(2),    w(1),
+         w(2),      0.0,    -w(0),
+        -w(1),      w(0),     0.0;
+    
+    Eigen::Matrix3d Rwg;
+    if (d < 1e-5) {
+        Rwg = Eigen::Matrix3d::Identity() + W + 0.5*W*W;
+    } else {
+        Rwg = Eigen::Matrix3d::Identity() + W*std::sin(d)/d + W*W*(1.0 - std::cos(d))/d2;
+    }
+    
+    return Rwg;
+}
+
+Eigen::Matrix3d InertialGravityScaleFactor::rodrigues_SO3(const Eigen::Vector3d& omega) const {
+    double theta = omega.norm();
+    if (theta < 1e-6) {
+        return Eigen::Matrix3d::Identity() + skew_symmetric(omega);
+    }
+    
+    Eigen::Vector3d axis = omega / theta;
+    double c = cos(theta);
+    double s = sin(theta);
+    
+    return c * Eigen::Matrix3d::Identity() + 
+           s * skew_symmetric(axis) + 
+           (1.0 - c) * axis * axis.transpose();
+}
+
 } // namespace factor
 } // namespace lightweight_vio

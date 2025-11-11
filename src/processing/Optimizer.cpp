@@ -716,6 +716,8 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
     
     // Setup IMU parameter blocks and factors if enabled
     int num_imu_factors = 0;
+
+    std::cout<<"IMU enabled: "<<m_imu_enabled<<std::endl;
     if (m_imu_enabled) {
         setup_imu_parameter_blocks(problem, keyframes, velocity_params_vec, 
                                   accel_bias_params, gyro_bias_params, gravity_dir_params);
@@ -829,7 +831,7 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
                                        accel_bias_params, gyro_bias_params);
         }
         
-        if (Config::getInstance().m_enable_debug_output) 
+        // if (Config::getInstance().m_enable_debug_output) 
         {
             spdlog::info("[SlidingWindowOptimizer] ✅ Optimization successful: {} poses, {} points, {} visual obs, {} IMU factors, {} inliers, {} outliers, cost: {:.10e} -> {:.10e}",
                         result.num_poses_optimized, result.num_points_optimized, 
@@ -1500,13 +1502,22 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         return result;
     }
     
+    // Determine if we need to optimize scale based on camera type
+    const Config& config = Config::getInstance();
+    bool is_monocular = (config.m_camera_type == CameraType::MONOCULAR);
+    bool optimize_scale = is_monocular;  // Only optimize scale for monocular
+    
+    std::string optimization_mode = optimize_scale ? "Monocular (Gravity+Scale → Vel+Bias)" : "Stereo/RGBD (Gravity → Vel+Bias)";
+    
     spdlog::info("================================================================================");
-    spdlog::info("🚀 [IMU_INIT] Starting 2-Stage Optimization");
+    spdlog::info("🚀 [IMU_INIT] Starting 2-Stage {} Optimization", optimization_mode);
     spdlog::info("   Keyframes: {}", frames.size());
+    spdlog::info("   Camera type: {}", optimize_scale ? "MONOCULAR" : "STEREO/RGBD");
+    spdlog::info("   Scale optimization: {}", optimize_scale ? "ENABLED" : "DISABLED (fixed at 1.0)");
     spdlog::info("================================================================================");
     
     // ===============================================================================
-    // SETUP: Initialize all parameter vectors
+    // SETUP: Initialize all parameter vectors (including scale)
     // ===============================================================================
     
     std::vector<std::vector<double>> pose_params_vec(frames.size(), std::vector<double>(6));
@@ -1514,35 +1525,53 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     std::vector<std::vector<double>> accel_bias_params_vec(frames.size(), std::vector<double>(3));
     std::vector<std::vector<double>> gyro_bias_params_vec(frames.size(), std::vector<double>(3));
     std::vector<double> gravity_dir_params(2, 0.0);
+    std::vector<double> scale_params(1, 1.0);  // Initialize scale to 1.0 (will be fixed for stereo/RGBD)
     
     setup_imu_init_vertices(frames, imu_handler, pose_params_vec, velocity_params_vec, 
                            accel_bias_params_vec, gyro_bias_params_vec, gravity_dir_params);
     
+    
+    spdlog::info("📊 [SETUP] Initial parameters:");
+    spdlog::info("   Gravity direction: [{:.6f}, {:.6f}]", gravity_dir_params[0], gravity_dir_params[1]);
+    spdlog::info("   Scale: {:.6f} ({})", scale_params[0], optimize_scale ? "will be optimized" : "FIXED");
+    spdlog::info("   Optimization frames: {}", pose_params_vec.size());
+    
     auto start_time = std::chrono::high_resolution_clock::now();
     
     // ===============================================================================
-    // STAGE 1: Optimize Gravity Direction ONLY (Rwg)
+    // STAGE 1: Optimize Gravity Direction (+ Scale for monocular)
     // ===============================================================================
     
     spdlog::info("");
-    spdlog::info("[STAGE 1] Optimizing Gravity Direction...");
+    spdlog::info("╔════════════════════════════════════════════════════════════════════════════╗");
+    if (optimize_scale) {
+        spdlog::info("║ STAGE 1: Gravity + Scale Optimization (3D: θ_x, θ_y, s)                  ║");
+    } else {
+        spdlog::info("║ STAGE 1: Gravity Optimization (2D: θ_x, θ_y) [Scale FIXED at 1.0]        ║");
+    }
+    spdlog::info("╚════════════════════════════════════════════════════════════════════════════╝");
+    spdlog::info("   Strategy: Optimize gravity{}", optimize_scale ? " and scale jointly" : " only");
+    if (optimize_scale) {
+        spdlog::info("   Rationale: g and s are coupled in residuals → solve together");
+        spdlog::info("   Parameters: 3 (2D gravity + 1D scale)");
+    } else {
+        spdlog::info("   Rationale: Stereo/RGBD has known scale → fix at 1.0");
+        spdlog::info("   Parameters: 2 (2D gravity only)");
+    }
+    spdlog::info("");
     
     ceres::Problem problem_stage1;
     ceres::Solver::Options options_stage1;
     options_stage1.max_num_iterations = 50;
     options_stage1.linear_solver_type = ceres::SPARSE_SCHUR;
     options_stage1.trust_region_strategy_type = ceres::DOGLEG;
-    options_stage1.minimizer_progress_to_stdout = true;  // ⭐ Enable to see what's happening
+    options_stage1.minimizer_progress_to_stdout = true;
     options_stage1.logging_type = ceres::PER_MINIMIZER_ITERATION;
-    
-    // // ⭐ Accept first improvement without being too strict
-    options_stage1.function_tolerance = 1e-3;   // Accept 0.1% cost reduction
+    options_stage1.function_tolerance = 1e-3;
     options_stage1.gradient_tolerance = 1e-6;   
     options_stage1.parameter_tolerance = 1e-6;
     
-    // // ⭐ Constrain trust region to prevent too large steps
-    // options_stage1.max_trust_region_radius = 1e2;  // Limit maximum step size
-    // options_stage1.initial_trust_region_radius = 1e1;  // Start with moderate steps
+    spdlog::info("🔧 [STAGE 1] Setting up parameter blocks...");
     
     // Add parameter blocks - FIX poses, velocities, biases
     for (size_t i = 0; i < pose_params_vec.size(); ++i) {
@@ -1567,22 +1596,40 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         problem_stage1.SetParameterBlockConstant(gyro_bias_params_vec[i].data());
     }
     
-    // Add gravity direction parameter block (2D Euclidean - NO parameterization needed!)
-    // Gravity is already in tangent space, so Ceres can directly update it
+    // 🆕 Add gravity direction parameter block (2D - FREE to optimize)
     problem_stage1.AddParameterBlock(gravity_dir_params.data(), 2);
-    // NO SetParameterization() - Ceres will update gravity_dir_params directly!
+    spdlog::info("   ✅ Gravity direction: 2D parameter (FREE)");
     
-    // Add InertialGravityFactor
-    int stage1_factors = add_inertial_gravity_factors(
+    // 🆕 Add scale parameter block (1D - FREE or CONSTANT based on camera type)
+    problem_stage1.AddParameterBlock(scale_params.data(), 1);
+    if (optimize_scale) {
+        spdlog::info("   ✅ Scale: 1D parameter (FREE - monocular)");
+    } else {
+        problem_stage1.SetParameterBlockConstant(scale_params.data());
+        spdlog::info("   ✅ Scale: 1D parameter (FIXED at 1.0 - stereo/RGBD)");
+    }
+    
+    spdlog::info("   ✅ Poses: {} blocks (FIXED)", pose_params_vec.size());
+    spdlog::info("   ✅ Velocities: {} blocks (FIXED)", velocity_params_vec.size());
+    spdlog::info("   ✅ Biases: {} blocks (FIXED)", accel_bias_params_vec.size());
+    
+    // 🆕 Add InertialGravityScaleFactor (with scale parameter)
+    int stage1_factors = add_inertial_gravity_scale_factors(
         problem_stage1, frames, imu_handler,
-        pose_params_vec, velocity_params_vec, accel_bias_params_vec, gyro_bias_params_vec, gravity_dir_params);
+        pose_params_vec, velocity_params_vec, accel_bias_params_vec, gyro_bias_params_vec, 
+        gravity_dir_params, scale_params);
     
     if (stage1_factors == 0) {
-        spdlog::error("[STAGE 1] No factors added - aborting");
+        spdlog::error("❌ [STAGE 1] No factors added - aborting");
         return result;
     }
     
     // Solve Stage 1
+    spdlog::info("");
+    spdlog::info("🚀 [STAGE 1] Starting optimization...");
+    spdlog::info("   Initial gravity: [{:.6f}, {:.6f}]", gravity_dir_params[0], gravity_dir_params[1]);
+    spdlog::info("   Initial scale: {:.6f}", scale_params[0]);
+    
     auto stage1_start = std::chrono::high_resolution_clock::now();
     
     ceres::Solver::Summary summary_stage1;
@@ -1591,20 +1638,53 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     auto stage1_end = std::chrono::high_resolution_clock::now();
     auto stage1_duration = std::chrono::duration_cast<std::chrono::milliseconds>(stage1_end - stage1_start);
     
-    spdlog::info("[STAGE 1] Complete: {} iterations, {:.2f}% cost reduction, {} ms",
-                 summary_stage1.iterations.size(),
-                 (1.0 - summary_stage1.final_cost / summary_stage1.initial_cost) * 100.0,
-                 stage1_duration.count());
+    double cost_reduction_percent = (1.0 - summary_stage1.final_cost / summary_stage1.initial_cost) * 100.0;
     
-    // ⭐ DEBUG: Check gravity_dir after Stage 1
-    spdlog::info("🔍 [DEBUG] After STAGE 1 - gravity_dir_params: [{}, {}]", 
-                 gravity_dir_params[0], gravity_dir_params[1]);
+    spdlog::info("");
+    spdlog::info("✅ [STAGE 1] Optimization complete!");
+    spdlog::info("   Iterations: {}", summary_stage1.iterations.size());
+    spdlog::info("   Initial cost: {:.6e}", summary_stage1.initial_cost);
+    spdlog::info("   Final cost: {:.6e}", summary_stage1.final_cost);
+    spdlog::info("   Cost reduction: {:.2f}%", cost_reduction_percent);
+    spdlog::info("   Time: {} ms", stage1_duration.count());
+    spdlog::info("   Termination: {}", summary_stage1.BriefReport());
+    
+    spdlog::info("");
+    spdlog::info("📊 [STAGE 1] Optimized parameters:");
+    spdlog::info("   Gravity direction: [{:.6f}, {:.6f}] (Δ = [{:.6f}, {:.6f}])", 
+                 gravity_dir_params[0], gravity_dir_params[1],
+                 gravity_dir_params[0] - 0.0, gravity_dir_params[1] - 0.0);
+    spdlog::info("   Scale: {:.6f} (Δ = {:.6f}) [{}]", 
+                 scale_params[0], scale_params[0] - 1.0,
+                 optimize_scale ? "optimized" : "fixed");
+    
+    // Check if scale is reasonable (only for monocular where it was optimized)
+    if (optimize_scale) {
+        if (scale_params[0] < 0.1 || scale_params[0] > 10.0) {
+            spdlog::error("   ❌ Scale is unreasonable! ({:.6f})", scale_params[0]);
+            spdlog::error("   💡 This suggests initialization failure or insufficient motion");
+        } else if (scale_params[0] < 0.5 || scale_params[0] > 2.0) {
+            spdlog::warn("   ⚠️  Scale is unusual but might be acceptable ({:.6f})", scale_params[0]);
+        } else {
+            spdlog::info("   ✅ Scale looks reasonable ({:.6f})", scale_params[0]);
+        }
+    } else {
+        spdlog::info("   ✅ Scale fixed at 1.0 (stereo/RGBD - known metric scale)");
+    }
     
     // ===============================================================================
-    // STAGE 2: Optimize Velocities + Biases (Rwg FIXED)
+    // STAGE 2: Optimize Velocities + Biases (Rwg + s FIXED)
     // ===============================================================================
     
-    spdlog::info("[STAGE 2] Optimizing Velocities and Biases...");
+    spdlog::info("");
+    spdlog::info("╔════════════════════════════════════════════════════════════════════════════╗");
+    spdlog::info("║ STAGE 2: Velocities + Biases Optimization (with fixed g and s)           ║");
+    spdlog::info("╚════════════════════════════════════════════════════════════════════════════╝");
+    spdlog::info("   Strategy: Fix gravity{} from Stage 1", optimize_scale ? " and scale" : "");
+    spdlog::info("   Optimize: Velocities ({} frames), Accel bias, Gyro bias", velocity_params_vec.size());
+    spdlog::info("   Parameters: {} (3D velocity × {} + 3D accel_bias + 3D gyro_bias)", 
+                 3 * velocity_params_vec.size() + 6, velocity_params_vec.size());
+    spdlog::info("");
     
     ceres::Problem problem_stage2;
     ceres::Solver::Options options_stage2;
@@ -1613,6 +1693,8 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     options_stage2.trust_region_strategy_type = ceres::DOGLEG;
     options_stage2.minimizer_progress_to_stdout = false;
     options_stage2.logging_type = ceres::SILENT;
+    
+    spdlog::info("🔧 [STAGE 2] Setting up parameter blocks...");
     
     // Add parameter blocks for Stage 2
     for (size_t i = 0; i < pose_params_vec.size(); ++i) {
@@ -1624,30 +1706,47 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     
     for (size_t i = 0; i < velocity_params_vec.size(); ++i) {
         problem_stage2.AddParameterBlock(velocity_params_vec[i].data(), 3);
+        // 🆕 Velocities are FREE in Stage 2
     }
     
     for (size_t i = 0; i < accel_bias_params_vec.size(); ++i) {
         problem_stage2.AddParameterBlock(accel_bias_params_vec[i].data(), 3);
+        // 🆕 Accel biases are FREE in Stage 2
     }
     
     for (size_t i = 0; i < gyro_bias_params_vec.size(); ++i) {
         problem_stage2.AddParameterBlock(gyro_bias_params_vec[i].data(), 3);
+        // 🆕 Gyro biases are FREE in Stage 2
     }
     
-    // Add gravity direction parameter block (2D Euclidean - fixed in Stage 2)
+    // 🆕 Add gravity direction parameter block (FIXED in Stage 2)
     problem_stage2.AddParameterBlock(gravity_dir_params.data(), 2);
     problem_stage2.SetParameterBlockConstant(gravity_dir_params.data());
-    // NO SetParameterization() needed!
+    // spdlog::info("   ✅ Gravity direction: FIXED at [{:.6f}, {:.6f}]", gravity_dir_params[0], gravity_dir_params[1]);
     
-    // Add InertialGravityFactor again
-    int stage2_factors = add_inertial_gravity_factors(
+    // 🆕 Add scale parameter block (FIXED in Stage 2)
+    problem_stage2.AddParameterBlock(scale_params.data(), 1);
+    problem_stage2.SetParameterBlockConstant(scale_params.data());
+    spdlog::info("   ✅ Scale: FIXED at {:.6f}", scale_params[0]);
+    
+    spdlog::info("   ✅ Poses: {} blocks (FIXED)", pose_params_vec.size());
+    spdlog::info("   ✅ Velocities: {} blocks (FREE)", velocity_params_vec.size());
+    spdlog::info("   ✅ Accel biases: {} blocks (FREE)", accel_bias_params_vec.size());
+    spdlog::info("   ✅ Gyro biases: {} blocks (FREE)", gyro_bias_params_vec.size());
+    
+    // 🆕 Add InertialGravityScaleFactor again (same factor, but gravity and scale are now fixed)
+    int stage2_factors = add_inertial_gravity_scale_factors(
         problem_stage2, frames, imu_handler,
-        pose_params_vec, velocity_params_vec, accel_bias_params_vec, gyro_bias_params_vec, gravity_dir_params);
+        pose_params_vec, velocity_params_vec, accel_bias_params_vec, gyro_bias_params_vec, 
+        gravity_dir_params, scale_params);
     
     // Add priors
     add_imu_init_priors(problem_stage2, frames, velocity_params_vec, accel_bias_params_vec, gyro_bias_params_vec);
     
     // Solve Stage 2
+    spdlog::info("");
+    spdlog::info("🚀 [STAGE 2] Starting optimization...");
+    
     auto stage2_start = std::chrono::high_resolution_clock::now();
     
     ceres::Solver::Summary summary_stage2;
@@ -1656,19 +1755,37 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     auto stage2_end = std::chrono::high_resolution_clock::now();
     auto stage2_duration = std::chrono::duration_cast<std::chrono::milliseconds>(stage2_end - stage2_start);
     
-    spdlog::info("[STAGE 2] Complete: {} iterations, {:.2f}% cost reduction, {} ms",
-                 summary_stage2.iterations.size(),
-                 (1.0 - summary_stage2.final_cost / summary_stage2.initial_cost) * 100.0,
-                 stage2_duration.count());
+    double cost_reduction_percent_stage2 = (1.0 - summary_stage2.final_cost / summary_stage2.initial_cost) * 100.0;
+    
+    spdlog::info("");
+    spdlog::info("✅ [STAGE 2] Optimization complete!");
+    spdlog::info("   Iterations: {}", summary_stage2.iterations.size());
+    spdlog::info("   Initial cost: {:.6e}", summary_stage2.initial_cost);
+    spdlog::info("   Final cost: {:.6e}", summary_stage2.final_cost);
+    spdlog::info("   Cost reduction: {:.2f}%", cost_reduction_percent_stage2);
+    spdlog::info("   Time: {} ms", stage2_duration.count());
+    spdlog::info("   Termination: {}", summary_stage2.BriefReport());
     
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     
     spdlog::info("");
-    spdlog::info("📊 [SUMMARY] Total: {} ms, {} iterations",
-                 duration.count(),
-                 summary_stage1.iterations.size() + summary_stage2.iterations.size());
-    spdlog::info("================================================================================");
+    spdlog::info("╔════════════════════════════════════════════════════════════════════════════╗");
+    spdlog::info("║ OPTIMIZATION SUMMARY                                                       ║");
+    spdlog::info("╚════════════════════════════════════════════════════════════════════════════╝");
+    spdlog::info("   Camera type: {}", optimize_scale ? "MONOCULAR" : "STEREO/RGBD");
+    spdlog::info("   Total time: {} ms", duration.count());
+    spdlog::info("   Total iterations: {}", summary_stage1.iterations.size() + summary_stage2.iterations.size());
+    if (optimize_scale) {
+        spdlog::info("   Stage 1 (Gravity+Scale): {} ms, {} iters, {:.2f}% reduction",
+                     stage1_duration.count(), summary_stage1.iterations.size(), cost_reduction_percent);
+    } else {
+        spdlog::info("   Stage 1 (Gravity only): {} ms, {} iters, {:.2f}% reduction",
+                     stage1_duration.count(), summary_stage1.iterations.size(), cost_reduction_percent);
+    }
+    spdlog::info("   Stage 2 (Vel+Bias): {} ms, {} iters, {:.2f}% reduction",
+                 stage2_duration.count(), summary_stage2.iterations.size(), cost_reduction_percent_stage2);
+    spdlog::info("");
     
     // ===============================================================================
     // Extract Results (use Stage 2 summary)
@@ -1689,18 +1806,23 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     // ===============================================================================
     // STEP 7.5: Analyze residuals by component (rotation, velocity, position)
     // ===============================================================================
-    spdlog::info("📊 [IMU_INIT] Optimized Gravity Direction:");
-    spdlog::info("  theta_x (pitch): {:.6f} rad ({:.3f}°)", gravity_dir_params[0], gravity_dir_params[0] * 180.0 / M_PI);
-    spdlog::info("  theta_y (roll):  {:.6f} rad ({:.3f}°)", gravity_dir_params[1], gravity_dir_params[1] * 180.0 / M_PI);
-
-    // I want log of velocity and biases of all frames
+    spdlog::info("📊 [RESULTS] Final optimized parameters:");
+    spdlog::info("   Gravity direction:");
+    spdlog::info("     theta_x (pitch): {:.6f} rad ({:.3f}°)", gravity_dir_params[0], gravity_dir_params[0] * 180.0 / M_PI);
+    spdlog::info("     theta_y (roll):  {:.6f} rad ({:.3f}°)", gravity_dir_params[1], gravity_dir_params[1] * 180.0 / M_PI);
+    spdlog::info("   🆕 Scale: {:.6f}", scale_params[0]);
+    spdlog::info("");
+    
+    // Log velocities and biases for all frames
+    spdlog::info("   Frame-wise results:");
     for (size_t i = 0; i < frames.size(); ++i) {
-        spdlog::info("  Frame {}: Velocity = [{:.6f}, {:.6f}, {:.6f}] m/s | Accel Bias = [{:.6f}, {:.6f}, {:.6f}] m/s² | Gyro Bias = [{:.6f}, {:.6f}, {:.6f}] rad/s",
+        spdlog::info("     Frame {}: v=[{:.3f}, {:.3f}, {:.3f}] m/s | ba=[{:.4f}, {:.4f}, {:.4f}] | bg=[{:.4f}, {:.4f}, {:.4f}]",
                      frames[i]->get_frame_id(),
                      velocity_params_vec[i][0], velocity_params_vec[i][1], velocity_params_vec[i][2],
                      accel_bias_params_vec[i][0], accel_bias_params_vec[i][1], accel_bias_params_vec[i][2],
                      gyro_bias_params_vec[i][0], gyro_bias_params_vec[i][1], gyro_bias_params_vec[i][2]);
-    }   
+    }
+    spdlog::info("");
     
     // Convert gravity_dir to rotation matrix using ExpSO3
     // ExpSO3(x, y, 0) converts 2D gravity direction to SO(3) rotation matrix
@@ -1729,7 +1851,9 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     std::vector<double> velocity_residuals;
     std::vector<double> position_residuals;
     
-    // Evaluate each InertialGravityFactor to get detailed residuals
+    spdlog::info("🔍 [RESIDUAL ANALYSIS] Evaluating final residuals...");
+    
+    // 🆕 Evaluate each InertialGravityScaleFactor to get detailed residuals
     for (size_t opt_idx = 0; opt_idx < velocity_params_vec.size() - 1; ++opt_idx) {
         size_t frame_idx = opt_idx + 1;
         auto* frame_i = frames[frame_idx];
@@ -1738,18 +1862,19 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         auto preint = frame_j->get_imu_preintegration_from_last_keyframe();
         if (!preint || !preint->is_valid()) continue;
         
-        // Create factor
-        auto* factor = new factor::InertialGravityFactor(preint, 9.81);
+        // 🆕 Create InertialGravityScaleFactor (with scale)
+        auto* factor = new factor::InertialGravityScaleFactor(preint, 9.81);
         
-        // Prepare parameters
-        const double* params[7] = {
+        // 🆕 Prepare parameters (8 parameters including scale)
+        const double* params[8] = {
             pose_params_vec[opt_idx].data(),           // pose_i
             velocity_params_vec[opt_idx].data(),       // velocity_i
             gyro_bias_params_vec[opt_idx].data(),      // gyro_bias
             accel_bias_params_vec[opt_idx].data(),     // accel_bias
             pose_params_vec[opt_idx + 1].data(),       // pose_j
             velocity_params_vec[opt_idx + 1].data(),   // velocity_j
-            gravity_dir_params.data()                  // gravity_dir
+            gravity_dir_params.data(),                 // gravity_dir
+            scale_params.data()                        // 🆕 scale
         };
         
         // Compute residuals
@@ -1781,22 +1906,36 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         auto [v_mean, v_max, v_min] = calc_stats(velocity_residuals);
         auto [p_mean, p_max, p_min] = calc_stats(position_residuals);
         
-        spdlog::info("  🔄 Rotation residual: mean={:.6f}, max={:.6f}, min={:.6f}", r_mean, r_max, r_min);
-        spdlog::info("  🏃 Velocity residual: mean={:.6f}, max={:.6f}, min={:.6f}", v_mean, v_max, v_min);
-        spdlog::info("  📍 Position residual: mean={:.6f}, max={:.6f}, min={:.6f}", p_mean, p_max, p_min);
+        spdlog::info("");
+        spdlog::info("   Residual statistics ({} factors):", rotation_residuals.size());
+        spdlog::info("     🔄 Rotation: mean={:.6f}, max={:.6f}, min={:.6f}", r_mean, r_max, r_min);
+        spdlog::info("     🏃 Velocity: mean={:.6f}, max={:.6f}, min={:.6f}", v_mean, v_max, v_min);
+        spdlog::info("     📍 Position: mean={:.6f}, max={:.6f}, min={:.6f}", p_mean, p_max, p_min);
+        spdlog::info("");
         
         // Diagnose which component is problematic
+        bool has_problem = false;
         if (v_mean > 1.0 || p_mean > 1.0) {
-            spdlog::error("  ❌ Large velocity/position residuals → Gravity direction is WRONG!");
-            spdlog::error("     💡 Velocity residual depends on: (v_j - v_i) - g*dt");
-            spdlog::error("     💡 Position residual depends on: (t_j - t_i - v_i*dt) - 0.5*g*dt²");
-            spdlog::error("     💡 If these are large, the optimized gravity 'g' doesn't match actual motion!");
+            spdlog::error("   ❌ Large velocity/position residuals!");
+            spdlog::error("      → Gravity direction or scale may be WRONG");
+            spdlog::error("      💡 Velocity residual: r_v = R_bwi * (s*(v_j - v_i) - g*dt) - δV");
+            spdlog::error("      💡 Position residual: r_p = R_bwi * (s*(t_j - t_i - v_i*dt) - 0.5*g*dt²) - δP");
+            spdlog::error("      💡 Check if optimized gravity ({:.3f}°, {:.3f}°) and scale ({:.3f}) match actual motion",
+                         gravity_dir_params[0] * 180.0 / M_PI, gravity_dir_params[1] * 180.0 / M_PI, scale_params[0]);
+            has_problem = true;
         } else if (r_mean > 0.1) {
-            spdlog::warn("  ⚠️  Large rotation residual → IMU gyro bias or preintegration issue");
-        } else {
-            spdlog::info("  ✅ All residuals are reasonable - gravity optimization successful!");
+            spdlog::warn("   ⚠️  Large rotation residual → IMU gyro bias or preintegration issue");
+            has_problem = true;
         }
+        
+        if (!has_problem) {
+            spdlog::info("   ✅ All residuals are reasonable - optimization successful!");
+        }
+    } else {
+        spdlog::warn("   ⚠️  No residuals computed (not enough valid preintegrations)");
     }
+    
+    spdlog::info("");
     
     if (result.success) {
         // ===============================================================================
@@ -1806,6 +1945,11 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         result.Tgw_init = Eigen::Matrix4f::Identity();
         result.Tgw_init.block<3,3>(0,0) = Rwg.cast<float>().transpose();
         result.Rwg = Rwg; // World to Gravity frame
+        result.optimized_scale = scale_params[0];  // 🆕 Store scale
+        
+        spdlog::info("📦 [EXTRACT] Storing optimization results:");
+        spdlog::info("   Rwg: Rotation world→gravity frame");
+        spdlog::info("   Scale: {:.6f}", result.optimized_scale);
         
         // 3. Extract optimized velocities
         result.optimized_velocities.resize(velocity_params_vec.size());
@@ -1816,6 +1960,7 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
                 velocity_params_vec[i][2]
             );
         }
+        spdlog::info("   Velocities: {} frames stored", result.optimized_velocities.size());
         
         // 4. Compute average bias (from frames 1,2,3 - exclude last frame)
         Eigen::Vector3f avg_gyro_bias = Eigen::Vector3f::Zero();
@@ -1839,6 +1984,11 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         if (bias_count > 0) {
             result.optimized_gyro_bias = avg_gyro_bias / bias_count;
             result.optimized_accel_bias = avg_accel_bias / bias_count;
+            spdlog::info("   Biases: Averaged from {} frames", bias_count);
+            spdlog::info("     Gyro bias:  [{:.6f}, {:.6f}, {:.6f}]", 
+                         result.optimized_gyro_bias.x(), result.optimized_gyro_bias.y(), result.optimized_gyro_bias.z());
+            spdlog::info("     Accel bias: [{:.6f}, {:.6f}, {:.6f}]",
+                         result.optimized_accel_bias.x(), result.optimized_accel_bias.y(), result.optimized_accel_bias.z());
         }
         
         // 5. Store first frame position for visualization
@@ -1847,11 +1997,17 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         }
         result.has_gravity_visualization_data = true;
         
+        spdlog::info("");
+        spdlog::info("✅ [SUCCESS] IMU initialization complete!");
+        spdlog::info("================================================================================");
         
     } 
     else 
     {
-        spdlog::error("❌ [IMU_INIT] Optimization failed: {}", summary.BriefReport());
+        spdlog::error("");
+        spdlog::error("❌ [FAILURE] Optimization failed!");
+        spdlog::error("   Termination: {}", summary.BriefReport());
+        spdlog::error("================================================================================");
     }
     
     return result;
@@ -2040,6 +2196,80 @@ int InertialOptimizer::add_inertial_gravity_factors(
     }
     
     // spdlog::info("📊 [IMU_INIT] Total InertialGravityFactor factors added: {}", factors_added);
+    
+    return factors_added;
+}
+
+// Monocular version with scale parameter
+int InertialOptimizer::add_inertial_gravity_scale_factors(
+    ceres::Problem& problem,
+    const std::vector<Frame*>& frames,
+    std::shared_ptr<IMUHandler> imu_handler,
+    const std::vector<std::vector<double>>& pose_params_vec,
+    const std::vector<std::vector<double>>& velocity_params_vec,
+    const std::vector<std::vector<double>>& accel_bias_params_vec,
+    const std::vector<std::vector<double>>& gyro_bias_params_vec,
+    const std::vector<double>& gravity_dir_params,
+    std::vector<double>& scale_params) {
+    
+    int factors_added = 0;
+    size_t num_opt_frames = pose_params_vec.size();
+    
+    spdlog::info("🔧 [SCALE_FACTOR] Adding InertialGravityScaleFactor for {} optimization frames", num_opt_frames);
+    spdlog::info("   Initial scale: {:.6f}", scale_params[0]);
+    
+    for (size_t opt_idx = 0; opt_idx < num_opt_frames - 1; ++opt_idx) {
+        size_t frame_i_idx = opt_idx + 1;
+        size_t frame_j_idx = frame_i_idx + 1;
+        
+        Frame* frame_i = frames[frame_i_idx];
+        Frame* frame_j = frames[frame_j_idx];
+        
+        double dt = frame_j->get_dt_from_last_keyframe();
+        
+        if (dt < 0.001 || dt > 1.0) {
+            spdlog::warn("   ⚠️  Invalid dt={:.6f}s between frames {} and {}, skipping", 
+                         dt, frame_i->get_frame_id(), frame_j->get_frame_id());
+            continue;
+        }
+        
+        auto preintegration = frame_j->get_imu_preintegration_from_last_keyframe();
+        
+        if (!preintegration) {
+            spdlog::warn("   ⚠️  No preintegration for frame {} -> {}, skipping", 
+                         frame_i->get_frame_id(), frame_j->get_frame_id());
+            continue;
+        }
+        
+        // Create InertialGravityScaleFactor (8 parameter blocks)
+        double gravity_magnitude = 9.81;
+        auto* inertial_gravity_scale_factor = new factor::InertialGravityScaleFactor(preintegration, gravity_magnitude);
+        
+        // IMU Huber loss
+        double imu_huber_delta = sqrt(16.63);  // 15 DOF, 99%
+        auto* imu_loss_function = new ceres::HuberLoss(imu_huber_delta);
+        
+        // Add residual block with scale parameter (8 parameters)
+        // [pose1, velocity1, gyro_bias, accel_bias, pose2, velocity2, gravity_dir, scale]
+        problem.AddResidualBlock(inertial_gravity_scale_factor, imu_loss_function,
+                                const_cast<double*>(pose_params_vec[opt_idx].data()),
+                                const_cast<double*>(velocity_params_vec[opt_idx].data()),
+                                const_cast<double*>(gyro_bias_params_vec[opt_idx].data()),
+                                const_cast<double*>(accel_bias_params_vec[opt_idx].data()),
+                                const_cast<double*>(pose_params_vec[opt_idx+1].data()),
+                                const_cast<double*>(velocity_params_vec[opt_idx+1].data()),
+                                const_cast<double*>(gravity_dir_params.data()),
+                                scale_params.data());  // Scale parameter (1D)
+        
+        factors_added++;
+        
+        if (factors_added == 1 || factors_added == num_opt_frames - 1) {
+            spdlog::debug("   ✅ Factor {}: Frame {} -> {} (dt={:.4f}s)", 
+                         factors_added, frame_i->get_frame_id(), frame_j->get_frame_id(), dt);
+        }
+    }
+    
+    spdlog::info("📊 [SCALE_FACTOR] Total InertialGravityScaleFactor added: {}", factors_added);
     
     return factors_added;
 }
@@ -2615,6 +2845,9 @@ void SlidingWindowOptimizer::update_imu_optimized_values(
     for (size_t i = 0; i < keyframes.size(); ++i) {
         auto frame = keyframes[i];
         
+        // Get old velocity for comparison
+        Eigen::Vector3f old_velocity = frame->get_velocity();
+        
         // Update velocity
         Eigen::Vector3f optimized_velocity(
             velocity_params_vec[i][0],
@@ -2623,6 +2856,29 @@ void SlidingWindowOptimizer::update_imu_optimized_values(
         );
         frame->set_velocity(optimized_velocity);
         
+        // Calculate real velocity from pose change (if not the first frame)
+        if (i > 0) {
+            auto prev_frame = keyframes[i-1];
+            Eigen::Vector3f pos_i = frame->get_Twb().block<3,1>(0,3);
+            Eigen::Vector3f pos_prev = prev_frame->get_Twb().block<3,1>(0,3);
+            double dt = frame->get_timestamp() - prev_frame->get_timestamp();
+            
+            Eigen::Vector3f real_velocity = (pos_i - pos_prev) / dt;
+            
+            // Log velocity comparison
+            spdlog::info("[VEL_UPDATE] Frame {} ID={}: Predicted [{:.3f}, {:.3f}, {:.3f}] -> [{:.3f}, {:.3f}, {:.3f}], Real from pose: [{:.3f}, {:.3f}, {:.3f}], dt={:.4f}",
+                         i, frame->get_frame_id(),
+                         old_velocity.x(), old_velocity.y(), old_velocity.z(),
+                         optimized_velocity.x(), optimized_velocity.y(), optimized_velocity.z(),
+                         real_velocity.x(), real_velocity.y(), real_velocity.z(),
+                         dt);
+        } else {
+            // First frame - no previous frame to compare
+            spdlog::info("[VEL_UPDATE] Frame {} ID={}: [{:.3f}, {:.3f}, {:.3f}] -> [{:.3f}, {:.3f}, {:.3f}] (first frame)",
+                         i, frame->get_frame_id(),
+                         old_velocity.x(), old_velocity.y(), old_velocity.z(),
+                         optimized_velocity.x(), optimized_velocity.y(), optimized_velocity.z());
+        }
     }
     
     // Update shared bias for all keyframes (same bias applied to all)

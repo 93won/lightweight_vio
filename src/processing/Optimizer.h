@@ -75,6 +75,7 @@ struct InertialOptimizationResult {
     // Gravity transformation matrix (World-to-Gravity, SE(3))
     Eigen::Matrix4f Tgw_init;
     Eigen::Matrix3d Rwg;  // Rotation from world to gravity frame
+    double optimized_scale;  // 🆕 Monocular scale factor
     
     // ⭐ Gravity vector in World frame (BEFORE transformation) for visualization
     Eigen::Vector3f g_world_before_transform;
@@ -92,6 +93,7 @@ struct InertialOptimizationResult {
           num_visual_residuals(0), num_imu_residuals(0), num_outliers_removed(0),
           Tgw_init(Eigen::Matrix4f::Identity()),
           Rwg(Eigen::Matrix3d::Identity()),
+          optimized_scale(1.0),  // 🆕 Default scale = 1.0
           g_world_before_transform(Eigen::Vector3f::Zero()),
           first_frame_position(Eigen::Vector3f::Zero()),
           has_gravity_visualization_data(false),
@@ -574,6 +576,18 @@ private:
         const std::vector<std::vector<double>>& accel_bias_params_vec,
         const std::vector<std::vector<double>>& gyro_bias_params_vec,
         const std::vector<double>& gravity_dir_params);
+    
+    // Monocular version with scale parameter
+    int add_inertial_gravity_scale_factors(
+        ceres::Problem& problem,
+        const std::vector<Frame*>& frames,
+        std::shared_ptr<IMUHandler> imu_handler,
+        const std::vector<std::vector<double>>& pose_params_vec,
+        const std::vector<std::vector<double>>& velocity_params_vec,
+        const std::vector<std::vector<double>>& accel_bias_params_vec,
+        const std::vector<std::vector<double>>& gyro_bias_params_vec,
+        const std::vector<double>& gravity_dir_params,
+        std::vector<double>& scale_params);
     
     void add_imu_init_priors(
         ceres::Problem& problem,

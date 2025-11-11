@@ -405,19 +405,19 @@ std::unique_ptr<PangolinViewer> EurocPlayer::initialize_viewer(const EurocPlayer
 }
 
 void EurocPlayer::initialize_estimator(Estimator& estimator, const std::vector<ImageData>& image_data) {
-    // // Set initial ground truth pose if available
-    if (EurocUtils::has_ground_truth() && !image_data.empty()) {
-        auto first_gt_pose = EurocUtils::get_matched_pose(0);
-        if (first_gt_pose.has_value()) {
+    // // // Set initial ground truth pose if available
+    // if (EurocUtils::has_ground_truth() && !image_data.empty()) {
+    //     auto first_gt_pose = EurocUtils::get_matched_pose(0);
+    //     if (first_gt_pose.has_value()) {
 
-            estimator.set_initial_gt_pose(first_gt_pose.value());
-            // spdlog::info("[EurocPlayer] Set initial ground truth pose");
-        }
-    }
+    //         estimator.set_initial_gt_pose(first_gt_pose.value());
+    //         // spdlog::info("[EurocPlayer] Set initial ground truth pose");
+    //     }
+    // }
 
-    // Eigen::Matrix4f Twb_init;
-    // Twb_init<<0,0,1,0, 0,-1,0,0, 1,0,0,0, 0,0,0,1;
-    // estimator.set_initial_gt_pose(Twb_init);
+    Eigen::Matrix4f Twb_init;
+    Twb_init<<0,0,1,0, 0,-1,0,0, 1,0,0,0, 0,0,0,1;
+    estimator.set_initial_gt_pose(Twb_init);
 }
 
 double EurocPlayer::process_single_frame(Estimator& estimator,

@@ -510,6 +510,16 @@ private:
      * @param frame Frame to compute reprojection errors for
      */
     void compute_reprojection_error_statistics(std::shared_ptr<Frame> frame);
+    
+    /**
+     * @brief Multi-view triangulation using pixel coordinates (DLT method)
+     * @param observations Vector of frame-feature pairs containing observations of the same 3D point
+     * @param P_world Output 3D point in world coordinates
+     * @return True if triangulation successful
+     */
+    bool multi_view_triangulation(
+        const std::vector<std::pair<std::shared_ptr<Frame>, int>>& observations,
+        Eigen::Vector3f& P_world);
 };
 
 } // namespace lightweight_vio

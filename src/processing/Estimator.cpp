@@ -390,10 +390,6 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         if (m_monocular_initializer->is_initialized()) {
             auto init_result = m_monocular_initializer->get_result();
             
-            spdlog::info("[MONO_INIT] ✅ Initialization successful!");
-            spdlog::info("  - Initialized frames: {}", init_result.initialized_keyframes.size());
-            spdlog::info("  - Map points created: {}", init_result.initialized_mappoints.size());
-            
             // Store initialized frames and map points
             for (const auto& frame : init_result.initialized_keyframes) {
                 m_keyframes.push_back(frame);
@@ -430,22 +426,22 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
                         auto preint = m_imu_handler->preintegrate(imu_interval, t_prev, t_curr);
                         if (preint && preint->is_valid()) {
                             curr_kf->set_imu_preintegration_from_last_keyframe(preint);
-                            spdlog::debug("[MONO_INIT] Set preintegration for KF {} (dt={:.3f}s, {} IMU samples)", 
-                                        curr_kf->get_frame_id(), preint->dt_total, imu_interval.size());
+
+                            // 🎯 Log timestamp difference and preintegration dt
+                            double timestamp_diff = t_curr - t_prev;
+
+                            spdlog::info("[MONO_INIT] KF{}: t_prev={:.6f}s, t_curr={:.6f}s, Δt={:.4f}s, preint_dt={:.4f}s, Δp=[{:.4f}, {:.4f}, {:.4f}], Δv=[{:.4f}, {:.4f}, {:.4f}]",
+                                        curr_kf->get_frame_id(),
+                                        t_prev, t_curr, timestamp_diff,
+                                        preint->dt_total,
+                                        preint->delta_P.x(), preint->delta_P.y(), preint->delta_P.z(),
+                                        preint->delta_V.x(), preint->delta_V.y(), preint->delta_V.z());
                         }
                     }
                 }
             }
             
-            // Set the last initialized frame as the last keyframe
-            if (!init_result.initialized_keyframes.empty()) {
-                m_last_keyframe = init_result.initialized_keyframes.back();
-                m_current_pose = m_last_keyframe->get_Twb();
-            }
-            
-            // Update previous frame to current frame for next tracking
-            // (current frame is the second initialized keyframe)
-
+      
             // set both frames as keyframes
             m_current_frame->set_keyframe(true);
             if (m_previous_frame)
@@ -453,23 +449,24 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
 
             // set m_last_keyframe to current frame
             m_last_keyframe = m_current_frame;
-
             m_previous_frame = m_current_frame;
             
             // Mark as initialized
             m_monocular_initialized = true;
 
-
-
-            initialize_imu();
-
-
-            
             result.success = true;
             result.num_features = m_current_frame->get_feature_count();
             result.num_inliers = init_result.initialized_mappoints.size();
 
-            update_transform_from_last();
+            // Try initialize imu here
+
+            bool imu_init_success = initialize_imu_monocular();
+
+            if (imu_init_success) {
+                spdlog::info("[MONO_INIT] IMU initialized successfully");
+            } else {
+                spdlog::warn("[MONO_INIT] IMU initialization failed");
+            }
 
             return result;
         }
@@ -490,7 +487,6 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         return result;
     }
 
-    // ⭐ After initialization: Normal VIO tracking
     if (m_previous_frame) {
         // Predict state using motion model
         auto prediction_start = std::chrono::high_resolution_clock::now();
@@ -519,29 +515,25 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         
         if (num_tracked_with_map_points >= 5) {
             // Pose optimization
-            auto optimization_start = std::chrono::high_resolution_clock::now();
             auto opt_result = optimize_pose(m_current_frame);
-            auto optimization_end = std::chrono::high_resolution_clock::now();
-            auto optimization_time = std::chrono::duration_cast<std::chrono::microseconds>(optimization_end - optimization_start).count() / 1000.0;
             
+
+            // // Calculate T_rel
+            // Eigen::Matrix4f T_prev = m_previous_frame->get_Twb();
+            // Eigen::Matrix4f T_curr = opt_result.optimized_pose;
+            // Eigen::Matrix4f T_rel = T_prev.inverse() * T_curr;
+
+            // // Set velocity based on T_rel and frame time difference
+            // double dt = m_current_frame->get_timestamp() - m_previous_frame->get_timestamp();
+            // if (dt > 0) {
+            //     Eigen::Vector3f translation = T_rel.block<3,1>(0,3);
+            //     Eigen::Vector3f velocity = translation / dt;
+            //     m_current_frame->set_velocity(velocity);
+            // }
+
             result.success = opt_result.success;
             result.num_inliers = opt_result.num_inliers;
             result.num_outliers = opt_result.num_outliers;
-            
-            if (opt_result.success) {
-                m_current_pose = opt_result.optimized_pose;
-                m_current_frame->set_Twb(m_current_pose);
-                
-                
-                if (Config::getInstance().m_enable_debug_output) {
-                    spdlog::info("[POSE_OPT] ✅ Optimization successful: {} inliers, {} outliers", 
-                                opt_result.num_inliers, opt_result.num_outliers);
-                }
-            } else {
-                if (Config::getInstance().m_enable_debug_output) {
-                    spdlog::warn("[POSE_OPT] ❌ Optimization failed - keeping previous pose");
-                }
-            }
         } else {
             if (Config::getInstance().m_enable_debug_output) {
                 spdlog::warn("[POSE_OPT] ⚠️ Not enough map point associations for optimization: {} (need ≥5)", 
@@ -567,8 +559,6 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         } else {
             result.num_new_map_points = 0;
         }
-
-
         
         // Count tracked features and features with map points
         result.num_tracked_features = m_current_frame->get_feature_count();
@@ -597,6 +587,7 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
     if (m_previous_frame && !m_previous_frame->is_keyframe()) {
         m_previous_frame->release_images();
     }
+
 
     update_transform_from_last();
 
@@ -1520,14 +1511,6 @@ bool lightweight_vio::Estimator::initialize_imu() {
     // 4. Update preintegrations with new bias
     update_preintegrations_with_new_bias(imu_init_result);
     
-    // 5. 🎯 Apply IMU-based scale correction (MONOCULAR ONLY)
-    if (config.get_camera_type() == CameraType::MONOCULAR) {
-        spdlog::info("[INIT_IMU] 📏 Monocular mode detected - applying IMU-based scale correction");
-        apply_imu_based_scale_correction();
-    } else {
-        spdlog::info("[INIT_IMU] Stereo/RGBD mode - scale correction not needed (already metric)");
-    }
-    
     // 6. Visualize gravity direction (BEFORE transformation)
     visualize_gravity_direction(imu_init_result);
     
@@ -1563,19 +1546,147 @@ bool lightweight_vio::Estimator::initialize_imu() {
 }
 
 bool lightweight_vio::Estimator::initialize_imu_monocular() {
-    spdlog::info("================================================================================");
-    spdlog::info("[INIT_IMU_MONO] Starting Monocular IMU Initialization");
-    spdlog::info("[INIT_IMU_MONO] Using first 2 keyframes for initialization");
-    spdlog::info("================================================================================");
-    
-    // Check if we have exactly 2 keyframes (from monocular initialization)
-    if (m_keyframes.size() < 2) {
-        spdlog::warn("[INIT_IMU_MONO] Need at least 2 keyframes, have {}", m_keyframes.size());
-        return false;
+    if (should_initialize_imu())
+    {
+        spdlog::info("[MONO_INIT] IMU initialization started");
+
+        // Gravity direction initialization
+
+        // Use all keyframe for gravity estimation
+        std::vector<Frame *> keyframe_ptrs;
+
+        for (const auto &kf : m_keyframes)
+            keyframe_ptrs.push_back(kf.get());
+
+        // Collect all IMU data
+        std::vector<IMUData> all_imu_data;
+        for (const auto &keyframe : m_keyframes)
+        {
+            const auto &imu_data_since_last_kf = keyframe->get_imu_data_since_last_keyframe();
+            all_imu_data.insert(all_imu_data.end(), imu_data_since_last_kf.begin(), imu_data_since_last_kf.end());
+        }
+
+        // Also add current IMU buffer
+        all_imu_data.insert(all_imu_data.end(),
+                            m_imu_vec_from_last_keyframe.begin(),
+                            m_imu_vec_from_last_keyframe.end());
+
+        if (all_imu_data.empty() || !m_imu_handler)
+        {
+            spdlog::error("[MONO_INIT] IMU initialization failed - no IMU data available");
+        }
+
+        m_imu_handler->set_initialized(true);
+
+        auto imu_init_result = m_inertial_optimizer->optimize_imu_initialization(
+            keyframe_ptrs,                                                        // Frames for optimization
+            keyframe_ptrs,                                                        // ALL keyframes for transformation
+            std::shared_ptr<IMUHandler>(m_imu_handler.get(), [](IMUHandler *) {}) // Non-owning shared_ptr
+        );
+
+        if(!imu_init_result.success)
+        {
+            spdlog::error("[MONO_INIT] IMU initialization optimization failed");
+            return false;
+        }
+
+        m_Tgw_init = imu_init_result.Tgw_init;
+        double optimized_scale = imu_init_result.optimized_scale;
+
+        spdlog::info("[MONO_INIT] IMU initialization completed - optimized scale: {:.6f}", optimized_scale);
+
+        // Update values after imu initialization
+
+        // Set gravity in IMU Handler
+
+        m_imu_handler->set_gravity(imu_init_result.g_world_before_transform);
+
+        // Apply velocity and bias to keyframes
+        apply_imu_optimization_results(imu_init_result);
+
+        // Set bias in IMU Handler
+        m_imu_handler->set_bias(imu_init_result.optimized_gyro_bias,
+                                imu_init_result.optimized_accel_bias);
+
+        // Update preintegrations with new bias
+        update_preintegrations_with_new_bias(imu_init_result);
+
+        // Apply Tgw transformation to all frams and map points
+        apply_gravity_alignment_transform(imu_init_result.Tgw_init);
+
+        Eigen::Matrix4f Twc_init = m_current_frame->get_Twc();
+
+        // step 0 - scale factor
+        float scale_factor = 1.0f / (static_cast<float>(optimized_scale));
+
+        // step 1 - apply to all keyframes
+
+        Eigen::Matrix4f Twb_0 = m_keyframes[0]->get_Twb();
+
+        for (unsigned int i = 1; i < m_keyframes.size(); i++)
+        {
+            Eigen::Matrix4f Twb_i = m_keyframes[i]->get_Twb();
+            Eigen::Matrix4f T_0_i = Twb_0.inverse() * Twb_i;
+            T_0_i.block<3, 1>(0, 3) *= scale_factor; // scale translation
+            m_keyframes[i]->set_Twb(Twb_0 * T_0_i);  // update pose
+        }
+
+        // velocity scaling
+        for (unsigned int i = 0; i < m_keyframes.size(); i++)
+        {
+            Eigen::Vector3f vel = m_keyframes[i]->get_velocity();
+            vel *= scale_factor;
+            m_keyframes[i]->set_velocity(vel);
+        }
+
+        Eigen::Matrix4f Twc_after_scale = m_current_frame->get_Twc();
+
+        // step 2 - apply to all map points
+
+        // collect unique map points in window
+        std::set<std::shared_ptr<MapPoint>> unique_map_points;
+        std::vector<std::shared_ptr<MapPoint>> all_map_points;
+
+        for (const auto &kf : m_keyframes)
+        {
+            for (const auto &mp : kf->get_map_points())
+            {
+                if (mp && !mp->is_bad())
+                {
+                    unique_map_points.insert(mp);
+                }
+            }
+        }
+
+        all_map_points.assign(unique_map_points.begin(), unique_map_points.end());
+
+        for (const auto &mp : all_map_points)
+        {
+            Eigen::Vector3f pos_w = mp->get_position();
+            Eigen::Vector3f pos_c = Twc_init.inverse().block<3, 3>(0, 0) * (pos_w - Twc_init.block<3, 1>(0, 3));
+            pos_c *= scale_factor; // scale translation
+            Eigen::Vector3f pos_w_after = Twc_after_scale.block<3, 3>(0, 0) * pos_c + Twc_after_scale.block<3, 1>(0, 3);
+            mp->set_position(pos_w_after);
+        }
+
+        // Update initialization flags
+        m_gravity_initialized = true;
+        m_enable_imu_optimization = true;
+        m_success_imu_init = true;
+
+         std::shared_ptr<IMUHandler> shared_imu_handler = std::shared_ptr<IMUHandler>(
+        m_imu_handler.get(), 
+        [](IMUHandler*){}  // Non-owning shared_ptr
+    );
+
+        m_sliding_window_optimizer->enable_imu_optimization(
+            shared_imu_handler,
+            imu_init_result.g_world_before_transform.cast<double>());
+
+        return true;
     }
 
-    auto imu_init_result = try_initialize_imu();
-    return true;
+    return false;
 }
 
 // ========================================================================
@@ -1712,7 +1823,20 @@ bool lightweight_vio::Estimator::should_create_keyframe_monocular(std::shared_pt
         return true;
     }
 
+    // Time-based keyframe creation policy
+    // Force keyframe creation if time since last keyframe exceeds threshold
+    if (m_last_keyframe) {
+        double current_time = frame->get_timestamp();  // Already in seconds
+        double last_keyframe_time = m_last_keyframe->get_timestamp();  // Already in seconds
+        double time_diff = current_time - last_keyframe_time;
+        
+        if (time_diff >= Config::getInstance().m_keyframe_time_threshold) {
+            return true;
+        }
+    }
 
+       
+    
     // Check average parallax since last keyframe
 
     std::vector<double> parallaxes;
@@ -1932,6 +2056,98 @@ void lightweight_vio::Estimator::create_keyframe(std::shared_ptr<Frame> frame) {
     notify_sliding_window_thread();
 }
 
+bool lightweight_vio::Estimator::multi_view_triangulation(
+    const std::vector<std::pair<std::shared_ptr<Frame>, int>>& observations,
+    Eigen::Vector3f& P_world) {
+    
+    if (observations.size() < 2) {
+        return false;  // Need at least 2 views for triangulation
+    }
+    
+    // Build SVD matrix A for multi-view triangulation
+    int num_observations = observations.size();
+    Eigen::MatrixXf svd_A(2 * num_observations, 4);
+    
+    int row_idx = 0;
+    
+    for (const auto& obs : observations) {
+        auto obs_frame = obs.first;
+        int feature_idx = obs.second;
+        
+        if (!obs_frame || feature_idx < 0) {
+            return false;
+        }
+        
+        auto obs_feature = obs_frame->get_feature(feature_idx);
+        if (!obs_feature || !obs_feature->is_valid()) {
+            return false;
+        }
+        
+        // Get pixel coordinates (undistorted)
+        cv::Point2f pixel_coord = obs_feature->get_undistorted_coord();
+        float u = pixel_coord.x;
+        float v = pixel_coord.y;
+        
+        // Homogeneous pixel coordinates
+        Eigen::Vector3f x_hom(u, v, 1.0f);
+        
+        // Get camera-to-world transform for this observation
+        Eigen::Matrix4f T_wc_obs = obs_frame->get_Twc();
+        
+        // Build projection matrix P = K * [R | t]
+        // Get camera intrinsics
+        double fx = obs_frame->get_fx();
+        double fy = obs_frame->get_fy();
+        double cx = obs_frame->get_cx();
+        double cy = obs_frame->get_cy();
+        
+        Eigen::Matrix3f K;
+        K << fx, 0, cx,
+             0, fy, cy,
+             0, 0, 1;
+        
+        // World to camera transformation
+        Eigen::Matrix4f T_cw = T_wc_obs.inverse();
+        
+        // Build P = K * [R | t] (world to camera, then project)
+        Eigen::Matrix<float, 3, 4> Rt;
+        Rt.block<3, 3>(0, 0) = T_cw.block<3, 3>(0, 0);
+        Rt.block<3, 1>(0, 3) = T_cw.block<3, 1>(0, 3);
+        
+        Eigen::Matrix<float, 3, 4> P = K * Rt;
+        
+        // Add two rows per observation: DLT equations
+        // x_hom(0) * P.row(2) - x_hom(2) * P.row(0) = 0
+        // x_hom(1) * P.row(2) - x_hom(2) * P.row(1) = 0
+        svd_A.row(row_idx++) = x_hom(0) * P.row(2) - x_hom(2) * P.row(0);
+        svd_A.row(row_idx++) = x_hom(1) * P.row(2) - x_hom(2) * P.row(1);
+    }
+    
+    // Solve using SVD
+    Eigen::JacobiSVD<Eigen::MatrixXf> svd(svd_A, Eigen::ComputeThinV);
+    Eigen::Vector4f svd_V = svd.matrixV().rightCols<1>();
+    
+    // Homogeneous to 3D
+    if (std::abs(svd_V(3)) < 1e-6) {
+        return false;  // Point at infinity
+    }
+    
+    P_world = svd_V.head<3>() / svd_V(3);
+    
+    // Validate: check if point is in front of all cameras
+    for (const auto& obs : observations) {
+        auto obs_frame = obs.first;
+        Eigen::Matrix4f T_cw = obs_frame->get_Twc().inverse();
+        Eigen::Vector4f P_camera_h = T_cw * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
+        
+        if (P_camera_h.z() <= 0.0f) {  // Behind camera
+            return false;
+        }
+    }
+    
+    return true;
+}
+
 int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame> frame) {
     if (!frame) {
         return 0;
@@ -1968,184 +2184,64 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
                 num_reused_map_points++;
                 continue;
             }
-            // Correct keyframes in observations
+            // Triangulate using only the last keyframe observation
             const auto& observation = feature->get_observations();
 
-            std::vector<std::shared_ptr<Frame>> keyframe_observations;
-
             bool is_there_valid_mp = false;
-
-            for (const auto& obs : observation) {
-                if (obs.frame && obs.frame->is_keyframe() && obs.frame->is_active()) {
-                    // Valid keyframe observation
-                    keyframe_observations.push_back(obs.frame);
-
-                    // Check if this observation already has a map point
-                    auto mp = obs.frame->get_map_point(obs.feature_index);
-                    if (mp && !mp->is_bad()) {
-                        // check if it is outlier or not
-                        if(obs.frame->get_outlier_flag(obs.feature_index))
-                            continue; // skip outlier map points
-                        
-
-                        is_there_valid_mp = true;
-
-                        frame->set_map_point(curr_idx, mp);
-
-                        Eigen::Vector3f pos_world = mp->get_position();
-                        Eigen::Matrix4f T_wc_curr = frame->get_Twc();
-                        Eigen::Matrix4f T_cw_curr = T_wc_curr.inverse();
-
-                        Eigen::Vector4f pos_world_homogeneous(pos_world.x(), pos_world.y(), pos_world.z(), 1.0f);
-                        Eigen::Vector4f pos_camera_homogeneous = T_cw_curr * pos_world_homogeneous;
-                        Eigen::Vector3f pos_camera = pos_camera_homogeneous.head<3>();
-
-                        feature->set_3d_point(pos_camera);
-
-                        num_reused_map_points++;
-
-                        break;
-                    }
+            
+            // Collect all active keyframe observations (multi-view triangulation)
+            std::vector<std::pair<std::shared_ptr<Frame>, int>> multi_view_observations;
+            multi_view_observations.push_back({frame, curr_idx});  // Add current frame first
+            
+            for (const auto &obs : observation)
+            {
+                if (obs.frame && obs.frame->is_keyframe() && obs.frame->is_active())
+                {
+                    multi_view_observations.push_back({obs.frame, obs.feature_index});
                 }
             }
 
-            if(is_there_valid_mp)
-                continue; // No need to triangulate
-
-            // Multi-view triangulation using SVD
-            if (keyframe_observations.size() >= 2) {
-                // Build SVD matrix A for multi-view triangulation
-                int num_observations = keyframe_observations.size();
-                Eigen::MatrixXf svd_A(2 * num_observations, 4);
-                
-                int row_idx = 0;
-                bool all_observations_valid = true;
-                
-                for (const auto& obs_frame : keyframe_observations) {
-                    // Get observation feature index from observations
-                    int obs_feature_idx = -1;
-                    for (const auto& obs : observation) {
-                        if (obs.frame.get() == obs_frame.get()) {
-                            obs_feature_idx = obs.feature_index;
+            // Triangulate using all active keyframe observations
+            if (multi_view_observations.size() >= 5 && !is_there_valid_mp) {
+                Eigen::Vector3f P_world;
+                if (multi_view_triangulation(multi_view_observations, P_world)) {
+                    // Triangulation successful!
+                    // Create MapPoint
+                    auto new_mp = std::make_shared<MapPoint>(P_world);
+                    
+                    // Validate depth for all observations
+                    bool is_valid = true;
+                    std::vector<Eigen::Vector3f> camera_points;
+                    
+                    for (const auto& obs : multi_view_observations) {
+                        Eigen::Matrix4f T_cw = obs.first->get_Twc().inverse();
+                        Eigen::Vector4f P_camera = T_cw * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
+                        
+                        if (P_camera.z() <= 0.0f) {
+                            is_valid = false;  // Behind camera
                             break;
                         }
-                    }
-                    
-                    if (obs_feature_idx < 0) {
-                        all_observations_valid = false;
-                        break;
-                    }
-                    
-                    auto obs_feature = obs_frame->get_feature(obs_feature_idx);
-                    if (!obs_feature || !obs_feature->is_valid()) {
-                        all_observations_valid = false;
-                        break;
-                    }
-                    
-                    // Get normalized coordinates (undistorted)
-                    Eigen::Vector2f normalized = obs_feature->get_normalized_coord();
-                    Eigen::Vector3f bearing(normalized.x(), normalized.y(), 1.0f);
-                    bearing.normalize();
-                    
-                    // Get camera-to-world transform for this observation
-                    Eigen::Matrix4f T_wc_obs = obs_frame->get_Twc();
-                    
-                    // Build projection matrix P = [R | t]
-                    Eigen::Matrix<float, 3, 4> P;
-                    P.block<3, 3>(0, 0) = T_wc_obs.block<3, 3>(0, 0).transpose();  // R^T (world to camera)
-                    P.block<3, 1>(0, 3) = -P.block<3, 3>(0, 0) * T_wc_obs.block<3, 1>(0, 3);  // -R^T * t
-                    
-                    // Add two rows per observation: DLT equations
-                    svd_A.row(row_idx++) = bearing.x() * P.row(2) - bearing.z() * P.row(0);
-                    svd_A.row(row_idx++) = bearing.y() * P.row(2) - bearing.z() * P.row(1);
-                }
-                
-                if (all_observations_valid) {
-                    // Solve using SVD
-                    Eigen::JacobiSVD<Eigen::MatrixXf> svd(svd_A, Eigen::ComputeThinV);
-                    Eigen::Vector4f svd_V = svd.matrixV().rightCols<1>();
-                    
-                    // Homogeneous to 3D
-                    if (std::abs(svd_V(3)) > 1e-6) {
-                        Eigen::Vector3f P_world = svd_V.head<3>() / svd_V(3);
                         
-                        // Validate: check if point is in front of all cameras
-                        bool valid_depth = true;
-                        for (const auto& obs_frame : keyframe_observations) {
-                            Eigen::Matrix4f T_cw = obs_frame->get_Twc().inverse();
-                            Eigen::Vector4f P_camera_h = T_cw * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
+                        camera_points.push_back(P_camera.head<3>());
+                    }
+                    
+                    // Add observations to all frames if valid
+                    if (is_valid) {
+                        for (size_t i = 0; i < multi_view_observations.size(); ++i) {
+                            const auto& obs = multi_view_observations[i];
                             
-                            if (P_camera_h.z() <= 0.0f) {  // Behind camera or too close
-                                valid_depth = false;
-                                break;
-                            }
+                            new_mp->add_observation(obs.first, obs.second);
+                            obs.first->set_map_point(obs.second, new_mp);
+                            obs.first->get_feature(obs.second)->set_3d_point(camera_points[i]);
                         }
                         
-                        if (valid_depth) {
-                            // Create MapPoint
-                            auto new_mp = std::make_shared<MapPoint>(P_world);
-
-                            // check depth validation for all observed active keyframes
-                            bool is_valid = true;
-                             // Add observations from all keyframes
-                            for (const auto& obs : observation) {
-                                if (obs.frame && obs.frame->is_keyframe()) {
-
-                                    // Check it is also valid depth here
-                                    Eigen::Matrix4f T_cw_obs = obs.frame->get_Twc().inverse();
-                                    Eigen::Vector4f P_camera_h = T_cw_obs * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
-                                    if (P_camera_h.z() <= 0.0f) {
-                                        is_valid = false; // Skip if behind camera
-
-                                        break;
-                                    }
-
-                                }
-                            }
-                            
-                            // Add observations from all keyframes
-
-                            if(is_valid){
-                            for (const auto& obs : observation) {
-                                if (obs.frame && obs.frame->is_keyframe()) {
-
-                                    // Check it is also valid depth here
-                                    Eigen::Matrix4f T_cw_obs = obs.frame->get_Twc().inverse();
-                                    Eigen::Vector4f P_camera_h = T_cw_obs * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
-                                    if (P_camera_h.z() <= 0.0f) {
-                                        continue; // Skip if behind camera
-                                    }
-
-
-
-                                    new_mp->add_observation(obs.frame, obs.feature_index);
-                                    obs.frame->set_map_point(obs.feature_index, new_mp);
-
-
-                                    Eigen::Matrix4f T_cw_obs_curr = obs.frame->get_Twc().inverse();
-                                    Eigen::Vector4f P_camera_h_curr = T_cw_obs_curr * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f
-);
-                                    obs.frame->get_feature(obs.feature_index)->set_3d_point(P_camera_h_curr.head<3>());
-                                }
-                            }
+                        // Add to global map points
+                        {
+                            std::lock_guard<std::mutex> lock(m_map_points_mutex);
+                            m_map_points.push_back(new_mp);
                         }
-                            
-                            // // Set for current frame
-                            // frame->set_map_point(curr_idx, new_mp);
-                            
-                            // // Transform to current camera frame for feature
-                            // Eigen::Matrix4f T_cw_curr = frame->get_Twc().inverse();
-                            // Eigen::Vector4f P_camera_h = T_cw_curr * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
-                            // feature->set_3d_point(P_camera_h.head<3>());
-                            
-                            // Add to global map points
-                            {
-                                std::lock_guard<std::mutex> lock(m_map_points_mutex);
-                                m_map_points.push_back(new_mp);
-                            }
-                            
-                            num_new_map_points++;
-                        }
+                        
+                        num_new_map_points++;
                     }
                 }
             }
@@ -2370,6 +2466,8 @@ void Estimator::predict_state() {
         // VIO Mode: Use IMU preintegration for state prediction
         // Only use IMU prediction when IMU is properly initialized
 
+        spdlog::info("[PREDICT] Using IMU preintegration for state prediction");
+
         
         // Get from-last-keyframe IMU preintegration (more stable for longer intervals)
         auto keyframe_to_frame_preint = m_current_frame->get_imu_preintegration_from_last_frame();
@@ -2401,11 +2499,24 @@ void Estimator::predict_state() {
             Eigen::Matrix4f predicted_pose = Eigen::Matrix4f::Identity();
             predicted_pose.block<3,3>(0,0) = Rwb2;
             predicted_pose.block<3,1>(0,3) = twb2;
-            
+
+            // Check Velocity magnitude for validity
+
+            spdlog::error("Predicted Velocity: [{:.2f}, {:.2f}, {:.2f}] m/s", Vwb2.x(), Vwb2.y(), Vwb2.z());
+
             // Store predicted pose for comparison logging
             m_predicted_pose = predicted_pose;
+            
+            
+            spdlog::error("Trans change : [{:.2f}, {:.2f}, {:.2f}] m", 
+                          predicted_pose(0,3) - m_previous_frame->get_Twb()(0,3),
+                          predicted_pose(1,3) - m_previous_frame->get_Twb()(1,3),
+                          predicted_pose(2,3) - m_previous_frame->get_Twb()(2,3));
+            
             m_current_frame->set_Twb(predicted_pose);
             m_current_frame->set_velocity(Vwb2);
+
+            
             
           
             
@@ -2772,6 +2883,8 @@ InertialOptimizationResult lightweight_vio::Estimator::try_initialize_imu() {
             
             // Store Tgw_init for viewer
             m_Tgw_init = imu_init_result.Tgw_init;
+
+            std::cout<<"Optimized initial gravity direction (Rgw):\n"<<m_Tgw_init.block<3,3>(0,0)<<"\n\n\n\n"<<std::endl;
             
             // ⭐ Store gravity visualization data
             if (imu_init_result.has_gravity_visualization_data) {
@@ -2792,14 +2905,7 @@ InertialOptimizationResult lightweight_vio::Estimator::try_initialize_imu() {
 
             debug_keyframe_to_keyframe_comparison();
             
-            // 🎯 Apply scale correction for monocular camera ONLY
-            if (Config::getInstance().m_camera_type == CameraType::MONOCULAR) {
-                spdlog::info("[IMU_INIT] 📏 Monocular camera detected - applying IMU-based scale correction");
-                apply_imu_based_scale_correction();
-            } else {
-                spdlog::info("[IMU_INIT] ℹ️  Stereo/RGBD camera - skipping scale correction (metric scale already available)");
-            }
-            
+          
             return imu_init_result;  // ✅ Return result struct
         } else {
             spdlog::warn("❌ [IMU_INIT] IMU initialization optimization failed");
@@ -2819,6 +2925,11 @@ InertialOptimizationResult lightweight_vio::Estimator::try_initialize_imu() {
 void lightweight_vio::Estimator::apply_imu_optimization_results(const InertialOptimizationResult& result) {
     // Update Frame[0] velocity from Frame[1]
     if (m_keyframes.size() >= 2 && result.optimized_velocities.size() > 0) {
+
+        spdlog::info("Check Veclocity {} {} {}", 
+                     result.optimized_velocities[0].x(),
+                     result.optimized_velocities[0].y(),
+                     result.optimized_velocities[0].z());
         m_keyframes[0]->set_velocity(result.optimized_velocities[0]);
     }
     
