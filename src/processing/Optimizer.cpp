@@ -166,7 +166,7 @@ namespace lightweight_vio
         //              std::accumulate(m_pnp_info_y_sqrt.begin(), m_pnp_info_y_sqrt.end(), 0.0) / m_pnp_info_y_sqrt.size());
 
         // Check if we have enough observations
-        if (num_valid_observations < 5)
+        if (num_valid_observations < 20)
         {
             spdlog::warn("[POSE_OPT] ❌ Insufficient valid observations: {} < 5", num_valid_observations);
             result.success = false;
@@ -2857,29 +2857,44 @@ void SlidingWindowOptimizer::update_imu_optimized_values(
         frame->set_velocity(optimized_velocity);
         
         // Calculate real velocity from pose change (if not the first frame)
-        if (i > 0) {
-            auto prev_frame = keyframes[i-1];
-            Eigen::Vector3f pos_i = frame->get_Twb().block<3,1>(0,3);
-            Eigen::Vector3f pos_prev = prev_frame->get_Twb().block<3,1>(0,3);
-            double dt = frame->get_timestamp() - prev_frame->get_timestamp();
-            
-            Eigen::Vector3f real_velocity = (pos_i - pos_prev) / dt;
-            
-            // Log velocity comparison
-            spdlog::info("[VEL_UPDATE] Frame {} ID={}: Predicted [{:.3f}, {:.3f}, {:.3f}] -> [{:.3f}, {:.3f}, {:.3f}], Real from pose: [{:.3f}, {:.3f}, {:.3f}], dt={:.4f}",
-                         i, frame->get_frame_id(),
-                         old_velocity.x(), old_velocity.y(), old_velocity.z(),
-                         optimized_velocity.x(), optimized_velocity.y(), optimized_velocity.z(),
-                         real_velocity.x(), real_velocity.y(), real_velocity.z(),
-                         dt);
-        } else {
-            // First frame - no previous frame to compare
-            spdlog::info("[VEL_UPDATE] Frame {} ID={}: [{:.3f}, {:.3f}, {:.3f}] -> [{:.3f}, {:.3f}, {:.3f}] (first frame)",
-                         i, frame->get_frame_id(),
-                         old_velocity.x(), old_velocity.y(), old_velocity.z(),
-                         optimized_velocity.x(), optimized_velocity.y(), optimized_velocity.z());
+
+        if (!m_first_imu_opt_done)
+        {
+            if (i > 0)
+            {
+                auto prev_frame = keyframes[i - 1];
+                Eigen::Vector3f pos_i = frame->get_Twb().block<3, 1>(0, 3);
+                Eigen::Vector3f pos_prev = prev_frame->get_Twb().block<3, 1>(0, 3);
+                double dt = frame->get_timestamp() - prev_frame->get_timestamp();
+
+                Eigen::Vector3f real_velocity = (pos_i - pos_prev) / dt;
+
+                frame->set_velocity(real_velocity);
+
+                if (i == 1)
+                {
+                    keyframes[0]->set_velocity(real_velocity);
+                }
+                // Log velocity comparison
+                spdlog::info("[VEL_UPDATE] Frame {} ID={}: Predicted [{:.3f}, {:.3f}, {:.3f}] -> [{:.3f}, {:.3f}, {:.3f}], Real from pose: [{:.3f}, {:.3f}, {:.3f}], dt={:.4f}",
+                             i, frame->get_frame_id(),
+                             old_velocity.x(), old_velocity.y(), old_velocity.z(),
+                             optimized_velocity.x(), optimized_velocity.y(), optimized_velocity.z(),
+                             real_velocity.x(), real_velocity.y(), real_velocity.z(),
+                             dt);
+            }
+            else
+            {
+                // First frame - no previous frame to compare
+                spdlog::info("[VEL_UPDATE] Frame {} ID={}: [{:.3f}, {:.3f}, {:.3f}] -> [{:.3f}, {:.3f}, {:.3f}] (first frame)",
+                             i, frame->get_frame_id(),
+                             old_velocity.x(), old_velocity.y(), old_velocity.z(),
+                             optimized_velocity.x(), optimized_velocity.y(), optimized_velocity.z());
+            }
         }
     }
+
+    m_first_imu_opt_done = true;
     
     // Update shared bias for all keyframes (same bias applied to all)
     Eigen::Vector3f optimized_accel_bias(

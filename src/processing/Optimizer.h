@@ -307,6 +307,9 @@ public:
      */
     bool is_imu_enabled() const { return m_imu_enabled; }
 
+
+    bool m_first_imu_opt_done = false;
+
 private:
     /**
      * @brief Collect map points observed by keyframes in sliding window

@@ -226,6 +226,10 @@ Estimator::EstimationResult Estimator::process_rgbd_frame(const cv::Mat& rgb_ima
             }
             else
             {
+                // Use just predicted pose if optimization failed
+                m_current_pose = m_current_frame->get_Twb();
+                // Update transform from last frame for velocity estimation (even if tracking failed)
+                update_transform_from_last();
                 if (Config::getInstance().m_enable_debug_output)
                 {
                     spdlog::warn("[POSE_OPT] Optimization failed - keeping previous pose");
@@ -534,11 +538,9 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
             result.success = opt_result.success;
             result.num_inliers = opt_result.num_inliers;
             result.num_outliers = opt_result.num_outliers;
-        } else {
-            if (Config::getInstance().m_enable_debug_output) {
-                spdlog::warn("[POSE_OPT] ⚠️ Not enough map point associations for optimization: {} (need ≥5)", 
-                            num_tracked_with_map_points);
-            }
+        } else 
+        {
+            spdlog::warn("[POSE_OPT] ⚠️ Not enough map point associations for optimization: {} (need ≥20)", num_tracked_with_map_points);
             // Fallback: use current pose as-is
             m_current_pose = m_current_frame->get_Twb();
             
@@ -1879,7 +1881,7 @@ bool lightweight_vio::Estimator::should_create_keyframe_monocular(std::shared_pt
         avg_parallax = sum_parallax / parallaxes.size();
     }
 
-    if(avg_parallax > 30.0) // Threshold in pixels
+    if(avg_parallax > 20.0) // Threshold in pixels
     {
         return true;
     }
@@ -2139,11 +2141,32 @@ bool lightweight_vio::Estimator::multi_view_triangulation(
         auto obs_frame = obs.first;
         Eigen::Matrix4f T_cw = obs_frame->get_Twc().inverse();
         Eigen::Vector4f P_camera_h = T_cw * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
+
         
         if (P_camera_h.z() <= 0.0f) {  // Behind camera
             return false;
         }
+
+        // Check reprojection error
+        Eigen::Vector3f P_camera = P_camera_h.head<3>();
+        double fx = obs_frame->get_fx();
+        double fy = obs_frame->get_fy();
+        double cx = obs_frame->get_cx();
+        double cy = obs_frame->get_cy();    
+        float u_proj = fx * P_camera.x() / P_camera.z() + cx;
+        float v_proj = fy * P_camera.y() / P_camera.z() + cy;
+        auto obs_feature = obs_frame->get_feature(obs.second);
+        cv::Point2f observed_pt = obs_feature->get_undistorted_coord();
+        double error_x = observed_pt.x - u_proj;
+        double error_y = observed_pt.y - v_proj;
+        double reproj_error_square = (error_x * error_x + error_y * error_y);
+
+        if(reproj_error_square > 5.991) // 5 pixels threshold
+            return false;
+
     }
+
+    //
     
     return true;
 }
@@ -2202,7 +2225,7 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
             }
 
             // Triangulate using all active keyframe observations
-            if (multi_view_observations.size() >= 5 && !is_there_valid_mp) {
+            if (multi_view_observations.size() >= 3 && !is_there_valid_mp) {
                 Eigen::Vector3f P_world;
                 if (multi_view_triangulation(multi_view_observations, P_world)) {
                     // Triangulation successful!
@@ -2216,31 +2239,13 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
                     for (const auto& obs : multi_view_observations) {
                         Eigen::Matrix4f T_cw = obs.first->get_Twc().inverse();
                         Eigen::Vector4f P_camera = T_cw * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
-                        
-                        if (P_camera.z() <= 0.0f) {
-                            is_valid = false;  // Behind camera
-                            break;
-                        }
-                        
-                        camera_points.push_back(P_camera.head<3>());
-                    }
-                    
-                    // Add observations to all frames if valid
-                    if (is_valid) {
-                        for (size_t i = 0; i < multi_view_observations.size(); ++i) {
-                            const auto& obs = multi_view_observations[i];
-                            
-                            new_mp->add_observation(obs.first, obs.second);
-                            obs.first->set_map_point(obs.second, new_mp);
-                            obs.first->get_feature(obs.second)->set_3d_point(camera_points[i]);
-                        }
-                        
-                        // Add to global map points
-                        {
-                            std::lock_guard<std::mutex> lock(m_map_points_mutex);
+
+                        new_mp->add_observation(obs.first, obs.second);
+                        obs.first->set_map_point(obs.second, new_mp);
+                        obs.first->get_feature(obs.second)->set_3d_point(P_camera.head<3>());
+
+                        std::lock_guard<std::mutex> lock(m_map_points_mutex);
                             m_map_points.push_back(new_mp);
-                        }
-                        
                         num_new_map_points++;
                     }
                 }
@@ -2502,16 +2507,16 @@ void Estimator::predict_state() {
 
             // Check Velocity magnitude for validity
 
-            spdlog::error("Predicted Velocity: [{:.2f}, {:.2f}, {:.2f}] m/s", Vwb2.x(), Vwb2.y(), Vwb2.z());
+            // spdlog::error("Predicted Velocity: [{:.2f}, {:.2f}, {:.2f}] m/s", Vwb2.x(), Vwb2.y(), Vwb2.z());
 
             // Store predicted pose for comparison logging
             m_predicted_pose = predicted_pose;
             
             
-            spdlog::error("Trans change : [{:.2f}, {:.2f}, {:.2f}] m", 
-                          predicted_pose(0,3) - m_previous_frame->get_Twb()(0,3),
-                          predicted_pose(1,3) - m_previous_frame->get_Twb()(1,3),
-                          predicted_pose(2,3) - m_previous_frame->get_Twb()(2,3));
+            // spdlog::error("Trans change : [{:.2f}, {:.2f}, {:.2f}] m", 
+            //               predicted_pose(0,3) - m_previous_frame->get_Twb()(0,3),
+            //               predicted_pose(1,3) - m_previous_frame->get_Twb()(1,3),
+            //               predicted_pose(2,3) - m_previous_frame->get_Twb()(2,3));
             
             m_current_frame->set_Twb(predicted_pose);
             m_current_frame->set_velocity(Vwb2);
@@ -2891,16 +2896,6 @@ InertialOptimizationResult lightweight_vio::Estimator::try_initialize_imu() {
                 m_has_gravity_viz_data = true;
                 m_g_world_before_transform = imu_init_result.g_world_before_transform;
                 m_gravity_arrow_origin = imu_init_result.first_frame_position;
-                
-                spdlog::info("[Estimator] Gravity visualization data stored:");
-                spdlog::info("  g_world: [{:.3f}, {:.3f}, {:.3f}]", 
-                            m_g_world_before_transform.x(), 
-                            m_g_world_before_transform.y(), 
-                            m_g_world_before_transform.z());
-                spdlog::info("  origin: [{:.3f}, {:.3f}, {:.3f}]", 
-                            m_gravity_arrow_origin.x(), 
-                            m_gravity_arrow_origin.y(), 
-                            m_gravity_arrow_origin.z());
             }
 
             debug_keyframe_to_keyframe_comparison();
@@ -3025,12 +3020,12 @@ void lightweight_vio::Estimator::apply_imu_based_scale_correction() {
     kf_curr->set_Twb(Twb_curr_scaled);
 
     
-    // Apply scale to all keyframe velocities
-    for (auto& kf : m_keyframes) {
-        Eigen::Vector3f vel = kf->get_velocity();
-        vel *= scale;
-        kf->set_velocity(vel);
-    }
+    // // Apply scale to all keyframe velocities
+    // for (auto& kf : m_keyframes) {
+    //     Eigen::Vector3f vel = kf->get_velocity();
+    //     vel *= scale;
+    //     kf->set_velocity(vel);
+    // }
     
     // Apply scale to all map points
     int num_mp_updated = 0;
