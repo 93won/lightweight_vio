@@ -219,6 +219,8 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
     const auto &prev_features = previous_frame->get_features();
     for (int idx : feature_indices)
     {
+        if(!prev_features[idx])
+            continue;
 
         if (!prev_features[idx]->is_valid())
             continue;
@@ -325,10 +327,13 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
         // ✅ Simplified observation chain (단방향 forward + backward)
         const auto &prev_observations = prev_feature->get_observations();
 
-        // 1. Forward: Inherit observations from previous feature
+        // 1. Forward: Inherit observations from previous feature (only active frames)
         for (const auto &obs : prev_observations)
         {
-            new_feature->add_observation(obs.frame, obs.feature_index);
+            // ✅ Safety check: Skip if frame is not active
+            if (obs.frame && obs.frame->is_active()) {
+                new_feature->add_observation(obs.frame, obs.feature_index);
+            }
         }
 
         // 2. Add current frame observation
@@ -337,6 +342,11 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
         // 3. Backward: Let all past features know about current frame
         for (const auto &obs : prev_observations)
         {
+            // ✅ Safety check: Skip if frame is not active (removed from sliding window)
+            if (!obs.frame || !obs.frame->is_active()) {
+                continue;
+            }
+            
             auto previous_feature = obs.frame->get_feature(obs.feature_index);
             if (previous_feature)
             {

@@ -84,7 +84,7 @@ EurocPlayerResult EurocPlayer::run(const EurocPlayerConfig& config) {
         // spdlog::info("[EurocPlayer] Processing frames {} to {} ({} mode)", 
         //             start_frame_idx, end_frame_idx, config.use_vio_mode ? "VIO" : "VO");
         
-        context.current_idx = start_frame_idx;
+        context.current_idx = 0;//start_frame_idx;
         while (context.current_idx < end_frame_idx) {
             // Handle viewer controls first
             if (viewer && !handle_viewer_controls(*viewer, context)) {

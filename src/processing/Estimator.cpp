@@ -1826,16 +1826,16 @@ bool lightweight_vio::Estimator::should_create_keyframe_monocular(std::shared_pt
     }
 
     // Time-based keyframe creation policy
-    // Force keyframe creation if time since last keyframe exceeds threshold
-    if (m_last_keyframe) {
-        double current_time = frame->get_timestamp();  // Already in seconds
-        double last_keyframe_time = m_last_keyframe->get_timestamp();  // Already in seconds
-        double time_diff = current_time - last_keyframe_time;
+    // // Force keyframe creation if time since last keyframe exceeds threshold
+    // if (m_last_keyframe) {
+    //     double current_time = frame->get_timestamp();  // Already in seconds
+    //     double last_keyframe_time = m_last_keyframe->get_timestamp();  // Already in seconds
+    //     double time_diff = current_time - last_keyframe_time;
         
-        if (time_diff >= Config::getInstance().m_keyframe_time_threshold) {
-            return true;
-        }
-    }
+    //     if (time_diff >= Config::getInstance().m_keyframe_time_threshold) {
+    //         return true;
+    //     }
+    // }
 
        
     
@@ -2161,9 +2161,10 @@ bool lightweight_vio::Estimator::multi_view_triangulation(
         double error_y = observed_pt.y - v_proj;
         double reproj_error_square = (error_x * error_x + error_y * error_y);
 
-        if(reproj_error_square > 5.991) // 5 pixels threshold
+        if(reproj_error_square > 100) // 10 pixels threshold
+        {   spdlog::warn("Triangulation reprojection error too high: {:.2f}", reproj_error_square);
             return false;
-
+        }
     }
 
     //
@@ -2194,11 +2195,11 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
 
     // Let's check feature observations before creating the keyframe
     const auto& features = frame->get_features();
+    
     for (auto& feature : features) {
         if (feature && feature->is_valid()) {
 
             // If already map point associated, skip
-
             auto curr_idx = feature->get_feature_id();
             auto existing_mp = frame->get_map_point(curr_idx);
             
@@ -2207,47 +2208,87 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
                 num_reused_map_points++;
                 continue;
             }
-            // Triangulate using only the last keyframe observation
+            
             const auto& observation = feature->get_observations();
+            
+            // Collect all active keyframe observations
+            std::vector<std::pair<std::shared_ptr<Frame>, int>> all_observations;
+            all_observations.push_back({frame, curr_idx});  // Add current frame first
 
             bool is_there_valid_mp = false;
-            
-            // Collect all active keyframe observations (multi-view triangulation)
-            std::vector<std::pair<std::shared_ptr<Frame>, int>> multi_view_observations;
-            multi_view_observations.push_back({frame, curr_idx});  // Add current frame first
             
             for (const auto &obs : observation)
             {
                 if (obs.frame && obs.frame->is_keyframe() && obs.frame->is_active())
                 {
-                    multi_view_observations.push_back({obs.frame, obs.feature_index});
+                    all_observations.push_back({obs.frame, obs.feature_index});
                 }
             }
 
-            // Triangulate using all active keyframe observations
-            if (multi_view_observations.size() >= 3 && !is_there_valid_mp) {
+            // Need at least 5 observations (current + 4 keyframes)
+            if (all_observations.size() < 5 || is_there_valid_mp) {
+                continue;
+            }
+            
+            // Sort keyframe observations by timestamp (oldest first)
+            std::vector<std::pair<double, int>> sorted_kf_indices;
+            for (size_t i = 1; i < all_observations.size(); ++i) {
+                double obs_timestamp = all_observations[i].first->get_timestamp();
+                sorted_kf_indices.push_back({obs_timestamp, i});
+            }
+            std::sort(sorted_kf_indices.begin(), sorted_kf_indices.end());
+            
+            // Find a keyframe pair with parallax in range [10, 20]
+            std::vector<std::pair<std::shared_ptr<Frame>, int>> selected_pair;
+            bool found_good_pair = false;
+            
+            for (const auto& kf_pair : sorted_kf_indices) {
+                int kf_idx = kf_pair.second;
+                
+                // Check parallax with current frame
+                cv::Point2f pt_curr = all_observations[0].first->get_feature(all_observations[0].second)->get_undistorted_coord();
+                cv::Point2f pt_kf = all_observations[kf_idx].first->get_feature(all_observations[kf_idx].second)->get_undistorted_coord();
+                
+                Eigen::Vector2f pt1(pt_curr.x, pt_curr.y);
+                Eigen::Vector2f pt2(pt_kf.x, pt_kf.y);
+                
+                float parallax = (pt1 - pt2).norm();
+                
+                // Accept if parallax is in desired range [10, 20]
+                if (parallax >= 5.0f){// && parallax <= 50.0f) {
+                    selected_pair.push_back(all_observations[0]);  // current frame
+                    selected_pair.push_back(all_observations[kf_idx]);  // selected keyframe
+                    found_good_pair = true;
+                    break;
+                }
+            }
+            
+            if (!found_good_pair) {
+                continue;  // No keyframe with suitable parallax found
+            }
+
+            // Triangulate using selected pair
+            if (selected_pair.size() == 2) {
                 Eigen::Vector3f P_world;
-                if (multi_view_triangulation(multi_view_observations, P_world)) {
-                    // Triangulation successful!
-                    // Create MapPoint
+                if (multi_view_triangulation(selected_pair, P_world)) {
+                    // Triangulation successful! Create MapPoint
                     auto new_mp = std::make_shared<MapPoint>(P_world);
                     
-                    // Validate depth for all observations
-                    bool is_valid = true;
-                    std::vector<Eigen::Vector3f> camera_points;
-                    
-                    for (const auto& obs : multi_view_observations) {
+                    // Add observations for both frames
+                    for (const auto& obs : selected_pair) {
                         Eigen::Matrix4f T_cw = obs.first->get_Twc().inverse();
                         Eigen::Vector4f P_camera = T_cw * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
 
                         new_mp->add_observation(obs.first, obs.second);
                         obs.first->set_map_point(obs.second, new_mp);
                         obs.first->get_feature(obs.second)->set_3d_point(P_camera.head<3>());
-
-                        std::lock_guard<std::mutex> lock(m_map_points_mutex);
-                            m_map_points.push_back(new_mp);
-                        num_new_map_points++;
                     }
+                    
+                    {
+                        std::lock_guard<std::mutex> lock(m_map_points_mutex);
+                        m_map_points.push_back(new_mp);
+                    }
+                    num_new_map_points++;
                 }
             }
         }

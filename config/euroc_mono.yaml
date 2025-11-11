@@ -50,13 +50,12 @@ camera:
 # Controls keyframe selection and sliding window management
 # Also used as initialization window size for monocular VIO (collecting multiple frames for robust initialization)
 keyframe_management:
-  keyframe_window_size: 10     # Window size for both keyframe management and monocular initialization
-  time_threshold: 100000
+  keyframe_window_size: 10    # Window size for both keyframe management and monocular initialization
 # Monocular Initialization Parameters
 # Controls two-view geometry initialization for monocular VIO
 initialization:
   min_parallax_pixels: 20.0        # Minimum median parallax for initialization (pixels) - lower for indoor/slow motion
-  min_inliers: 50                  # Minimum inliers for F-matrix and pose recovery
+  min_inliers: 20                  # Minimum inliers for F-matrix and pose recovery
 
   ransac_threshold: 0.3            # RANSAC inlier threshold for fundamental/essential matrix (pixels)
   ransac_confidence: 0.99          # RANSAC confidence level
