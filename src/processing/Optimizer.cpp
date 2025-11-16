@@ -743,7 +743,8 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
 
     // Stage 1: Quick optimization with more fixed keyframes for stability
     // Fix more keyframes in first stage for robust outlier detection
-    int stage1_fixed_keyframes = 4;  // More conservative approach for first stage
+    // Use keyframe_window_size - 1 from config (e.g., 10 - 1 = 9)
+    int stage1_fixed_keyframes = Config::getInstance().m_keyframe_window_size - 1;
     apply_marginalization_strategy(problem, keyframes, map_points, pose_params_vec, point_params_vec, stage1_fixed_keyframes);
     // spdlog::debug("[SlidingWindowOptimizer] Stage 1: Fixed {} keyframes for outlier detection", stage1_fixed_keyframes);
     
@@ -766,7 +767,7 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
         obs_info.cost_function->set_outlier(is_outlier);
     }
     
-    // Stage 2: Apply different marginalization strategy for precise optimization
+    // // Stage 2: Apply different marginalization strategy for precise optimization
     // Fix fewer keyframes in second stage for more degrees of freedom
     int stage2_fixed_keyframes = 1;  // More flexible approach for second stage
     apply_marginalization_strategy(problem, keyframes, map_points, pose_params_vec, point_params_vec, stage2_fixed_keyframes, true, true);
@@ -1371,8 +1372,18 @@ void SlidingWindowOptimizer::update_optimized_values(
 
                 // Get the feature and update its depth
                 auto &features = frame->get_features();
+                
+                // Check if feature index is valid
+                if (feature_idx < 0 || feature_idx >= static_cast<int>(features.size())) {
+                    continue;  // Skip invalid feature index
+                }
 
                 auto feature = features[feature_idx];
+                
+                // Check if feature is valid
+                if (!feature) {
+                    continue;
+                }
 
                 // Get world position and transform to camera coordinates
                 Eigen::Vector3f world_pos = map_point->get_position();

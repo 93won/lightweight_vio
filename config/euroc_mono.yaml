@@ -51,7 +51,7 @@ camera:
 # Also used as initialization window size for monocular VIO (collecting multiple frames for robust initialization)
 keyframe_management:
   keyframe_window_size: 10   # Window size for both keyframe management and monocular initialization
-  time_threshold: 0.5
+  time_threshold: 0.1
 
 # Monocular Initialization Parameters
 # Controls two-view geometry initialization for monocular VIO

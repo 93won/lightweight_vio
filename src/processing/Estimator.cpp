@@ -511,10 +511,10 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         // Count how many features have associated map points
         int num_tracked_with_map_points = count_features_with_map_points(m_current_frame);
 
-        if(num_tracked_with_map_points < 100)
-        {
-            num_tracked_with_map_points += create_temporary_map_points(m_current_frame);
-        }
+        // if(num_tracked_with_map_points < 50)
+        // {
+        //     num_tracked_with_map_points += create_temporary_map_points(m_current_frame);
+        // }
 
         spdlog::info("Num tracked mp: {}", num_tracked_with_map_points);
 
@@ -1833,20 +1833,20 @@ bool lightweight_vio::Estimator::should_create_keyframe_monocular(std::shared_pt
     }
 
 
-        // I want to skeep stationary or if rotation is dominant compared to translation
-    if(m_last_keyframe)
-    {
-        Eigen::Matrix4f T_last = m_last_keyframe->get_Twb();
-        Eigen::Matrix4f T_curr = frame->get_Twb();
-        Eigen::Matrix4f T_last_curr = T_last.inverse() * T_curr;
-        Eigen::Vector3f translation = T_last_curr.block<3,1>(0,3);
+    //     // I want to skeep stationary or if rotation is dominant compared to translation
+    // if(m_last_keyframe)
+    // {
+    //     Eigen::Matrix4f T_last = m_last_keyframe->get_Twb();
+    //     Eigen::Matrix4f T_curr = frame->get_Twb();
+    //     Eigen::Matrix4f T_last_curr = T_last.inverse() * T_curr;
+    //     Eigen::Vector3f translation = T_last_curr.block<3,1>(0,3);
 
-        if(translation.norm() < 0.05) // 10 cm
-        {
-            spdlog::info("[KEYFRAME_DECISION] Skipping keyframe due to low translation ({:.2f} m)", translation.norm());
-            return false;
-        }
-    }
+    //     if(translation.norm() < 0.0) // 10 cm
+    //     {
+    //         spdlog::info("[KEYFRAME_DECISION] Skipping keyframe due to low translation ({:.2f} m)", translation.norm());
+    //         return false;
+    //     }
+    // }
 
     // Force keyframe creation if time since last keyframe exceeds threshold
     if (m_last_keyframe) {
@@ -2179,7 +2179,7 @@ bool lightweight_vio::Estimator::multi_view_triangulation(
             return false;
         }
 
-        // Check reprojection error
+        // // Check reprojection error
         Eigen::Vector3f P_camera = P_camera_h.head<3>();
         double fx = obs_frame->get_fx();
         double fy = obs_frame->get_fy();
@@ -2239,7 +2239,7 @@ int lightweight_vio::Estimator::create_temporary_map_points(std::shared_ptr<Fram
             }
 
             // Need at least 5 observations (current + 4 keyframes)
-            if (all_observations.size() < 2 || is_there_valid_mp) {
+            if (all_observations.size() < 5 || is_there_valid_mp) {
                 continue;
             }
             
@@ -2251,9 +2251,8 @@ int lightweight_vio::Estimator::create_temporary_map_points(std::shared_ptr<Fram
             }
             std::sort(sorted_kf_indices.begin(), sorted_kf_indices.end());
             
-            // Find a keyframe pair with parallax in range [10, 20]
-            std::vector<std::pair<std::shared_ptr<Frame>, int>> selected_pair;
-            bool found_good_pair = false;
+            // Try to find a keyframe pair with good parallax and successful triangulation
+            bool triangulation_success = false;
             
             for (const auto& kf_pair : sorted_kf_indices) {
                 int kf_idx = kf_pair.second;
@@ -2267,41 +2266,40 @@ int lightweight_vio::Estimator::create_temporary_map_points(std::shared_ptr<Fram
                 
                 float parallax = (pt1 - pt2).norm();
                 
-                // Accept if parallax is in desired range [1, 100]
-                if (parallax > 1.0f) {
+                // Accept if parallax is in desired range [10, inf]
+                if (parallax > 0.0f && parallax < 300.0f) {
+                    // Try triangulation with this pair
+                    std::vector<std::pair<std::shared_ptr<Frame>, int>> selected_pair;
                     selected_pair.push_back(all_observations[0]);  // current frame
                     selected_pair.push_back(all_observations[kf_idx]);  // selected keyframe
-                    found_good_pair = true;
-                    break;
-                }
-            }
-            
-            if (!found_good_pair) {
-                continue;  // No keyframe with suitable parallax found
-            }
-
-            // Triangulate using selected pair
-            if (selected_pair.size() == 2) {
-                Eigen::Vector3f P_world;
-                if (multi_view_triangulation(selected_pair, P_world)) {
-                    // Triangulation successful! Create MapPoint
-                    auto new_mp = std::make_shared<MapPoint>(P_world);
                     
-                    // Add observations for both frames
-                    for (const auto& obs : selected_pair) {
-                        Eigen::Matrix4f T_cw = obs.first->get_Twc().inverse();
-                        Eigen::Vector4f P_camera = T_cw * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
+                    Eigen::Vector3f P_world;
+                    if (multi_view_triangulation(selected_pair, P_world)) {
+                        // Triangulation successful! Create MapPoint
+                        auto new_mp = std::make_shared<MapPoint>(P_world);
+                        
+                        // Mark as temporary - will be cleaned up after pose optimization if frame doesn't become keyframe
+                        // new_mp->set_temporary(true);
+                        
+                        // Add observations for both frames
+                        for (const auto& obs : selected_pair) {
+                            Eigen::Matrix4f T_cw = obs.first->get_Twc().inverse();
+                            Eigen::Vector4f P_camera = T_cw * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
 
-                        new_mp->add_observation(obs.first, obs.second);
-                        obs.first->set_map_point(obs.second, new_mp);
-                        obs.first->get_feature(obs.second)->set_3d_point(P_camera.head<3>());
+                            new_mp->add_observation(obs.first, obs.second);
+                            obs.first->set_map_point(obs.second, new_mp);
+                            obs.first->get_feature(obs.second)->set_3d_point(P_camera.head<3>());
+                        }
+                        
+                        {
+                            std::lock_guard<std::mutex> lock(m_map_points_mutex);
+                            m_map_points.push_back(new_mp);
+                        }
+                        num_new_map_points++;
+                        triangulation_success = true;
+                        break;  // Success, move to next feature
                     }
-                    
-                    {
-                        std::lock_guard<std::mutex> lock(m_map_points_mutex);
-                        m_map_points.push_back(new_mp);
-                    }
-                    num_new_map_points++;
+                    // If triangulation failed, continue to try next keyframe pair
                 }
             }
         }
@@ -2365,7 +2363,7 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
             }
 
             // Need at least 5 observations (current + 4 keyframes)
-            if (all_observations.size() < 5 || is_there_valid_mp) {
+            if (all_observations.size() < 10 || is_there_valid_mp) {
                 continue;
             }
             
@@ -2394,7 +2392,7 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
                 float parallax = (pt1 - pt2).norm();
                 
                 // Accept if parallax is in desired range [1, 100]
-                if (parallax > 1.0f && parallax <= 100.0f) {
+                if (parallax > 0.0f && parallax <= 300.0f) {
                     selected_pair.push_back(all_observations[0]);  // current frame
                     selected_pair.push_back(all_observations[kf_idx]);  // selected keyframe
                     found_good_pair = true;

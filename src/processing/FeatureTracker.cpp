@@ -381,6 +381,8 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
             Eigen::Vector4f mp_homogeneous(mp_position.x(), mp_position.y(), mp_position.z(), 1.0f);
             Eigen::Vector4f mp_in_camera = Tcw * mp_homogeneous;
             new_feature->set_3d_point(mp_in_camera.head<3>());
+
+            prev_map_point->add_observation(current_frame, current_frame->get_feature_count() - 1);  // Add observation here
             
             // Map point creation is now handled only by Estimator during keyframe creation
         }
