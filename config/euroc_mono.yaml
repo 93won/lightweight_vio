@@ -15,7 +15,7 @@ viewer:
   height: 1080                   # Viewer window height (pixels)
   
 performance:
-  enable_debug_output: 1  # Print debug messages and feature counts
+  enable_debug_output: 0  # Print debug messages and feature counts
 
 # Camera Parameters (EuRoC dataset specific)
 # Image dimensions and processing parameters
@@ -56,7 +56,7 @@ keyframe_management:
 # Monocular Initialization Parameters
 # Controls two-view geometry initialization for monocular VIO
 initialization:
-  min_parallax_pixels: 30.0        # Minimum median parallax for initialization (pixels) - lower for indoor/slow motion
+  min_parallax_pixels: 20.0        # Minimum median parallax for initialization (pixels) - lower for indoor/slow motion
   min_inliers: 50                  # Minimum inliers for F-matrix and pose recovery
 
   ransac_threshold: 0.3            # RANSAC inlier threshold for fundamental/essential matrix (pixels)

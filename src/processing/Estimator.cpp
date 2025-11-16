@@ -344,7 +344,7 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
             spdlog::warn("[IMU] Failed to create frame-to-frame preintegration for frame {}", m_current_frame->get_frame_id());
         }
 
-        spdlog::debug("[IMU] Frame-to-frame preintegration set for frame {} with {} imu data", m_current_frame->get_frame_id(), imu_data_from_last_frame.size());
+        // spdlog::debug("[IMU] Frame-to-frame preintegration set for frame {} with {} imu data", m_current_frame->get_frame_id(), imu_data_from_last_frame.size());
     }
 
     // Compute from-last-keyframe preintegration for more stable state prediction
@@ -516,14 +516,10 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         //     num_tracked_with_map_points += create_temporary_map_points(m_current_frame);
         // }
 
-        spdlog::info("Num tracked mp: {}", num_tracked_with_map_points);
+        // spdlog::info("Num tracked mp: {}", num_tracked_with_map_points);
 
         
         // Log tracking information
-        if (Config::getInstance().m_enable_debug_output) {
-            spdlog::info("[TRACKING] {} features tracked, {} with map points", 
-                        result.num_features, num_tracked_with_map_points);
-        }
         
         if (num_tracked_with_map_points >= 5) {
             // Pose optimization
@@ -1910,8 +1906,8 @@ bool lightweight_vio::Estimator::should_create_keyframe_monocular(std::shared_pt
     }
 
 
-    spdlog::info("[KEYFRAME_DECISION] Median parallax since last keyframe: {:.2f} pixels (from {} matches)", 
-                 median_parallax, parallaxes.size());
+    // spdlog::info("[KEYFRAME_DECISION] Median parallax since last keyframe: {:.2f} pixels (from {} matches)", 
+    //              median_parallax, parallaxes.size());
 
     if(median_parallax > 20.0) // Threshold in pixels
     {
@@ -2194,7 +2190,7 @@ bool lightweight_vio::Estimator::multi_view_triangulation(
         double reproj_error_square = (error_x * error_x + error_y * error_y);
 
         if(reproj_error_square > 5.991) // 95%
-        {   spdlog::warn("Triangulation reprojection error too high: {:.2f}", reproj_error_square);
+        {   // spdlog::warn("Triangulation reprojection error too high: {:.2f}", reproj_error_square);
             return false;
         }
     }
@@ -2431,8 +2427,8 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
         }
     }
 
-    spdlog::info("[MONO_KF] Reused {} existing map points from observations", num_reused_map_points);
-    spdlog::info("[MONO_KF] Created {} new map points via triangulation", num_new_map_points);
+    // spdlog::info("[MONO_KF] Reused {} existing map points from observations", num_reused_map_points);
+    // spdlog::info("[MONO_KF] Created {} new map points via triangulation", num_new_map_points);
 
     // Thread-safe keyframe management
     {
@@ -2476,16 +2472,10 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
     // Update grid coverage and last keyframe reference
     m_last_keyframe_grid_coverage = calculate_grid_coverage_with_map_points(frame);
 
-    spdlog::info("[MONO_KF] Keyframe grid coverage: {:.2f}", m_last_keyframe_grid_coverage);
-
     m_last_keyframe = frame;
     
     // Notify sliding window optimizer
     notify_sliding_window_thread();
-    
-    spdlog::info("[MONO_KF] Keyframe {} created: {} reused + {} triangulated = {} total map points",
-                frame->get_frame_id(), num_reused_map_points, num_new_map_points, 
-                num_reused_map_points + num_new_map_points);
     
     return num_new_map_points;
 }
@@ -2649,8 +2639,6 @@ void Estimator::predict_state() {
         // VIO Mode: Use IMU preintegration for state prediction
         // Only use IMU prediction when IMU is properly initialized
 
-        spdlog::info("[PREDICT] Using IMU preintegration for state prediction");
-
         
         // Get from-last-keyframe IMU preintegration (more stable for longer intervals)
         auto keyframe_to_frame_preint = m_current_frame->get_imu_preintegration_from_last_frame();
@@ -2809,9 +2797,6 @@ double lightweight_vio::Estimator::calculate_grid_coverage_with_map_points(std::
     }
     
     double coverage_ratio = (double)cells_with_map_points / total_cells;
-    
-        spdlog::debug("Grid coverage: {}/{} cells have features with map points ({:.2f}%)", 
-                     cells_with_map_points, total_cells, coverage_ratio * 100.0);
     
     return coverage_ratio;
 }

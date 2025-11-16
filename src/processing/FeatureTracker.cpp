@@ -58,9 +58,9 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
         // Removed: update_feature_track_count(current_frame);
     }
 
-    spdlog::debug("[FeatureTracker] Tracked {} features from previous frame {}", 
-                  tracked_features, 
-                  previous_frame ? previous_frame->get_frame_id() : -1);
+    // spdlog::debug("[FeatureTracker] Tracked {} features from previous frame {}", 
+    //               tracked_features, 
+    //               previous_frame ? previous_frame->get_frame_id() : -1);
 
     // Extract new features if needed
     if (current_frame->get_feature_count() < m_config.m_max_features) {

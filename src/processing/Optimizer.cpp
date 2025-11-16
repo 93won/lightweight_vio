@@ -83,7 +83,7 @@ namespace lightweight_vio
             std::lock_guard<std::mutex> lock(s_mappoint_mutex);
             const auto &map_points = frame->get_map_points();
 
-            spdlog::info("[POSE_OPT] Frame {} has {} map points for PnP", frame->get_frame_id(), map_points.size());
+            // spdlog::info("[POSE_OPT] Frame {} has {} map points for PnP", frame->get_frame_id(), map_points.size());
             
             for (size_t i = 0; i < map_points.size(); ++i)
             {
@@ -252,9 +252,9 @@ namespace lightweight_vio
             int final_inliers = detect_outliers(const_cast<double const *const *>(&pose_data), observations, feature_indices, frame);
             int final_outliers = observations.size() - final_inliers;
             
-            spdlog::info("[POSE_OPT] {} rounds: cost {:.3e} -> {:.3e}, {} iters, {} inliers/{} outliers, success={}", 
-                        config.m_outlier_detection_rounds, initial_cost, final_cost, 
-                        total_iterations, final_inliers, final_outliers, result.success);
+            // spdlog::info("[POSE_OPT] {} rounds: cost {:.3e} -> {:.3e}, {} iters, {} inliers/{} outliers, success={}", 
+            //             config.m_outlier_detection_rounds, initial_cost, final_cost, 
+            //             total_iterations, final_inliers, final_outliers, result.success);
             
             result.num_inliers = final_inliers;
             result.num_outliers = final_outliers;
@@ -352,7 +352,7 @@ namespace lightweight_vio
         }
 
         // Summary is already printed in the optimization loop above
-        spdlog::info("[POSE] Optimization: {} inliers, {} outliers", result.num_inliers, result.num_outliers);
+        // spdlog::info("[POSE] Optimization: {} inliers, {} outliers", result.num_inliers, result.num_outliers);
 
         return result;
     }
@@ -717,7 +717,6 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
     // Setup IMU parameter blocks and factors if enabled
     int num_imu_factors = 0;
 
-    std::cout<<"IMU enabled: "<<m_imu_enabled<<std::endl;
     if (m_imu_enabled) {
         setup_imu_parameter_blocks(problem, keyframes, velocity_params_vec, 
                                   accel_bias_params, gyro_bias_params, gravity_dir_params);
@@ -832,13 +831,6 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
                                        accel_bias_params, gyro_bias_params);
         }
         
-        // if (Config::getInstance().m_enable_debug_output) 
-        {
-            spdlog::info("[SlidingWindowOptimizer] ✅ Optimization successful: {} poses, {} points, {} visual obs, {} IMU factors, {} inliers, {} outliers, cost: {:.10e} -> {:.10e}",
-                        result.num_poses_optimized, result.num_points_optimized, 
-                        observations.size(), num_imu_factors,
-                        result.num_inliers, result.num_outliers, result.initial_cost, result.final_cost);
-        }
 
     } else {
         spdlog::warn("[SlidingWindowOptimizer] ❌ Optimization failed (cost increased): {:.2e} -> {:.2e}, {}", result.initial_cost, result.final_cost, summary.BriefReport());

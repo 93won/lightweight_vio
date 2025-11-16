@@ -1,8 +1,14 @@
 # Lightweight VIO
 
-A lightweight visual odometry and visual-inertial odometry system supporting **stereo**, **monocular**, and **RGB-D** configurations.
+A lightweight **monocular** visual-inertial odometry system.
 
-⚠️ **Status**: Under active development (monocular development branch)
+## ⚠️ Development Status
+
+- 🚧 **Under active development** - system stabilization in progress
+- ⚠️ **Unstable** - may exhibit instability in some scenarios
+- ✅ **Tested only on EuRoC MH_01_easy** - other datasets not yet validated
+
+> 💡 **For stable performance**, use the **stereo version** instead.
 
 ## Installation
 
@@ -14,15 +20,15 @@ For detailed installation instructions: 📋 **[Installation Guide](docs/Install
 
 ## Sample Data
 
-Download sample TUM RGB-D dataset:
-- [TUM Freiburg2 Desk](https://drive.google.com/file/d/1HRWnBq9kq-m4gkjVuLdKUHeaZcztacIs/view?usp=sharing)
+Download EuRoC MAV dataset:
+- [EuRoC MH_01_easy](https://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets)
 
 ## Usage
 
-### EuRoC Example (Stereo/Mono VIO)
+### Monocular VIO Example
 ```bash
 cd build
-./euroc_example ../config/euroc_vio.yaml /path/to/euroc/MH_01_easy/
+./euroc_example ../config/euroc_mono.yaml /path/to/EuRoC/MH_01_easy/
 ```
 
 ## License
