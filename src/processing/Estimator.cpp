@@ -340,7 +340,7 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         Eigen::Matrix4f T_rel = m_previous_frame->get_Twb().inverse() * m_current_frame->get_Twb();
         Eigen::Vector3f vel = (T_rel.block<3,1>(0,3)) / (float)(m_current_frame->get_timestamp() - m_previous_frame->get_timestamp());
 
-        m_current_frame->set_velocity(m_previous_frame->get_velocity());
+        m_current_frame->set_velocity(vel);
 
     }
     else
