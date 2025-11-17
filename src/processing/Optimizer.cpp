@@ -744,7 +744,8 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
     // Stage 1: Quick optimization with more fixed keyframes for stability
     // Fix more keyframes in first stage for robust outlier detection
     // Use keyframe_window_size - 1 from config (e.g., 10 - 1 = 9)
-    int stage1_fixed_keyframes = 1;
+    const Config& config = Config::getInstance();
+    int stage1_fixed_keyframes = std::max(1, static_cast<int>(config.m_keyframe_window_size) - 1);
     apply_marginalization_strategy(problem, keyframes, map_points, pose_params_vec, point_params_vec, stage1_fixed_keyframes);
     // spdlog::debug("[SlidingWindowOptimizer] Stage 1: Fixed {} keyframes for outlier detection", stage1_fixed_keyframes);
     

@@ -2420,7 +2420,7 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
                 Eigen::Vector2f pt2(pt_kf.x, pt_kf.y);
                 float parallax = (pt1 - pt2).norm();
                 
-                if (parallax > 1.0f && parallax < 300.0f) {
+                if (parallax > 0.0f && parallax < 100.0f) {
                     parallax_sorted_kf.push_back(std::make_pair(parallax, i));
                 }
             }
