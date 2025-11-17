@@ -48,12 +48,28 @@ public:
     virtual cv::Point2f undistort_point(const cv::Point2f& distorted_point) const = 0;
     
     /**
+     * @brief Distort a single point from undistorted pixel coordinates to distorted pixel coordinates
+     * @param undistorted_point Point in undistorted pixel coordinates
+     * @return Point in distorted pixel coordinates
+     * @note Uses iterative Newton-Raphson method to find distorted coordinates
+     */
+    virtual cv::Point2f distort_point(const cv::Point2f& undistorted_point) const = 0;
+    
+    /**
      * @brief Batch undistortion for multiple points
      * @param distorted_points Vector of distorted points
      * @return Vector of undistorted points
      */
     virtual std::vector<cv::Point2f> undistort_points(
         const std::vector<cv::Point2f>& distorted_points) const;
+    
+    /**
+     * @brief Batch distortion for multiple points
+     * @param undistorted_points Vector of undistorted points
+     * @return Vector of distorted points
+     */
+    virtual std::vector<cv::Point2f> distort_points(
+        const std::vector<cv::Point2f>& undistorted_points) const;
     
     /**
      * @brief Project normalized coordinates to pixel coordinates

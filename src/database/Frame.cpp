@@ -970,6 +970,14 @@ void Frame::compute_stereo_matches() {
     // }
 }
 
+cv::Point2f Frame::distort_point(const cv::Point2f& undistorted_point) const {
+    if (m_camera) {
+        return m_camera->distort_point(undistorted_point);
+    } else {
+        return undistorted_point; // No distortion applied if camera model is not available
+    }
+}
+
 void Frame::undistort_features() {
     auto start_time = std::chrono::high_resolution_clock::now();
     

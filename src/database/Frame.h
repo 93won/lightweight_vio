@@ -263,6 +263,14 @@ public:
     
     // Feature processing
     void undistort_features();  // Undistort feature coordinates
+    
+    /**
+     * @brief Distort a single point using the camera model
+     * @param undistorted_point Point in undistorted pixel coordinates
+     * @return Point in distorted pixel coordinates
+     * @note Uses the frame's camera model to apply distortion
+     */
+    cv::Point2f distort_point(const cv::Point2f& undistorted_point) const;
 
     // IMU data management
     void set_imu_data_from_last_frame(const std::vector<IMUData>& imu_data);

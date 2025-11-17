@@ -58,9 +58,6 @@ void FeatureTracker::track_features(std::shared_ptr<Frame> current_frame,
         // Removed: update_feature_track_count(current_frame);
     }
 
-    // spdlog::debug("[FeatureTracker] Tracked {} features from previous frame {}", 
-    //               tracked_features, 
-    //               previous_frame ? previous_frame->get_frame_id() : -1);
 
     // Extract new features if needed
     if (current_frame->get_feature_count() < m_config.m_max_features) {
@@ -225,6 +222,7 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
         if (!prev_features[idx]->is_valid())
             continue;
 
+    
         prev_pts.push_back(prev_features[idx]->get_pixel_coord());
         valid_feature_indices.push_back(idx); // Store the original index
     }
@@ -410,7 +408,8 @@ std::pair<int, int> FeatureTracker::optical_flow_tracking(std::shared_ptr<Frame>
         spdlog::info("[FRAME_CHANGE] {} map points projected, avg movement: {:.2f}px", 
                     projection_count, avg_movement);
     }
-    
+
+
     // Debug output for tracking failures (only when explicitly enabled)
     if (m_config.m_enable_debug_output && false) {  // Disabled tracking debug output
         int total_failed = optical_flow_failed + border_failed + error_threshold_failed + movement_exceeded;

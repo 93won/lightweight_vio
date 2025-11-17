@@ -36,6 +36,19 @@ std::vector<cv::Point2f> Camera::undistort_points(
     return undistorted_points;
 }
 
+std::vector<cv::Point2f> Camera::distort_points(
+    const std::vector<cv::Point2f>& undistorted_points) const 
+{
+    std::vector<cv::Point2f> distorted_points;
+    distorted_points.reserve(undistorted_points.size());
+    
+    for (const auto& pt : undistorted_points) {
+        distorted_points.push_back(distort_point(pt));
+    }
+    
+    return distorted_points;
+}
+
 cv::Point2f Camera::project_normalized_to_pixel(const Eigen::Vector2f& normalized) const {
     cv::Point2f pixel;
     pixel.x = static_cast<float>(normalized.x() * m_fx + m_cx);

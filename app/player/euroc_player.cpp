@@ -147,7 +147,7 @@ EurocPlayerResult EurocPlayer::run(const EurocPlayerConfig& config) {
                     long long next_timestamp = image_data[context.current_idx].timestamp;
                     double frame_interval_ms = (next_timestamp - current_timestamp) / 1e6; // nanoseconds to milliseconds
                     
-                    double sleep_time_ms = 50 - total_time_ms;
+                    double sleep_time_ms = 30 - total_time_ms;
                     if (sleep_time_ms > 0) {
                         std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(sleep_time_ms)));
                     }

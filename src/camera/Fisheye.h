@@ -52,6 +52,14 @@ public:
     cv::Point2f undistort_point(const cv::Point2f& distorted_point) const override;
     
     /**
+     * @brief Distort a point using fisheye model
+     * @param undistorted_point Point in undistorted pixel coordinates
+     * @return Point in distorted pixel coordinates
+     * @note Uses cv::fisheye::distortPoints with Kannala-Brandt model
+     */
+    cv::Point2f distort_point(const cv::Point2f& undistorted_point) const override;
+    
+    /**
      * @brief Batch undistortion optimized for fisheye model
      * @param distorted_points Vector of distorted points
      * @return Vector of undistorted points

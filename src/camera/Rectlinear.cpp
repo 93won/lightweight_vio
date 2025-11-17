@@ -38,6 +38,29 @@ cv::Point2f Rectlinear::undistort_point(const cv::Point2f& distorted_point) cons
     return undistorted_pixel;
 }
 
+cv::Point2f Rectlinear::distort_point(const cv::Point2f& undistorted_point) const {
+    // Convert undistorted pixel to normalized coordinates
+    double x_n = (undistorted_point.x - m_cx) / m_fx;
+    double y_n = (undistorted_point.y - m_cy) / m_fy;
+    
+    // Create 3D point at unit depth
+    std::vector<cv::Point3f> object_points = {cv::Point3f(x_n, y_n, 1.0f)};
+    
+    // Get camera matrix and distortion coefficients
+    cv::Mat K = get_camera_matrix();
+    cv::Mat D = get_distortion_mat();
+    
+    // Identity rotation and translation (camera frame to camera frame)
+    cv::Mat rvec = cv::Mat::zeros(3, 1, CV_64F);
+    cv::Mat tvec = cv::Mat::zeros(3, 1, CV_64F);
+    
+    // Project with distortion
+    std::vector<cv::Point2f> distorted_points;
+    cv::projectPoints(object_points, rvec, tvec, K, D, distorted_points);
+    
+    return distorted_points[0];
+}
+
 std::vector<cv::Point2f> Rectlinear::undistort_points(
     const std::vector<cv::Point2f>& distorted_points) const 
 {

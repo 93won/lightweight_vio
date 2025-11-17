@@ -323,7 +323,7 @@ private:
     /**
      * @brief Predict current frame pose using motion model
      */
-    void predict_state();
+    void predict_state(bool constant_velocity = false);
     
     /**
      * @brief Update transform from last frame for velocity estimation

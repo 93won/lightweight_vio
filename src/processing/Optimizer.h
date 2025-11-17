@@ -407,7 +407,8 @@ private:
         const std::vector<std::shared_ptr<Frame>>& keyframes,
         const std::vector<std::shared_ptr<MapPoint>>& map_points,
         const std::vector<std::vector<double>>& pose_params_vec,
-        const std::vector<std::vector<double>>& point_params_vec);
+        const std::vector<std::vector<double>>& point_params_vec,
+        const double scale_optimized = 1.0);
     
     /**
      * @brief Setup solver options for sliding window optimization
@@ -454,9 +455,10 @@ private:
      * @param keyframes Vector of keyframes  
      * @param pose_params_vec Vector of pose parameter arrays
      * @param velocity_params_vec Vector of velocity parameter arrays  
-     * @param accel_bias_params Shared accelerometer bias parameters (global)
-     * @param gyro_bias_params Shared gyroscope bias parameters (global)
+     * @param accel_bias_params_vec Per-keyframe accelerometer bias parameters
+     * @param gyro_bias_params_vec Per-keyframe gyroscope bias parameters
      * @param gravity_dir_params Fixed gravity direction parameters
+     * @param scale_params Scale parameter (1D)
      * @return Number of IMU factors added
      */
     int add_inertial_factors_to_sliding_window(
@@ -466,16 +468,18 @@ private:
         const std::vector<std::vector<double>>& velocity_params_vec,
         const std::vector<double>& accel_bias_params,
         const std::vector<double>& gyro_bias_params,
-        const std::vector<double>& gravity_dir_params);
+        const std::vector<double>& gravity_dir_params,
+        const std::vector<double>& scale_params);
     
     /**
      * @brief Setup IMU parameter blocks for sliding window optimization
      * @param problem Ceres problem
      * @param keyframes Vector of keyframes
      * @param velocity_params_vec Vector to store velocity parameters (per keyframe)
-     * @param accel_bias_params Shared accelerometer bias parameters (global)
-     * @param gyro_bias_params Shared gyroscope bias parameters (global)
+     * @param accel_bias_params Shared accelerometer bias parameters (3D)
+     * @param gyro_bias_params Shared gyroscope bias parameters (3D)
      * @param gravity_dir_params Vector to store gravity direction parameters
+     * @param scale_params Vector to store scale parameter (1D)
      */
     void setup_imu_parameter_blocks(
         ceres::Problem& problem,
@@ -483,20 +487,23 @@ private:
         std::vector<std::vector<double>>& velocity_params_vec,
         std::vector<double>& accel_bias_params,
         std::vector<double>& gyro_bias_params,
-        std::vector<double>& gravity_dir_params);
+        std::vector<double>& gravity_dir_params,
+        std::vector<double>& scale_params);
         
     /**
      * @brief Update frames with optimized IMU states
      * @param keyframes Vector of keyframes to update
      * @param velocity_params_vec Optimized velocity parameters (per keyframe)
-     * @param accel_bias_params Optimized accelerometer bias parameters (shared)
-     * @param gyro_bias_params Optimized gyroscope bias parameters (shared)
+     * @param accel_bias_params Shared optimized accelerometer bias parameters (3D)
+     * @param gyro_bias_params Shared optimized gyroscope bias parameters (3D)
+     * @param scale_params Optimized scale parameter (1D)
      */
     void update_imu_optimized_values(
         const std::vector<std::shared_ptr<Frame>>& keyframes,
         const std::vector<std::vector<double>>& velocity_params_vec,
         const std::vector<double>& accel_bias_params,
-        const std::vector<double>& gyro_bias_params);
+        const std::vector<double>& gyro_bias_params,
+        const std::vector<double>& scale_params);
 
 private:
     size_t m_window_size;        // Maximum keyframes in sliding window

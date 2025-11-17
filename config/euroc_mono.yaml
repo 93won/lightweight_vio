@@ -51,12 +51,12 @@ camera:
 # Also used as initialization window size for monocular VIO (collecting multiple frames for robust initialization)
 keyframe_management:
   keyframe_window_size: 10   # Window size for both keyframe management and monocular initialization
-  time_threshold: 0.1
+  time_threshold: 0.05
 
 # Monocular Initialization Parameters
 # Controls two-view geometry initialization for monocular VIO
 initialization:
-  min_parallax_pixels: 20.0        # Minimum median parallax for initialization (pixels) - lower for indoor/slow motion
+  min_parallax_pixels: 30.0        # Minimum median parallax for initialization (pixels) - lower for indoor/slow motion
   min_inliers: 50                  # Minimum inliers for F-matrix and pose recovery
 
   ransac_threshold: 0.3            # RANSAC inlier threshold for fundamental/essential matrix (pixels)
@@ -91,7 +91,7 @@ optical_flow:
 
 # Controls depth validation throughout the entire VIO system
 depth:
-  min_depth: 0.1              # Minimum depth for valid 3D points (meters) - used in all depth validation
+  min_depth: 0.0              # Minimum depth for valid 3D points (meters) - used in all depth validation
   max_depth: 100.0            # Maximum depth for valid 3D points (meters) - used in all depth validation
 
 

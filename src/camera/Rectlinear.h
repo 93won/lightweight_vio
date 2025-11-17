@@ -51,6 +51,14 @@ public:
     cv::Point2f undistort_point(const cv::Point2f& distorted_point) const override;
     
     /**
+     * @brief Distort a point using pinhole model
+     * @param undistorted_point Point in undistorted pixel coordinates
+     * @return Point in distorted pixel coordinates
+     * @note Uses cv::projectPoints with radial-tangential distortion
+     */
+    cv::Point2f distort_point(const cv::Point2f& undistorted_point) const override;
+    
+    /**
      * @brief Batch undistortion optimized for pinhole model
      * @param distorted_points Vector of distorted points
      * @return Vector of undistorted points

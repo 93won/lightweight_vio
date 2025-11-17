@@ -303,6 +303,16 @@ Estimator::EstimationResult Estimator::process_rgbd_frame(const cv::Mat& rgb_ima
 
 Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& image, double timestamp,
                                                               const std::vector<IMUData>& imu_data_from_last_frame) {
+
+
+    
+    // Check previous frame bias and velocity
+   
+    
+    
+    
+    
+    // Initialize result
     EstimationResult result;
     auto total_start_time = std::chrono::high_resolution_clock::now();
 
@@ -316,12 +326,36 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
 
     // Create new monocular frame
     m_current_frame = create_monocular_frame(image, timestamp);
+    
 
-    if(m_last_keyframe){
-        m_current_frame->set_accel_bias(m_last_keyframe->get_accel_bias());
-        m_current_frame->set_gyro_bias(m_last_keyframe->get_gyro_bias());
+    if (m_keyframes.size () > 1)
+    {
+
+        Eigen::Vector3f prev_accel_bias = m_keyframes[0]->get_accel_bias();
+        Eigen::Vector3f prev_gyro_bias = m_keyframes[0]->get_gyro_bias();
+
+        m_current_frame->set_accel_bias(prev_accel_bias);
+        m_current_frame->set_gyro_bias(prev_gyro_bias);
+
+        Eigen::Matrix4f T_rel = m_previous_frame->get_Twb().inverse() * m_current_frame->get_Twb();
+        Eigen::Vector3f vel = (T_rel.block<3,1>(0,3)) / (float)(m_current_frame->get_timestamp() - m_previous_frame->get_timestamp());
+
+        m_current_frame->set_velocity(m_previous_frame->get_velocity());
+
+    }
+    else
+    {
+        spdlog::debug("[MONO_FRAME] No previous frame available.");
     }
 
+    // set 
+
+    // spdlog::info("Previous frame velocity : [{:.4f}, {:.4f}, {:.4f}]",
+    //              m_previous_frame ? m_previous_frame->get_velocity().x() : 0.0f,
+    //              m_previous_frame ? m_previous_frame->get_velocity().y() : 0.0f,
+    //              m_previous_frame ? m_previous_frame->get_velocity().z() : 0.0f);
+
+ 
 
     // Set IMU data to the frame (frame-to-frame data)
     m_current_frame->set_imu_data_from_last_frame(imu_data_from_last_frame);
@@ -493,17 +527,12 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
 
     if (m_previous_frame) {
         // Predict state using motion model
-        auto prediction_start = std::chrono::high_resolution_clock::now();
+
         predict_state();
-        auto prediction_end = std::chrono::high_resolution_clock::now();
-        auto prediction_time = std::chrono::duration_cast<std::chrono::microseconds>(prediction_end - prediction_start).count() / 1000.0;
-        
-        // Track features from previous frame
-        auto tracking_start = std::chrono::high_resolution_clock::now();
+
+      
         m_feature_tracker->track_features(m_current_frame, m_previous_frame);
-        auto tracking_end = std::chrono::high_resolution_clock::now();
-        auto tracking_time = std::chrono::duration_cast<std::chrono::microseconds>(tracking_end - tracking_start).count() / 1000.0;
-        
+
         result.num_features = m_current_frame->get_feature_count();
 
         m_current_frame->undistort_features();
@@ -511,65 +540,79 @@ Estimator::EstimationResult Estimator::process_monocular_frame(const cv::Mat& im
         // Count how many features have associated map points
         int num_tracked_with_map_points = count_features_with_map_points(m_current_frame);
 
-        // if(num_tracked_with_map_points < 50)
-        // {
-        //     num_tracked_with_map_points += create_temporary_map_points(m_current_frame);
-        // }
+        // m_feature_tracker->track_features(m_current_frame, m_last_keyframe);
 
-        // spdlog::info("Num tracked mp: {}", num_tracked_with_map_points);
-
-        
         // Log tracking information
-        
-        if (num_tracked_with_map_points >= 5) {
-            // Pose optimization
+
+        if (num_tracked_with_map_points >= 50)
+        {
+
+
             auto opt_result = optimize_pose(m_current_frame);
-            
 
-            // // Calculate T_rel
-            // Eigen::Matrix4f T_prev = m_previous_frame->get_Twb();
-            // Eigen::Matrix4f T_curr = opt_result.optimized_pose;
-            // Eigen::Matrix4f T_rel = T_prev.inverse() * T_curr;
-
-            // // Set velocity based on T_rel and frame time difference
-            // double dt = m_current_frame->get_timestamp() - m_previous_frame->get_timestamp();
-            // if (dt > 0) {
-            //     Eigen::Vector3f translation = T_rel.block<3,1>(0,3);
-            //     Eigen::Vector3f velocity = translation / dt;
-            //     m_current_frame->set_velocity(velocity);
-            // }
+            // update velocity
+            Eigen::Matrix4f T_rel = m_previous_frame->get_Twb().inverse() * m_current_frame->get_Twb();
+            Eigen::Vector3f vel = (T_rel.block<3,1>(0,3)) / (float)(m_current_frame->get_timestamp() - m_previous_frame->get_timestamp());
+            m_current_frame->set_velocity(vel);
 
             result.success = opt_result.success;
             result.num_inliers = opt_result.num_inliers;
             result.num_outliers = opt_result.num_outliers;
-        } else 
-        {
-            spdlog::warn("[POSE_OPT] ⚠️ Not enough map point associations for optimization: {} (need ≥20)", num_tracked_with_map_points);
-            // Fallback: use current pose as-is
-            m_current_pose = m_current_frame->get_Twb();
-            
-            result.success = true;
-            result.num_inliers = num_tracked_with_map_points;
-            result.num_outliers = 0;
         }
-        
+        else
+        {
+
+            // num_tracked_with_map_points += create_temporary_map_points(m_current_frame);
+
+
+            // if (num_tracked_with_map_points < 50)
+            // {
+
+                
+
+            //     auto opt_result = optimize_pose(m_current_frame);
+            //     // Fallback: use current pose as-is
+            //     // m_current_pose = m_current_frame->get_Twb();
+
+            //     result.success = opt_result.success;
+            //     result.num_inliers = opt_result.num_inliers;
+            //     result.num_outliers = opt_result.num_outliers;
+            // }
+
+            // else
+            {
+                // Pose optimization
+                predict_state(true);
+
+                auto opt_result = optimize_pose(m_current_frame);
+
+                result.success = opt_result.success;
+                result.num_inliers = opt_result.num_inliers;
+                result.num_outliers = opt_result.num_outliers;
+            }
+        }
+
         // Decide whether to create keyframe
         bool is_keyframe = should_create_keyframe_monocular(m_current_frame);
-        
-        if (is_keyframe) {
+
+        if (!result.success)
+            is_keyframe = true; // Force keyframe if optimization failed
+
+        if (is_keyframe)
+        {
             // ⭐ Use monocular-specific keyframe creation with triangulation
             int new_map_points = create_keyframe_monocular(m_current_frame);
             result.num_new_map_points = new_map_points;
-            
+
             m_frames_since_last_keyframe = 0;
-        } 
-        
-        
+        }
+
         // Count tracked features and features with map points
         result.num_tracked_features = m_current_frame->get_feature_count();
         result.num_features_with_map_points = count_features_with_map_points(m_current_frame);
-        
-    } else {
+    }
+    else
+    {
         // Should not reach here - initialization should have set m_previous_frame
         spdlog::error("[MONO] No previous frame after initialization!");
         result.success = false;
@@ -1829,20 +1872,20 @@ bool lightweight_vio::Estimator::should_create_keyframe_monocular(std::shared_pt
     }
 
 
-    //     // I want to skeep stationary or if rotation is dominant compared to translation
-    // if(m_last_keyframe)
-    // {
-    //     Eigen::Matrix4f T_last = m_last_keyframe->get_Twb();
-    //     Eigen::Matrix4f T_curr = frame->get_Twb();
-    //     Eigen::Matrix4f T_last_curr = T_last.inverse() * T_curr;
-    //     Eigen::Vector3f translation = T_last_curr.block<3,1>(0,3);
+    // //     // I want to skeep stationary or if rotation is dominant compared to translation
+    if(m_last_keyframe)
+    {
+        Eigen::Matrix4f T_last = m_last_keyframe->get_Twb();
+        Eigen::Matrix4f T_curr = frame->get_Twb();
+        Eigen::Matrix4f T_last_curr = T_last.inverse() * T_curr;
+        Eigen::Vector3f translation = T_last_curr.block<3,1>(0,3);
+        Eigen::Vector3f rot = Sophus::SO3f(T_last_curr.block<3,3>(0,0)).log();
 
-    //     if(translation.norm() < 0.0) // 10 cm
-    //     {
-    //         spdlog::info("[KEYFRAME_DECISION] Skipping keyframe due to low translation ({:.2f} m)", translation.norm());
-    //         return false;
-    //     }
-    // }
+        if(translation.norm() < rot.norm()*0.1f || translation.norm() < 0.05f)
+        {
+            return false;
+        }
+    }
 
     // Force keyframe creation if time since last keyframe exceeds threshold
     if (m_last_keyframe) {
@@ -2235,68 +2278,69 @@ int lightweight_vio::Estimator::create_temporary_map_points(std::shared_ptr<Fram
             }
 
             // Need at least 5 observations (current + 4 keyframes)
-            if (all_observations.size() < 5 || is_there_valid_mp) {
+            if (all_observations.size() < 3|| is_there_valid_mp) {
                 continue;
             }
             
-            // Sort keyframe observations by timestamp (oldest first)
-            std::vector<std::pair<double, int>> sorted_kf_indices;
+            // Compute parallax for all keyframe observations and sort by largest parallax first
+            cv::Point2f pt_curr = all_observations[0].first->get_feature(all_observations[0].second)->get_undistorted_coord();
+            Eigen::Vector2f pt1(pt_curr.x, pt_curr.y);
+            
+            std::vector<std::pair<float, int>> parallax_sorted_kf;  // (parallax, index)
             for (size_t i = 1; i < all_observations.size(); ++i) {
-                double obs_timestamp = all_observations[i].first->get_timestamp();
-                sorted_kf_indices.push_back({obs_timestamp, i});
+                cv::Point2f pt_kf = all_observations[i].first->get_feature(all_observations[i].second)->get_undistorted_coord();
+                Eigen::Vector2f pt2(pt_kf.x, pt_kf.y);
+                float parallax = (pt1 - pt2).norm();
+                
+                if (parallax > 1.0f && parallax < 300.0f) {
+                    parallax_sorted_kf.push_back(std::make_pair(parallax, i));
+                }
             }
-            std::sort(sorted_kf_indices.begin(), sorted_kf_indices.end());
+            
+            // Sort by parallax (largest first)
+            std::sort(parallax_sorted_kf.begin(), parallax_sorted_kf.end(), 
+                      [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+                          return a.first > b.first;  // Descending order
+                      });
             
             // Try to find a keyframe pair with good parallax and successful triangulation
             bool triangulation_success = false;
             
-            for (const auto& kf_pair : sorted_kf_indices) {
-                int kf_idx = kf_pair.second;
+            for (const auto& kf_data : parallax_sorted_kf) {
+                int kf_idx = kf_data.second;
                 
-                // Check parallax with current frame
-                cv::Point2f pt_curr = all_observations[0].first->get_feature(all_observations[0].second)->get_undistorted_coord();
-                cv::Point2f pt_kf = all_observations[kf_idx].first->get_feature(all_observations[kf_idx].second)->get_undistorted_coord();
+                // Try triangulation with this pair
+                std::vector<std::pair<std::shared_ptr<Frame>, int>> selected_pair;
+                selected_pair.push_back(all_observations[0]);  // current frame
+                selected_pair.push_back(all_observations[kf_idx]);  // selected keyframe
                 
-                Eigen::Vector2f pt1(pt_curr.x, pt_curr.y);
-                Eigen::Vector2f pt2(pt_kf.x, pt_kf.y);
-                
-                float parallax = (pt1 - pt2).norm();
-                
-                // Accept if parallax is in desired range [10, inf]
-                if (parallax > 0.0f && parallax < 300.0f) {
-                    // Try triangulation with this pair
-                    std::vector<std::pair<std::shared_ptr<Frame>, int>> selected_pair;
-                    selected_pair.push_back(all_observations[0]);  // current frame
-                    selected_pair.push_back(all_observations[kf_idx]);  // selected keyframe
+                Eigen::Vector3f P_world;
+                if (multi_view_triangulation(selected_pair, P_world)) {
+                    // Triangulation successful! Create MapPoint
+                    auto new_mp = std::make_shared<MapPoint>(P_world);
                     
-                    Eigen::Vector3f P_world;
-                    if (multi_view_triangulation(selected_pair, P_world)) {
-                        // Triangulation successful! Create MapPoint
-                        auto new_mp = std::make_shared<MapPoint>(P_world);
-                        
-                        // Mark as temporary - will be cleaned up after pose optimization if frame doesn't become keyframe
-                        // new_mp->set_temporary(true);
-                        
-                        // Add observations for both frames
-                        for (const auto& obs : selected_pair) {
-                            Eigen::Matrix4f T_cw = obs.first->get_Twc().inverse();
-                            Eigen::Vector4f P_camera = T_cw * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
+                    // Mark as temporary - will be cleaned up after pose optimization if frame doesn't become keyframe
+                    // new_mp->set_temporary(true);
+                    
+                    // Add observations for both frames
+                    for (const auto& obs : selected_pair) {
+                        Eigen::Matrix4f T_cw = obs.first->get_Twc().inverse();
+                        Eigen::Vector4f P_camera = T_cw * Eigen::Vector4f(P_world.x(), P_world.y(), P_world.z(), 1.0f);
 
-                            new_mp->add_observation(obs.first, obs.second);
-                            obs.first->set_map_point(obs.second, new_mp);
-                            obs.first->get_feature(obs.second)->set_3d_point(P_camera.head<3>());
-                        }
-                        
-                        {
-                            std::lock_guard<std::mutex> lock(m_map_points_mutex);
-                            m_map_points.push_back(new_mp);
-                        }
-                        num_new_map_points++;
-                        triangulation_success = true;
-                        break;  // Success, move to next feature
+                        new_mp->add_observation(obs.first, obs.second);
+                        obs.first->set_map_point(obs.second, new_mp);
+                        obs.first->get_feature(obs.second)->set_3d_point(P_camera.head<3>());
                     }
-                    // If triangulation failed, continue to try next keyframe pair
+                    
+                    {
+                        std::lock_guard<std::mutex> lock(m_map_points_mutex);
+                        m_map_points.push_back(new_mp);
+                    }
+                    num_new_map_points++;
+                    triangulation_success = true;
+                    break;  // Success, move to next feature
                 }
+                // If triangulation failed, continue to try next keyframe pair
             }
         }
     }
@@ -2328,6 +2372,9 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
 
     // Let's check feature observations before creating the keyframe
     const auto& features = frame->get_features();
+
+    int num_good_pair_found = 0;
+    int num_triangulation_success = 0;
     
     for (auto& feature : features) {
         if (feature && feature->is_valid()) {
@@ -2359,49 +2406,47 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
             }
 
             // Need at least 5 observations (current + 4 keyframes)
-            if (all_observations.size() < 10 || is_there_valid_mp) {
+            if (all_observations.size() < 3 || is_there_valid_mp) {
                 continue;
             }
             
-            // Sort keyframe observations by timestamp (oldest first)
-            std::vector<std::pair<double, int>> sorted_kf_indices;
+            // Compute parallax for all keyframe observations and sort by largest parallax first
+            cv::Point2f pt_curr = all_observations[0].first->get_feature(all_observations[0].second)->get_undistorted_coord();
+            Eigen::Vector2f pt1(pt_curr.x, pt_curr.y);
+            
+            std::vector<std::pair<float, int>> parallax_sorted_kf;  // (parallax, index)
             for (size_t i = 1; i < all_observations.size(); ++i) {
-                double obs_timestamp = all_observations[i].first->get_timestamp();
-                sorted_kf_indices.push_back({obs_timestamp, i});
-            }
-            std::sort(sorted_kf_indices.begin(), sorted_kf_indices.end());
-            
-            // Find a keyframe pair with parallax in range [10, 20]
-            std::vector<std::pair<std::shared_ptr<Frame>, int>> selected_pair;
-            bool found_good_pair = false;
-            
-            for (const auto& kf_pair : sorted_kf_indices) {
-                int kf_idx = kf_pair.second;
-                
-                // Check parallax with current frame
-                cv::Point2f pt_curr = all_observations[0].first->get_feature(all_observations[0].second)->get_undistorted_coord();
-                cv::Point2f pt_kf = all_observations[kf_idx].first->get_feature(all_observations[kf_idx].second)->get_undistorted_coord();
-                
-                Eigen::Vector2f pt1(pt_curr.x, pt_curr.y);
+                cv::Point2f pt_kf = all_observations[i].first->get_feature(all_observations[i].second)->get_undistorted_coord();
                 Eigen::Vector2f pt2(pt_kf.x, pt_kf.y);
-                
                 float parallax = (pt1 - pt2).norm();
                 
-                // Accept if parallax is in desired range [1, 100]
-                if (parallax > 0.0f && parallax <= 300.0f) {
-                    selected_pair.push_back(all_observations[0]);  // current frame
-                    selected_pair.push_back(all_observations[kf_idx]);  // selected keyframe
-                    found_good_pair = true;
-                    break;
+                if (parallax > 1.0f && parallax < 300.0f) {
+                    parallax_sorted_kf.push_back(std::make_pair(parallax, i));
                 }
             }
             
-            if (!found_good_pair) {
-                continue;  // No keyframe with suitable parallax found
-            }
+            // Sort by parallax (largest first)
+            std::sort(parallax_sorted_kf.begin(), parallax_sorted_kf.end(), 
+                      [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+                          return a.first > b.first;  // Descending order
+                      });
+            
+            // Flip paralex sort 
 
-            // Triangulate using selected pair
-            if (selected_pair.size() == 2) {
+
+            
+
+            // Try to find a keyframe pair with good parallax and successful triangulation
+            bool triangulation_success = false;
+            
+            for (const auto& kf_data : parallax_sorted_kf) {
+                int kf_idx = kf_data.second;
+                
+                // Try triangulation with this pair
+                std::vector<std::pair<std::shared_ptr<Frame>, int>> selected_pair;
+                selected_pair.push_back(all_observations[0]);  // current frame
+                selected_pair.push_back(all_observations[kf_idx]);  // selected keyframe
+                
                 Eigen::Vector3f P_world;
                 if (multi_view_triangulation(selected_pair, P_world)) {
                     // Triangulation successful! Create MapPoint
@@ -2422,13 +2467,14 @@ int lightweight_vio::Estimator::create_keyframe_monocular(std::shared_ptr<Frame>
                         m_map_points.push_back(new_mp);
                     }
                     num_new_map_points++;
+                    triangulation_success = true;
+                    break;  // Success! Move to next feature
                 }
+                // If triangulation failed, continue to try next keyframe pair
             }
         }
     }
 
-    // spdlog::info("[MONO_KF] Reused {} existing map points from observations", num_reused_map_points);
-    // spdlog::info("[MONO_KF] Created {} new map points via triangulation", num_new_map_points);
 
     // Thread-safe keyframe management
     {
@@ -2625,46 +2671,51 @@ void lightweight_vio::Estimator::compute_reprojection_error_statistics(std::shar
     }
 }
 
-void Estimator::predict_state() {
+void Estimator::predict_state(bool constant_velocity) {
+
     if (!m_current_frame || !m_previous_frame) {
         spdlog::warn("[PREDICT] Cannot predict: current_frame={}, previous_frame={}", 
                      (bool)m_current_frame, (bool)m_previous_frame);
         return;
     }
+
+
     
     const auto& config = Config::getInstance();
     
     // Check system mode from config
-    if (config.m_system_mode == "VIO" && m_success_imu_init) {
+    if (config.m_system_mode == "VIO" && m_success_imu_init && !constant_velocity) {
         // VIO Mode: Use IMU preintegration for state prediction
         // Only use IMU prediction when IMU is properly initialized
 
         
-        // Get from-last-keyframe IMU preintegration (more stable for longer intervals)
-        auto keyframe_to_frame_preint = m_current_frame->get_imu_preintegration_from_last_frame();
+        // Get from-previous-frame IMU preintegration (short interval, more accurate)
+        auto prev_to_curr_preint = m_current_frame->get_imu_preintegration_from_last_frame();
         
-        if (keyframe_to_frame_preint && keyframe_to_frame_preint->is_valid() && m_last_keyframe) {
-            // Use IMU preintegration from last keyframe (more robust)
+        if (prev_to_curr_preint && prev_to_curr_preint->is_valid() && m_previous_frame) {
+            // Use IMU preintegration from previous frame (frame-to-frame prediction)
             
             // Get gravity vector from IMU handler (gravity-aligned coordinate system)
             Eigen::Vector3f Gz = m_imu_handler->get_gravity();
             
-            // Get last keyframe state as reference
-            const Eigen::Vector3f twb1 = m_last_keyframe->get_Twb().block<3,1>(0,3);     // Position
-            const Eigen::Matrix3f Rwb1 = m_last_keyframe->get_Twb().block<3,3>(0,0);     // Rotation  
-            const Eigen::Vector3f Vwb1 = m_last_keyframe->get_velocity();                // Velocity
+            // Get previous frame state as reference (NOT last keyframe)
+            const Eigen::Vector3f twb1 = m_previous_frame->get_Twb().block<3,1>(0,3);     // Position
+            const Eigen::Matrix3f Rwb1 = m_previous_frame->get_Twb().block<3,3>(0,0);     // Rotation  
+            const Eigen::Vector3f Vwb1 = m_previous_frame->get_velocity();                // Velocity
+
             
-            // Get preintegration data and time interval from last keyframe
-            const float t12 = keyframe_to_frame_preint->dt_total;
+            // Get preintegration data and time interval from previous frame
+            const float t12 = prev_to_curr_preint->dt_total;
+
             
             // Get IMU bias from last keyframe
-            const Eigen::Vector3f gyro_bias = m_last_keyframe->get_gyro_bias();
-            const Eigen::Vector3f accel_bias = m_last_keyframe->get_accel_bias();
+            const Eigen::Vector3f gyro_bias = m_previous_frame->get_gyro_bias();
+            const Eigen::Vector3f accel_bias = m_previous_frame->get_accel_bias();
 
             // IMU prediction from last keyframe to current frame
-            Eigen::Matrix3f Rwb2 = Rwb1 * keyframe_to_frame_preint->delta_R;  
-            Eigen::Vector3f twb2 = twb1 + Vwb1*t12 + 0.5f*t12*t12*Gz + Rwb1*keyframe_to_frame_preint->delta_P;
-            Eigen::Vector3f Vwb2 = Vwb1 + t12*Gz + Rwb1*keyframe_to_frame_preint->delta_V;
+            Eigen::Matrix3f Rwb2 = Rwb1 * prev_to_curr_preint->delta_R;  
+            Eigen::Vector3f twb2 = twb1 + Vwb1*t12 + 0.5f*t12*t12*Gz + Rwb1*prev_to_curr_preint->delta_P;
+            Eigen::Vector3f Vwb2 = Vwb1 + t12*Gz + Rwb1*prev_to_curr_preint->delta_V;
             
             // Set predicted state
             Eigen::Matrix4f predicted_pose = Eigen::Matrix4f::Identity();
@@ -2700,9 +2751,13 @@ void Estimator::predict_state() {
             // VO Mode fallback: Use visual motion model
             Eigen::Matrix4f predicted_pose = m_previous_frame->get_Twb() * m_transform_from_last;
             m_predicted_pose = predicted_pose; // Store for comparison
+
+            float dt = (float)(m_current_frame->get_timestamp() - m_previous_frame->get_timestamp());
             
-            // Keep velocity zero in fallback mode
-            m_current_frame->set_velocity(Eigen::Vector3f::Zero());
+            Eigen::Vector3f trans = m_transform_from_last.block<3,1>(0,3);
+            Eigen::Vector3f vel = trans/dt;
+            m_current_frame->set_Twb(predicted_pose);
+            m_current_frame->set_velocity(vel);
         }
         
     } 

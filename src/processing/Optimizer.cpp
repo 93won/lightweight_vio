@@ -702,9 +702,10 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
     
     // IMU parameter storage (only used if IMU is enabled)
     std::vector<std::vector<double>> velocity_params_vec;
-    std::vector<double> accel_bias_params(3, 0.0);  // Shared bias across all keyframes
-    std::vector<double> gyro_bias_params(3, 0.0);   // Shared bias across all keyframes
+    std::vector<double> accel_bias_params(3);  // Shared accelerometer bias for all keyframes (initialized with size 3)
+    std::vector<double> gyro_bias_params(3);   // Shared gyroscope bias for all keyframes (initialized with size 3)
     std::vector<double> gravity_dir_params;
+    std::vector<double> scale_params(1, 1.0);  // Scale parameter (1.0 for stereo/RGBD, optimized for monocular)
     
     // Setup visual optimization problem
     auto observations = setup_optimization_problem(
@@ -719,11 +720,11 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
 
     if (m_imu_enabled) {
         setup_imu_parameter_blocks(problem, keyframes, velocity_params_vec, 
-                                  accel_bias_params, gyro_bias_params, gravity_dir_params);
+                                  accel_bias_params, gyro_bias_params, gravity_dir_params, scale_params);
         
         num_imu_factors = add_inertial_factors_to_sliding_window(
             problem, keyframes, pose_params_vec, velocity_params_vec,
-            accel_bias_params, gyro_bias_params, gravity_dir_params);
+            accel_bias_params, gyro_bias_params, gravity_dir_params, scale_params);
     }
     
     // Configure solver options for two-stage optimization
@@ -743,7 +744,7 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
     // Stage 1: Quick optimization with more fixed keyframes for stability
     // Fix more keyframes in first stage for robust outlier detection
     // Use keyframe_window_size - 1 from config (e.g., 10 - 1 = 9)
-    int stage1_fixed_keyframes = Config::getInstance().m_keyframe_window_size - 1;
+    int stage1_fixed_keyframes = 1;
     apply_marginalization_strategy(problem, keyframes, map_points, pose_params_vec, point_params_vec, stage1_fixed_keyframes);
     // spdlog::debug("[SlidingWindowOptimizer] Stage 1: Fixed {} keyframes for outlier detection", stage1_fixed_keyframes);
     
@@ -828,7 +829,7 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
         // Update IMU states if IMU optimization is enabled
         if (m_imu_enabled && num_imu_factors > 0) {
             update_imu_optimized_values(keyframes, velocity_params_vec, 
-                                       accel_bias_params, gyro_bias_params);
+                                       accel_bias_params, gyro_bias_params, scale_params);
         }
         
 
@@ -1189,9 +1190,53 @@ void SlidingWindowOptimizer::apply_marginalization_strategy(
         bool should_fix = false;
         bool fixed_by_eigenvalue = false;
 
+        // Check average reprojection error 
+
+        bool is_valid = true;
+
+        float num_valid_obs = 0.0f;
+        float sum_reproj_error = 0.0f;
+        
+
+        for(auto& obs : map_point->get_observations()) {
+            
+            auto frame = obs.frame.lock();
+            if(frame && frame->is_keyframe())
+            {
+                Eigen::Vector3f pos_world = map_point->get_position();
+                Eigen::Matrix4f T_cw = frame->get_Twc().inverse();
+                Eigen::Vector3f pos_cam = T_cw.block<3,3>(0,0) * pos_world + T_cw.block<3,1>(0,3);
+                
+                float fx = frame->get_fx();
+                float fy = frame->get_fy();
+                float cx = frame->get_cx();
+                float cy = frame->get_cy();
+
+                float u_proj = fx * pos_cam.x() / pos_cam.z() + cx;
+                float v_proj = fy * pos_cam.y() / pos_cam.z() + cy;
+
+                auto feat_index = obs.feature_index;
+                auto feature = frame->get_feature(feat_index);
+
+                cv::Point2f undistorted_pixel = feature->get_undistorted_coord();
+                Eigen::Vector2f observation(undistorted_pixel.x, undistorted_pixel.y);
+                float reproj_error = std::sqrt(std::pow(u_proj - observation.x(), 2) + std::pow(v_proj - observation.y(), 2));
+
+                num_valid_obs += 1.0;
+                sum_reproj_error += reproj_error;
+
+            }
+
+        }
+
+        float average_reproj_error = (num_valid_obs > 0.0f) ? (sum_reproj_error / num_valid_obs) : 100.0f;
+
         // Fix map points with too few observations
-        if (obs_count < 2)
+        if (obs_count < 1)// || (num_valid_obs >5 && average_reproj_error < 1.0f))
         {
+
+            // spdlog::debug("[SlidingWindowOptimizer] Fixing MapPoint {} due to low observations ({}) or low reproj error ({:.2f})", 
+            //              map_point->get_id(), obs_count, average_reproj_error);
             should_fix = true;
         }
 
@@ -1291,7 +1336,8 @@ void SlidingWindowOptimizer::update_optimized_values(
     const std::vector<std::shared_ptr<Frame>>& keyframes,
     const std::vector<std::shared_ptr<MapPoint>>& map_points,
     const std::vector<std::vector<double>>& pose_params_vec,
-    const std::vector<std::vector<double>>& point_params_vec) {
+    const std::vector<std::vector<double>>& point_params_vec,
+    const double scale_optimized) {
     
     int updated_keyframes = 0;
     int updated_map_points = 0;
@@ -1661,19 +1707,19 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
                  scale_params[0], scale_params[0] - 1.0,
                  optimize_scale ? "optimized" : "fixed");
     
-    // Check if scale is reasonable (only for monocular where it was optimized)
-    if (optimize_scale) {
-        if (scale_params[0] < 0.1 || scale_params[0] > 10.0) {
-            spdlog::error("   ❌ Scale is unreasonable! ({:.6f})", scale_params[0]);
-            spdlog::error("   💡 This suggests initialization failure or insufficient motion");
-        } else if (scale_params[0] < 0.5 || scale_params[0] > 2.0) {
-            spdlog::warn("   ⚠️  Scale is unusual but might be acceptable ({:.6f})", scale_params[0]);
-        } else {
-            spdlog::info("   ✅ Scale looks reasonable ({:.6f})", scale_params[0]);
-        }
-    } else {
-        spdlog::info("   ✅ Scale fixed at 1.0 (stereo/RGBD - known metric scale)");
-    }
+    // // Check if scale is reasonable (only for monocular where it was optimized)
+    // if (optimize_scale) {
+    //     if (scale_params[0] < 0.1 || scale_params[0] > 10.0) {
+    //         spdlog::error("   ❌ Scale is unreasonable! ({:.6f})", scale_params[0]);
+    //         spdlog::error("   💡 This suggests initialization failure or insufficient motion");
+    //     } else if (scale_params[0] < 0.5 || scale_params[0] > 2.0) {
+    //         spdlog::warn("   ⚠️  Scale is unusual but might be acceptable ({:.6f})", scale_params[0]);
+    //     } else {
+    //         spdlog::info("   ✅ Scale looks reasonable ({:.6f})", scale_params[0]);
+    //     }
+    // } else {
+    //     spdlog::info("   ✅ Scale fixed at 1.0 (stereo/RGBD - known metric scale)");
+    // }
     
     // ===============================================================================
     // STAGE 2: Optimize Velocities + Biases (Rwg + s FIXED)
@@ -2638,7 +2684,8 @@ int SlidingWindowOptimizer::add_inertial_factors_to_sliding_window(
     const std::vector<std::vector<double>>& velocity_params_vec,
     const std::vector<double>& accel_bias_params,
     const std::vector<double>& gyro_bias_params,
-    const std::vector<double>& gravity_dir_params) {
+    const std::vector<double>& gravity_dir_params,
+    const std::vector<double>& scale_params) {
     
     if (!m_imu_enabled || !m_imu_handler) {
         return 0;
@@ -2646,7 +2693,7 @@ int SlidingWindowOptimizer::add_inertial_factors_to_sliding_window(
     
     int factors_added = 0;
     
-    // Add InertialGravityFactor between consecutive keyframes using existing implementation
+    // Add InertialGravityScaleFactor between consecutive keyframes using shared bias
     for (size_t i = 0; i < keyframes.size() - 1; ++i) {
         auto frame_i = keyframes[i];
         auto frame_j = keyframes[i + 1];
@@ -2658,29 +2705,30 @@ int SlidingWindowOptimizer::add_inertial_factors_to_sliding_window(
             continue;
         }
         
-        // Create InertialGravityFactor (reusing existing implementation)
-        auto* inertial_gravity_factor = new factor::InertialGravityFactor(preintegration, m_gravity_magnitude);
+        // Create InertialGravityScaleFactor (includes scale parameter for monocular systems)
+        auto* inertial_gravity_scale_factor = new factor::InertialGravityScaleFactor(preintegration, m_gravity_magnitude);
   
         double imu_huber_delta = sqrt(16.63);  // 15 DOF, 99%
         auto* imu_loss_function = new ceres::HuberLoss(imu_huber_delta);
         
-        // Add residual block using InertialGravityFactor with shared bias parameters and Huber loss
-        // NOTE: InertialGravityFactor expects [pose1, velocity1, GYRO_bias, ACCEL_bias, pose2, velocity2, gravity_dir]
-        problem.AddResidualBlock(inertial_gravity_factor, imu_loss_function,
+        // Add residual block using InertialGravityScaleFactor with shared bias parameters, scale, and Huber loss
+        // NOTE: InertialGravityScaleFactor expects [pose1, velocity1, GYRO_bias, ACCEL_bias, pose2, velocity2, gravity_dir, scale]
+        problem.AddResidualBlock(inertial_gravity_scale_factor, imu_loss_function,
                                 const_cast<double*>(pose_params_vec[i].data()),           // pose_i (6D SE3)
                                 const_cast<double*>(velocity_params_vec[i].data()),       // velocity_i (3D)
-                                const_cast<double*>(gyro_bias_params.data()),             // shared GYRO_bias (3D) - parameters[2]
-                                const_cast<double*>(accel_bias_params.data()),            // shared ACCEL_bias (3D) - parameters[3]
+                                const_cast<double*>(gyro_bias_params.data()),             // gyro_bias (3D) - shared
+                                const_cast<double*>(accel_bias_params.data()),            // accel_bias (3D) - shared
                                 const_cast<double*>(pose_params_vec[i+1].data()),         // pose_j (6D SE3)
                                 const_cast<double*>(velocity_params_vec[i+1].data()),     // velocity_j (3D)
-                                const_cast<double*>(gravity_dir_params.data()));          // gravity_dir (2D sphere)
+                                const_cast<double*>(gravity_dir_params.data()),           // gravity_dir (2D sphere)
+                                const_cast<double*>(scale_params.data()));                // scale (1D)
         
         factors_added++;
         
     }
     
     if (Config::getInstance().m_enable_debug_output) {
-        spdlog::info("[SW_IMU] Added {} InertialGravityFactor factors to sliding window with shared bias", factors_added);
+        spdlog::info("[SW_IMU] Added {} InertialGravityScaleFactor factors to sliding window with shared bias and scale", factors_added);
     }
     return factors_added;
 }
@@ -2697,7 +2745,8 @@ void SlidingWindowOptimizer::setup_imu_parameter_blocks(
     std::vector<std::vector<double>>& velocity_params_vec,
     std::vector<double>& accel_bias_params,
     std::vector<double>& gyro_bias_params,
-    std::vector<double>& gravity_dir_params) {
+    std::vector<double>& gravity_dir_params,
+    std::vector<double>& scale_params) {
     
     if (!m_imu_enabled) {
         return;
@@ -2718,32 +2767,22 @@ void SlidingWindowOptimizer::setup_imu_parameter_blocks(
         problem.AddParameterBlock(velocity_params_vec[i].data(), 3);
     }
     
-    // Initialize shared accelerometer bias (global parameter)
-    accel_bias_params.resize(3);
-    if (!keyframes.empty()) {
-        Eigen::Vector3f accel_bias = keyframes[0]->get_accel_bias();  // Get from first keyframe
-        accel_bias_params[0] = accel_bias.x();
-        accel_bias_params[1] = accel_bias.y();
-        accel_bias_params[2] = accel_bias.z();
-    } else {
-        accel_bias_params[0] = 0.0;
-        accel_bias_params[1] = 0.0;
-        accel_bias_params[2] = 0.0;
-    }
+    // Initialize shared accelerometer bias from first keyframe
+    Eigen::Vector3f accel_bias = keyframes[0]->get_accel_bias();
+    accel_bias_params[0] = accel_bias.x();
+    accel_bias_params[1] = accel_bias.y();
+    accel_bias_params[2] = accel_bias.z();
+    
+    // Add shared accelerometer bias parameter block
     problem.AddParameterBlock(accel_bias_params.data(), 3);
     
-    // Initialize shared gyroscope bias (global parameter)
-    gyro_bias_params.resize(3);
-    if (!keyframes.empty()) {
-        Eigen::Vector3f gyro_bias = keyframes[0]->get_gyro_bias();  // Get from first keyframe
-        gyro_bias_params[0] = gyro_bias.x();
-        gyro_bias_params[1] = gyro_bias.y();
-        gyro_bias_params[2] = gyro_bias.z();
-    } else {
-        gyro_bias_params[0] = 0.0;
-        gyro_bias_params[1] = 0.0;
-        gyro_bias_params[2] = 0.0;
-    }
+    // Initialize shared gyroscope bias from first keyframe
+    Eigen::Vector3f gyro_bias = keyframes[0]->get_gyro_bias();
+    gyro_bias_params[0] = gyro_bias.x();
+    gyro_bias_params[1] = gyro_bias.y();
+    gyro_bias_params[2] = gyro_bias.z();
+    
+    // Add shared gyroscope bias parameter block
     problem.AddParameterBlock(gyro_bias_params.data(), 3);
     
     // Initialize gravity direction parameters (fixed)
@@ -2756,10 +2795,38 @@ void SlidingWindowOptimizer::setup_imu_parameter_blocks(
     problem.AddParameterBlock(gravity_dir_params.data(), 2);
     problem.SetParameterBlockConstant(gravity_dir_params.data()); // Fixed gravity direction
     
-    // Add bias priors to prevent drift - bias should stay close to current values
-    Eigen::Vector3d accel_bias_prior(accel_bias_params[0], accel_bias_params[1], accel_bias_params[2]);
-    Eigen::Vector3d gyro_bias_prior(gyro_bias_params[0], gyro_bias_params[1], gyro_bias_params[2]);
+    // Initialize scale parameter (1.0 for stereo/RGBD, will be constant for non-monocular)
+    const Config& config = Config::getInstance();
+    bool is_monocular = (config.m_camera_type == CameraType::MONOCULAR);
     
+    // Initialize scale from current estimate if available (could be stored in IMU handler or first frame)
+    if (scale_params.empty()) {
+        scale_params.resize(1);
+        scale_params[0] = 1.0;  // Default value
+    }
+    
+    // Add scale parameter block
+    problem.AddParameterBlock(scale_params.data(), 1);
+    // problem.SetParameterBlockConstant(scale_params.data());
+
+
+    
+    // For stereo/RGBD, scale is known (1.0) - keep it fixed
+    // For monocular, allow small optimization to prevent drift
+    if (!is_monocular) {
+        problem.SetParameterBlockConstant(scale_params.data());
+    } else {
+        // For monocular, add a weak prior to prevent excessive drift
+        double scale_prior_weight = 1e3;  // Weak prior
+        Eigen::Matrix<double, 1, 1> scale_info;
+        scale_info(0, 0) = scale_prior_weight;
+        
+        auto* scale_prior_cost = new factor::VectorPriorFactor<1>(
+            Eigen::Matrix<double, 1, 1>(scale_params[0]), scale_info);
+        problem.AddResidualBlock(scale_prior_cost, nullptr, scale_params.data());
+    }
+    
+    // Add bias priors to prevent drift - each keyframe's bias should stay close to current values
     // Compute bias prior weights dynamically from IMU handler covariance
     double accel_bias_weight, gyro_bias_weight;
     
@@ -2775,36 +2842,16 @@ void SlidingWindowOptimizer::setup_imu_parameter_blocks(
             Eigen::Matrix3f gyro_bias_cov = preintegration->covariance.block<3,3>(9, 9);
             Eigen::Matrix3f accel_bias_cov = preintegration->covariance.block<3,3>(12, 12);
             
-            // // Log covariance diagonal for debugging
-            // spdlog::debug("[SW_IMU] Current bias covariances - Gyro diag: ({:.2e}, {:.2e}, {:.2e}), Accel diag: ({:.2e}, {:.2e}, {:.2e})",
-            //              gyro_bias_cov(0,0), gyro_bias_cov(1,1), gyro_bias_cov(2,2),
-            //              accel_bias_cov(0,0), accel_bias_cov(1,1), accel_bias_cov(2,2));
-            
             // Compute weights as inverse of diagonal covariance elements (information matrix)
-            // Method 1: Use average variance across all 3 axes
             double gyro_bias_variance = gyro_bias_cov.trace() / 3.0 + 1e-8;  // Average variance
             double accel_bias_variance = accel_bias_cov.trace() / 3.0 + 1e-8;
             
-            // Alternative methods (choose one):
-            // Method 2: Use maximum variance (most conservative)
-            // double gyro_bias_variance = std::max({gyro_bias_cov(0,0), gyro_bias_cov(1,1), gyro_bias_cov(2,2)}) + 1e-8;
-            // double accel_bias_variance = std::max({accel_bias_cov(0,0), accel_bias_cov(1,1), accel_bias_cov(2,2)}) + 1e-8;
-            
-            // Method 3: Use determinant-based measure
-            // double gyro_bias_variance = std::pow(gyro_bias_cov.determinant(), 1.0/3.0) + 1e-8;  // Geometric mean
-            // double accel_bias_variance = std::pow(accel_bias_cov.determinant(), 1.0/3.0) + 1e-8;
-            
             gyro_bias_weight = 1.0 / gyro_bias_variance;
             accel_bias_weight = 1.0 / accel_bias_variance;
-
-            // std::cout<<gyro_bias_weight<< " / "<<   accel_bias_weight<<std::endl;
             
-            // // Apply reasonable bounds to prevent extreme weights
+            // Apply reasonable bounds to prevent extreme weights
             gyro_bias_weight = std::clamp(gyro_bias_weight, 1.0, 1e5);
             accel_bias_weight = std::clamp(accel_bias_weight, 1.0, 1e4);
-            
-            // spdlog::debug("[SW_IMU] Dynamic bias weights from covariance: gyro={:.2e}, accel={:.2e}", 
-            //              gyro_bias_weight, accel_bias_weight);
         } else {
             // Fallback to default values if no preintegration available
             accel_bias_weight = 1e4;
@@ -2819,133 +2866,162 @@ void SlidingWindowOptimizer::setup_imu_parameter_blocks(
         spdlog::debug("[SW_IMU] Using default bias weights (no IMU handler): gyro={:.2e}, accel={:.2e}", 
                      gyro_bias_weight, accel_bias_weight);
     }
+//   accel_bias_weight = 1e4;
+//         gyro_bias_weight = 1e5;
+    //  accel_bias_weight = 1e1;
+    //     gyro_bias_weight = 1e2;
     
     Eigen::Matrix3d accel_bias_info = Eigen::Matrix3d::Identity() * accel_bias_weight;
     Eigen::Matrix3d gyro_bias_info = Eigen::Matrix3d::Identity() * gyro_bias_weight;
     
-    // Create and add bias prior cost functions
+    // Add bias prior cost functions for shared bias (once, not per keyframe)
+    Eigen::Vector3d accel_bias_prior(accel_bias_params[0], accel_bias_params[1], accel_bias_params[2]);
+    Eigen::Vector3d gyro_bias_prior(gyro_bias_params[0], gyro_bias_params[1], gyro_bias_params[2]);
+    
     auto* accel_bias_prior_cost = new factor::VectorPriorFactor<3>(accel_bias_prior, accel_bias_info);
     auto* gyro_bias_prior_cost = new factor::VectorPriorFactor<3>(gyro_bias_prior, gyro_bias_info);
     
     problem.AddResidualBlock(accel_bias_prior_cost, nullptr, accel_bias_params.data());
     problem.AddResidualBlock(gyro_bias_prior_cost, nullptr, gyro_bias_params.data());
-    
-    // spdlog::debug("[SW_IMU] Shared accel bias: ({:.10f}, {:.10f}, {:.10f})", accel_bias_params[0], accel_bias_params[1], accel_bias_params[2]);
-    // spdlog::debug("[SW_IMU] Shared gyro bias: ({:.10f}, {:.10f}, {:.10f})", gyro_bias_params[0], gyro_bias_params[1], gyro_bias_params[2]);
 }
 
 void SlidingWindowOptimizer::update_imu_optimized_values(
     const std::vector<std::shared_ptr<Frame>>& keyframes,
     const std::vector<std::vector<double>>& velocity_params_vec,
     const std::vector<double>& accel_bias_params,
-    const std::vector<double>& gyro_bias_params) {
-    
+    const std::vector<double>& gyro_bias_params,
+    const std::vector<double>& scale_params) {
+
     if (!m_imu_enabled) {
         return;
     }
     
-    // Update velocities for each keyframe (per-frame velocities)
+    // Update shared bias to all keyframes
+    Eigen::Vector3f optimized_accel_bias(accel_bias_params[0], accel_bias_params[1], accel_bias_params[2]);
+    Eigen::Vector3f optimized_gyro_bias(gyro_bias_params[0], gyro_bias_params[1], gyro_bias_params[2]);
+    
+    for (size_t i = 0; i < keyframes.size(); ++i) {
+        // Update velocity
+        Eigen::Vector3f optimized_velocity(velocity_params_vec[i][0], velocity_params_vec[i][1], velocity_params_vec[i][2]);
+        keyframes[i]->set_velocity(optimized_velocity);
+        
+        // Update shared bias
+        keyframes[i]->set_accel_bias(optimized_accel_bias);
+        keyframes[i]->set_gyro_bias(optimized_gyro_bias);
+    }
+    
+    // Apply scale correction for monocular systems
+    const Config& config = Config::getInstance();
+    bool is_monocular = (config.m_camera_type == CameraType::MONOCULAR);
+    
+    double scale_correction = 1.0;  // Default: no correction
+    
+    if (is_monocular && !scale_params.empty()) {
+        double optimized_scale = scale_params[0];
+        
+        // Calculate scale correction factor
+        // If optimized_scale = 1.2, then we need to scale down poses/velocities by 1/1.2 = 0.833
+        scale_correction = 1.0 / optimized_scale;
+        
+        // Only apply correction if scale deviation is significant (>0.1%)
+        // if (std::abs(optimized_scale - 1.0) > 0.001) 
+        {
+            
+            // Apply scale correction to keyframe poses (relative to first keyframe)
+            Eigen::Matrix4f Twb_0 = keyframes[0]->get_Twb();
+            
+            for (size_t i = 1; i < keyframes.size(); ++i) {
+                Eigen::Matrix4f Twb_i = keyframes[i]->get_Twb();
+                Eigen::Matrix4f T_0_i = Twb_0.inverse() * Twb_i;
+                
+                // Scale translation component
+                T_0_i.block<3, 1>(0, 3) *= scale_correction;
+                
+                // Update pose
+                keyframes[i]->set_Twb(Twb_0 * T_0_i);
+            }
+            
+            // Apply scale correction to all map points
+            std::set<std::shared_ptr<MapPoint>> unique_map_points;
+            for (const auto& kf : keyframes) {
+                for (const auto& mp : kf->get_map_points()) {
+                    if (mp && !mp->is_bad()) {
+                        unique_map_points.insert(mp);
+                    }
+                }
+            }
+            
+            // Get reference camera pose for map point scaling
+            Eigen::Matrix4f Twc_ref = keyframes[0]->get_Twc();
+            
+            for (const auto& mp : unique_map_points) {
+                Eigen::Vector3f pos_w = mp->get_position();
+                
+                // Transform to reference camera frame
+                Eigen::Vector3f pos_c = Twc_ref.inverse().block<3, 3>(0, 0) * (pos_w - Twc_ref.block<3, 1>(0, 3));
+                
+                // Apply scale correction
+                pos_c *= scale_correction;
+                
+                // Transform back to world frame
+                Eigen::Vector3f pos_w_scaled = Twc_ref.block<3, 3>(0, 0) * pos_c + Twc_ref.block<3, 1>(0, 3);
+                
+                mp->set_position(pos_w_scaled);
+            }
+            
+        }
+    }
+    
+    // Update velocities and biases for each keyframe
     for (size_t i = 0; i < keyframes.size(); ++i) {
         auto frame = keyframes[i];
         
         // Get old velocity for comparison
         Eigen::Vector3f old_velocity = frame->get_velocity();
         
-        // Update velocity
+        // Update velocity from optimized parameters
         Eigen::Vector3f optimized_velocity(
             velocity_params_vec[i][0],
             velocity_params_vec[i][1],
             velocity_params_vec[i][2]
         );
-        frame->set_velocity(optimized_velocity);
-    }
         
-        // Calculate real velocity from pose change (if not the first frame)
+        // Apply scale correction to velocity (if monocular)
+        optimized_velocity *= scale_correction;
+        
+        frame->set_velocity(optimized_velocity);
 
-        // Check velocity optimized and velocity from pose (last pose only)
-
+    }
+    
+    // Calculate velocity from pose change for validation (last pose only)
     Eigen::Vector3f delta_trans = (keyframes[keyframes.size()-1]->get_Twb().inverse() - keyframes[keyframes.size()-2]->get_Twb()).block<3, 1>(0, 3);
     float dt = static_cast<float>(keyframes[keyframes.size()-1]->get_timestamp() - keyframes[keyframes.size()-2]->get_timestamp());
-
     Eigen::Vector3f velocity_from_pose = (delta_trans) / dt;
-
     float ratio = (keyframes[keyframes.size()-1]->get_velocity().norm())/velocity_from_pose.norm();
-
-    bool need_fix_vel = false;
-    if(ratio < 0.01 || ratio > 100.0)
-        need_fix_vel = true;
-
-
-
-    if (!m_first_imu_opt_done || need_fix_vel)
-    {
-        for (size_t i = 0; i < keyframes.size(); ++i) 
-        {
-            if (i > 0)
-            {
-                auto prev_frame = keyframes[i - 1];
-                auto frame = keyframes[i];
-                Eigen::Vector3f delta_trans = (prev_frame->get_Twb().inverse()*frame->get_Twb()).block<3, 1>(0, 3);
-                double dt = frame->get_timestamp() - prev_frame->get_timestamp();
-
-                Eigen::Vector3f real_velocity = delta_trans / static_cast<float>(dt);
-
-                frame->set_velocity(real_velocity);
-
-                if (i == 1)
-                {
-                    keyframes[0]->set_velocity(real_velocity);
-                }
-                
-            }
-        
-        }
-    }
 
     m_first_imu_opt_done = true;
     
-    // Update shared bias for all keyframes (same bias applied to all)
-    Eigen::Vector3f optimized_accel_bias(
-        accel_bias_params[0],
-        accel_bias_params[1], 
-        accel_bias_params[2]
-    );
-    
-    Eigen::Vector3f optimized_gyro_bias(
-        gyro_bias_params[0],
-        gyro_bias_params[1],
-        gyro_bias_params[2]
-    );
-    
-    // Get initial bias from first frame for comparison
-    Eigen::Vector3f initial_accel_bias = keyframes[0]->get_accel_bias();
-    Eigen::Vector3f initial_gyro_bias = keyframes[0]->get_gyro_bias();
-    
-    // Calculate bias change
-    Eigen::Vector3f accel_bias_change = optimized_accel_bias - initial_accel_bias;
-    Eigen::Vector3f gyro_bias_change = optimized_gyro_bias - initial_gyro_bias;
-    
-    // Apply shared bias to all keyframes
-    for (size_t i = 0; i < keyframes.size(); ++i) {
-        auto& frame = keyframes[i];
-        frame->set_accel_bias(optimized_accel_bias);
-        frame->set_gyro_bias(optimized_gyro_bias);
-        
-       
-    }
-    
-    // Update IMU handler's global bias if available
+    // Update IMU handler's global bias with average of all keyframe biases
     if (m_imu_handler) {
-        // Get current IMU handler bias for comparison
-        Eigen::Vector3f handler_gyro_bias = m_imu_handler->get_gyro_bias();
-        Eigen::Vector3f handler_accel_bias = m_imu_handler->get_accel_bias();
+        // Compute average bias across all keyframes
+        Eigen::Vector3f avg_gyro_bias = Eigen::Vector3f::Zero();
+        Eigen::Vector3f avg_accel_bias = Eigen::Vector3f::Zero();
         
-        m_imu_handler->set_bias(optimized_gyro_bias, optimized_accel_bias);
+        for (size_t i = 0; i < keyframes.size(); ++i) {
+            avg_gyro_bias += keyframes[i]->get_gyro_bias();
+            avg_accel_bias += keyframes[i]->get_accel_bias();
+        }
         
-        // Update all preintegrations with optimized bias (like in IMU initialization)
+        avg_gyro_bias /= static_cast<float>(keyframes.size());
+        avg_accel_bias /= static_cast<float>(keyframes.size());
+        
+        m_imu_handler->set_bias(avg_gyro_bias, avg_accel_bias);
+        
+        // Update preintegrations with per-frame optimized biases
         std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> frame_biases;
         for (size_t i = 1; i < keyframes.size(); ++i) { // Skip first frame
-            frame_biases.emplace_back(optimized_gyro_bias, optimized_accel_bias); // Shared bias for all
+            // Use the bias from frame i-1 (previous frame) for preintegration to frame i
+            frame_biases.emplace_back(keyframes[i-1]->get_gyro_bias(), keyframes[i-1]->get_accel_bias());
         }
         
         // Convert shared_ptr<Frame> to Frame* for IMU handler call
@@ -2955,9 +3031,7 @@ void SlidingWindowOptimizer::update_imu_optimized_values(
         }
         
         m_imu_handler->update_preintegrations_with_optimized_bias(raw_frames_for_update, frame_biases);
-        
     }
-    
 }
 
 Eigen::Matrix2d PnPOptimizer::create_information_from_uncertainty_propagation(
