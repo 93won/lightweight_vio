@@ -170,6 +170,8 @@ bool Config::load(const std::string& config_file) {
             std::string model_str = (std::string)camera["model"];
             if (model_str == "fisheye") {
                 m_camera_model = CameraModel::FISHEYE;
+            } else if (model_str == "fisheye_ds") {
+                m_camera_model = CameraModel::FISHEYE_DS;
             } else {
                 m_camera_model = CameraModel::PINHOLE;
             }
@@ -207,11 +209,17 @@ bool Config::load(const std::string& config_file) {
                     0, (double)rgb_intrinsics[1], (double)rgb_intrinsics[3],
                     0, 0, 1);
             }
-            
-            if (!rgb_distortion.empty() && rgb_distortion.size() == 4) {
-                m_left_dist_coeffs = (cv::Mat_<double>(1, 4) << 
-                    (double)rgb_distortion[0], (double)rgb_distortion[1],
-                    (double)rgb_distortion[2], (double)rgb_distortion[3]);
+            // For FISHEYE_DS, read xi,alpha from rgb_distortion (must be size 2)
+            if (m_camera_model == CameraModel::FISHEYE_DS) {
+                if (!rgb_distortion.empty() && rgb_distortion.size() == 2) {
+                    m_left_dist_coeffs = (cv::Mat_<double>(1, 2) << (double)rgb_distortion[0], (double)rgb_distortion[1]);
+                }
+            } else {
+                if (!rgb_distortion.empty() && rgb_distortion.size() == 4) {
+                    m_left_dist_coeffs = (cv::Mat_<double>(1, 4) << 
+                        (double)rgb_distortion[0], (double)rgb_distortion[1],
+                        (double)rgb_distortion[2], (double)rgb_distortion[3]);
+                }
             }
         } else {
             // For stereo, use left_intrinsics and right_intrinsics
@@ -233,17 +241,26 @@ bool Config::load(const std::string& config_file) {
                     0, (double)right_intrinsics[1], (double)right_intrinsics[3],
                     0, 0, 1);
             }
-            
-            if (!left_distortion.empty() && left_distortion.size() == 4) {
-                m_left_dist_coeffs = (cv::Mat_<double>(1, 4) << 
-                    (double)left_distortion[0], (double)left_distortion[1],
-                    (double)left_distortion[2], (double)left_distortion[3]);
-            }
-            
-            if (!right_distortion.empty() && right_distortion.size() == 4) {
-                m_right_dist_coeffs = (cv::Mat_<double>(1, 4) << 
-                    (double)right_distortion[0], (double)right_distortion[1],
-                    (double)right_distortion[2], (double)right_distortion[3]);
+
+            // Distortion handling: for FISHEYE_DS expect 2 values (xi,alpha)
+            if (m_camera_model == CameraModel::FISHEYE_DS) {
+                if (!left_distortion.empty() && left_distortion.size() == 2) {
+                    m_left_dist_coeffs = (cv::Mat_<double>(1, 2) << (double)left_distortion[0], (double)left_distortion[1]);
+                }
+                if (!right_distortion.empty() && right_distortion.size() == 2) {
+                    m_right_dist_coeffs = (cv::Mat_<double>(1, 2) << (double)right_distortion[0], (double)right_distortion[1]);
+                }
+            } else {
+                if (!left_distortion.empty() && left_distortion.size() == 4) {
+                    m_left_dist_coeffs = (cv::Mat_<double>(1, 4) << 
+                        (double)left_distortion[0], (double)left_distortion[1],
+                        (double)left_distortion[2], (double)left_distortion[3]);
+                }
+                if (!right_distortion.empty() && right_distortion.size() == 4) {
+                    m_right_dist_coeffs = (cv::Mat_<double>(1, 4) << 
+                        (double)right_distortion[0], (double)right_distortion[1],
+                        (double)right_distortion[2], (double)right_distortion[3]);
+                }
             }
         }
         

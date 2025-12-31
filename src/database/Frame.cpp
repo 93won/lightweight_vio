@@ -19,6 +19,7 @@
 #include <iostream>
 #include <numeric>
 #include <algorithm>
+#include <limits>
 
 namespace lightweight_vio {
 
@@ -826,8 +827,11 @@ void Frame::undistort_features() {
             
             if (camera_model == CameraModel::FISHEYE) {
                 cv::fisheye::undistortPoints(distorted_pts, normalized_pts, left_K, left_D);
-            } else {
+            } else if (camera_model == CameraModel::PINHOLE) {
                 cv::undistortPoints(distorted_pts, normalized_pts, left_K, left_D);
+            }
+            else if (camera_model == CameraModel::FISHEYE_DS) { 
+                undistort_points_double_sphere(distorted_pts, normalized_pts, left_K, left_D); 
             }
             
             // Convert normalized coordinate to pixel coordinate
@@ -852,8 +856,11 @@ void Frame::undistort_features() {
                     
                     if (camera_model == CameraModel::FISHEYE) {
                         cv::fisheye::undistortPoints(right_distorted_pts, right_normalized_pts, right_K, right_D);
-                    } else {
+                    } else if (camera_model == CameraModel::PINHOLE) {
                         cv::undistortPoints(right_distorted_pts, right_normalized_pts, right_K, right_D);
+                    }
+                    else if (camera_model == CameraModel::FISHEYE_DS) { 
+                        undistort_points_double_sphere(right_distorted_pts, right_normalized_pts, right_K, right_D); 
                     }
                     
                     // Get right camera intrinsics (not needed for storage anymore)
@@ -1217,8 +1224,10 @@ cv::Point2f Frame::undistort_point(const cv::Point2f& distorted_point) const {
     
     if (camera_model == CameraModel::FISHEYE) {
         cv::fisheye::undistortPoints(distorted_pts, normalized_pts, left_K, left_D);
-    } else {
+    } else if (camera_model == CameraModel::PINHOLE) {
         cv::undistortPoints(distorted_pts, normalized_pts, left_K, left_D);
+    } else if (camera_model == CameraModel::FISHEYE_DS) {
+        undistort_points_double_sphere(distorted_pts, normalized_pts, left_K, left_D);
     }
     
     // Convert normalized coordinate back to pixel coordinate
@@ -1229,6 +1238,86 @@ cv::Point2f Frame::undistort_point(const cv::Point2f& distorted_point) const {
     return undistorted_pixel;
 }
     
+void Frame::undistort_points_double_sphere(const std::vector<cv::Point2f>& distorted_points,
+                                          std::vector<cv::Point2f>& undistorted_points,
+                                          const cv::Mat& K, const cv::Mat& D) const {
+    if (K.empty() || D.empty()) {
+        std::cerr << "Camera parameters missing for undistortion" << std::endl;
+        return;
+    }
+
+    undistorted_points.clear();
+    undistorted_points.reserve(distorted_points.size());
+
+    const double xi = D.at<double>(0);
+    const double alpha = D.at<double>(1);
+    const double fx = K.at<double>(0, 0), fy = K.at<double>(1, 1);
+    const double cx = K.at<double>(0, 2), cy = K.at<double>(1, 2);
+
+    for (size_t i = 0; i < distorted_points.size(); ++i) {
+        const double u = distorted_points[i].x;
+        const double v = distorted_points[i].y;
+
+        const double mx = (u - cx) / fx;
+        const double my = (v - cy) / fy;
+        const double r2 = mx * mx + my * my;
+
+        // Invalid regions for DS model
+        if (alpha > 0.5 && r2 >= 1.0 / (2.0 * alpha - 1)) {
+            undistorted_points.emplace_back(NAN, NAN);
+            continue;
+        }
+
+        const double s = 1.0 - (2.0 * alpha - 1.0) * r2;
+        if (s < 0.0) {
+            undistorted_points.emplace_back(NAN, NAN);
+            continue;
+        }
+
+        const double term1 = alpha * std::sqrt(s);
+        const double term2 = 1.0 - alpha;
+        const double denom = term1 + term2;
+        if (denom <= 0.0) {
+            undistorted_points.emplace_back(NAN, NAN);
+            continue;
+        }
+
+        const double z = (1.0 - alpha * alpha * r2) / denom;
+
+        const double under = z * z + (1.0 - xi * xi) * r2;
+        if (under < 0.0) {
+            undistorted_points.emplace_back(NAN, NAN);
+            continue;
+        }
+        const double k = z * xi + std::sqrt(under);
+        const double lambda = k / (r2 + z * z);
+
+        const double x_norm = lambda * mx;
+        const double y_norm = lambda * my;
+        const double z_norm = lambda * z - xi;
+
+        const double n = std::sqrt(x_norm * x_norm + y_norm * y_norm + z_norm * z_norm);
+        if (n == 0.0) {
+            undistorted_points.emplace_back(NAN, NAN);
+            continue;
+        }
+
+        // unit ray
+        const double ux = x_norm / n;
+        const double uy = y_norm / n;
+        const double uz = z_norm / n;
+
+        if (!std::isfinite(ux) || !std::isfinite(uy) || !std::isfinite(uz) || uz == 0.0) {
+            undistorted_points.emplace_back(NAN, NAN);
+            continue;
+        }
+
+        // For compatibility with pinhole/fisheye outputs, return normalized image coords (x/z, y/z)
+        const double nx = ux / uz;
+        const double ny = uy / uz;
+        undistorted_points.emplace_back(static_cast<float>(nx), static_cast<float>(ny));
+    }
+}
 
 void Frame::extract_stereo_features(int max_features) {
     // Extract features only from left image

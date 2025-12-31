@@ -19,7 +19,8 @@ namespace lightweight_vio
 {
     enum class CameraModel {
         PINHOLE,
-        FISHEYE
+        FISHEYE,
+        FISHEYE_DS
     };
 
     enum class CameraType {
