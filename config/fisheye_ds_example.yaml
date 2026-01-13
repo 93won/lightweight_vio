@@ -1,6 +1,6 @@
 %YAML:1.0
 ---
-# EuRoC Dataset Configuration for Lightweight VIO
+# Fisheye_DS Configuration for Lightweight VIO
 
 # System Mode Configuration
 # Controls whether to run as VO (Visual Odometry) or VIO (Visual-Inertial Odometry)
@@ -17,23 +17,23 @@ viewer:
 performance:
   enable_debug_output: 1  # Print debug messages and feature counts
 
-# Camera Parameters (EuRoC dataset specific)
+# Camera Parameters (Custom dataset specific)
 # Image dimensions and processing parameters
 camera:
   model: "fisheye_ds"            # Camera model: "pinhole" or "fisheye" or "fisheye_ds"
   type: "stereo"                # ⭐ Camera type: "stereo" or "rgbd" or "monocular"
-  image_width: 1280            # Image width in pixels (EuRoC standard)
-  image_height: 960           # Image height in pixels (EuRoC standard)  
+  image_width: 640              # Image width in pixels
+  image_height: 480             # Image height in pixels 
   border_size: 1              # Border size to exclude from feature detection (pixels)
   
   # Left camera (cam0) intrinsics
-  left_intrinsics: [485.934, 486.166, 673.276, 437.436]  # [fx, fy, cx, cy]
-  left_distortion: [0.70674, 0.796399]  # [xi, alpha]
-  
-  # Right camera (cam1) intrinsics  
-  right_intrinsics: [225.939, 225.951, 642.384, 486.769]  # [fx, fy, cx, cy]
-  right_distortion: [-0.208137, 0.596888]  # [xi, alpha]
-  
+  left_intrinsics: [223.80133408887752, 224.30706813364384, 321.1593537540515, 239.7332858639022]  # [fx, fy, cx, cy]
+  left_distortion: [-0.21447857384299185, 0.5962314106636994]  # [xi, alpha]
+
+  # Right camera (cam1) intrinsics
+  right_intrinsics: [221.60832966835198, 221.76995406399917, 290.1729681098987, 290.09962965568116]  # [fx, fy, cx, cy]
+  right_distortion: [-0.22274901749269546, 0.5928279582773847]  # [xi, alpha]
+
   # Left camera extrinsics (T_BC - camera to body transform)
   left_T_BC: [1.0, 0.0, 0.0, 0.0,
               0.0, 1.0, 0.0, 0.0,
@@ -41,10 +41,10 @@ camera:
               0.0, 0.0, 0.0, 1.0]
   
   # Right camera extrinsics (T_BC - camera to body transform)
-  right_T_BC: [9.98687988e-01, -5.08498873e-02, -6.04908659e-03, -1.20079189e-01,
-              5.08583748e-02,  9.98705084e-01,  1.25755393e-03,  7.97378114e-04,
-              5.97730706e-03, -1.56355071e-03,  9.99980913e-01,  5.46380007e-04,
-              0.00000000e+00,  0.00000000e+00,  0.00000000e+00,  1.00000000e+00]
+  right_T_BC: [9.98678749e-01, 5.09636422e-02, 6.59273268e-03, 1.19653127e-01,
+               -5.09679778e-02, 9.98700167e-01, 4.91191070e-04, -6.91918166e-03,
+               -6.55913034e-03, -8.26560335e-04, 9.99978147e-01, -3.50831570e-04,
+               0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 1.00000000e+00]
 
 # Keyframe and Windowing Parameters
 # Controls keyframe selection and sliding window management
@@ -56,13 +56,13 @@ keyframe_management:
 # Feature Detection Parameters
 # Controls how corner features are detected using goodFeaturesToTrack
 feature_detection:
-  max_features: 200           # Maximum number of features to track per frame
-  quality_level: 0.01        # Minimum accepted quality of corners (0.01 = 1% of best corner)
-  min_distance: 30.0          # Minimum distance between features in pixels (prevents clustering)
+  max_features: 200          # Maximum number of features to track per frame
+  quality_level: 0.1        # Minimum accepted quality of corners (0.01 = 1% of best corner)
+  min_distance: 10.0          # Minimum distance between features in pixels (prevents clustering)
   
   # Grid-based feature distribution parameters
-  grid_cols: 20               # Number of grid columns for feature distribution
-  grid_rows: 10               # Number of grid rows for feature distribution  
+  grid_cols: 16             # Number of grid columns for feature distribution
+  grid_rows: 16             # Number of grid rows for feature distribution  
   max_features_per_grid: 4   # Maximum features allowed per grid cell
 
 # Optical Flow Tracking Parameters  
@@ -91,13 +91,13 @@ stereo_matching:
   error_threshold: 50.0       # Maximum optical flow error for stereo matches (pixels)
   min_disparity: 0.1          # Minimum disparity (pixels) - filters out very far points
   max_disparity: 300.0        # Maximum disparity (pixels) - filters out very close points  
-  max_y_difference: 30.0      # Maximum Y-coordinate difference for stereo pairs (pixels)
+  max_y_difference: 100.0      # Maximum Y-coordinate difference for stereo pairs (pixels)
   epipolar_threshold: 1.0     # Maximum distance from epipolar line using estimated F matrix (pixels)
 
 # Global Depth Parameters
 # Controls depth validation throughout the entire VIO system
 depth:
-  min_depth: 0.1              # Minimum depth for valid 3D points (meters) - used in all depth validation
+  min_depth: 0.3              # Minimum depth for valid 3D points (meters) - used in all depth validation
   max_depth: 100.0            # Maximum depth for valid 3D points (meters) - used in all depth validation
 
 
@@ -118,9 +118,20 @@ optimization:
   # Outlier detection (mainly for PnP)
   enable_outlier_detection: true   # Enable outlier detection
   outlier_detection_rounds: 4      # Number of optimization rounds with outlier detection
+
+gravity_estimation:
+  enable: true                   # Enable gravity estimation in VIO mode
+  min_frames_for_estimation: 10  # Minimum number of frames before attempting gravity estimation
+  gravity_magnitude: 9.81        # Expected gravity magnitude (m/s²)
   
   # Information weighting parameters - now using logarithmic scaling (saturation_point=20)
   # Removed pnp_max_observation_weight and sliding_window_max_observation_weight
+
+imu_noise:
+  gyroscope_noise_density: 0.01     # [ rad / s / sqrt(Hz) ]   ( gyro "white noise" )
+  gyroscope_random_walk: 0.0001       # [ rad / s^2 / sqrt(Hz) ] ( gyro bias diffusion )
+  accelerometer_noise_density: 0.01  # [ m / s^2 / sqrt(Hz) ]   ( accel "white noise" )
+  accelerometer_random_walk: 0.0001    # [ m / s^3 / sqrt(Hz) ]   ( accel bias diffusion )
 
 # MapPoint Uncertainty Parameters
 # Controls uncertainty propagation for 3D map points
