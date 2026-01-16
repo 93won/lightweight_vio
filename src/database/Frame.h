@@ -184,6 +184,9 @@ public:
     
     // Undistort a single point
     cv::Point2f undistort_point(const cv::Point2f& distorted_point) const;
+    void undistort_points_double_sphere(const std::vector<cv::Point2f>& distorted_points,
+                                        std::vector<cv::Point2f>& undistorted_points,
+                                        const cv::Mat& K, const cv::Mat& D) const;
     
     // Boundary checking
     bool is_in_boundary(const cv::Point2f& point, int border_size = 0) const;
