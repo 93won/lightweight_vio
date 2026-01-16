@@ -1,11 +1,11 @@
 %YAML:1.0
 ---
-# Fisheye_DS Configuration for Lightweight VIO
+# TUM VI Dataset Configuration for Lightweight VIO - Visual-Inertial Odometry
 
 # System Mode Configuration
 # Controls whether to run as VO (Visual Odometry) or VIO (Visual-Inertial Odometry)
 system_mode:
-  mode: "VO"                    # Options: "VO" or "VIO"
+  mode: "VIO"                    # Options: "VO" or "VIO"
 
 # Viewer Configuration
 # Controls 3D visualization using Pangolin
@@ -13,46 +13,46 @@ viewer:
   enable: 1                      # Enable/disable 3D viewer (0=false, 1=true)
   width: 1920                    # Viewer window width (pixels)
   height: 1080                   # Viewer window height (pixels)
-  
-performance:
-  enable_debug_output: 1  # Print debug messages and feature counts
 
-# Camera Parameters (Custom dataset specific)
+performance:
+  enable_debug_output: 0 # Print debug messages and feature counts
+
+# Camera Parameters (TUM VI dataset specific)
 # Image dimensions and processing parameters
 camera:
   model: "fisheye_ds"            # Camera model: "pinhole" or "fisheye" or "fisheye_ds"
   type: "stereo"                # ⭐ Camera type: "stereo" or "rgbd" or "monocular"
-  image_width: 640              # Image width in pixels
-  image_height: 480             # Image height in pixels 
-  border_size: 1              # Border size to exclude from feature detection (pixels)
+  image_width: 512            # Image width in pixels (TUM VI standard)
+  image_height: 512           # Image height in pixels (TUM VI standard)  
+  border_size: 0             # Border size to exclude from feature detection (pixels)
   
   # Left camera (cam0) intrinsics
-  left_intrinsics: [223.80133408887752, 224.30706813364384, 321.1593537540515, 239.7332858639022]  # [fx, fy, cx, cy]
-  left_distortion: [-0.21447857384299185, 0.5962314106636994]  # [xi, alpha]
-
-  # Right camera (cam1) intrinsics
-  right_intrinsics: [221.60832966835198, 221.76995406399917, 290.1729681098987, 290.09962965568116]  # [fx, fy, cx, cy]
-  right_distortion: [-0.22274901749269546, 0.5928279582773847]  # [xi, alpha]
-
+  left_intrinsics: [156.7849830404922, 156.77017186214402, 254.74830064527453, 256.9426901328605]  # [fx, fy, cx, cy]
+  left_distortion: [-0.1805633166495045, 0.5912634233036583]  # [xi, alpha] fisheye_ds
+  
+  # Right camera (cam1) intrinsics  
+  right_intrinsics: [155.77766975566212, 155.7736126280273, 252.43883925813466, 254.8614180390628]  # [fx, fy, cx, cy]
+  right_distortion: [-0.18298293455404507, 0.5893967909452626]  # [xi, alpha] fisheye_ds
+  
   # Left camera extrinsics (T_BC - camera to body transform)
-  left_T_BC: [1.0, 0.0, 0.0, 0.0,
-              0.0, 1.0, 0.0, 0.0,
-              0.0, 0.0, 1.0, 0.0,
-              0.0, 0.0, 0.0, 1.0]
+  left_T_BC: [-0.9995435188897183, 0.028958658611899488, -0.008611035765834088, 0.047306067617976406,
+              0.0076083352844395075, -0.034558936868299535, -0.999373700432793, -0.047716618706742264,
+              -0.02923811005794607, -0.9989830208636851, 0.03432283418232079, -0.06799664746132071,
+              0.0,         0.0,         0.0,         1.0]
   
   # Right camera extrinsics (T_BC - camera to body transform)
-  right_T_BC: [9.98678749e-01, 5.09636422e-02, 6.59273268e-03, 1.19653127e-01,
-               -5.09679778e-02, 9.98700167e-01, 4.91191070e-04, -6.91918166e-03,
-               -6.55913034e-03, -8.26560335e-04, 9.99978147e-01, -3.50831570e-04,
-               0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 1.00000000e+00]
+  right_T_BC: [-0.9995294505384492, 0.02966702106709694, -0.007793931441206827, -0.05367198428269951,
+               0.008165562449681028, 0.012426267155642646, -0.9998894496265359, -0.04600752842208671,
+               -0.029566891892557214, -0.9994825940183155, -0.012662667895542833, -0.07152803906440047,
+               0.0,         0.0,         0.0,         1.0]
 
 # Keyframe and Windowing Parameters
 # Controls keyframe selection and sliding window management
 keyframe_management:
   keyframe_window_size: 5
-  grid_coverage_ratio: 0.7  # Add keyframe when coverage drops to 80% of last keyframe's coverage
-  time_threshold: 0.05   
-  
+  grid_coverage_ratio: 0.7  # Add keyframe when coverage drops to 70% of last keyframe's coverage
+  time_threshold: 0.05
+
 # Feature Detection Parameters
 # Controls how corner features are detected using goodFeaturesToTrack
 feature_detection:
@@ -92,22 +92,22 @@ stereo_matching:
   min_disparity: 0.1          # Minimum disparity (pixels) - filters out very far points
   max_disparity: 300.0        # Maximum disparity (pixels) - filters out very close points  
   max_y_difference: 100.0      # Maximum Y-coordinate difference for stereo pairs (pixels)
-  epipolar_threshold: 1.0     # Maximum distance from epipolar line using estimated F matrix (pixels)
+  epipolar_threshold: 1.0     # Maximum distance from epipolar line using estimated F matrix (pixels)ls)
 
 # Global Depth Parameters
 # Controls depth validation throughout the entire VIO system
 depth:
   min_depth: 0.3              # Minimum depth for valid 3D points (meters) - used in all depth validation
-  max_depth: 100.0            # Maximum depth for valid 3D points (meters) - used in all depth validation
-
-
+  max_depth: 100.0             # Maximum depth for valid 3D points (meters) - used in all depth validation
 
 # Optimization Parameters
 # Controls Ceres-based optimization behavior for both PnP and Sliding Window
 optimization:
   # PnP Optimization Parameters
   pnp_max_iterations: 10               # Maximum optimization iterations for PnP
-  sliding_window_max_iterations: 10  # Maximum optimization iterations for sliding window
+  # Removed pnp_max_observation_weight - now using logarithmic scaling based on keyframe_window_size
+
+  sliding_window_max_iterations: 10 # Maximum optimization iterations for sliding window
   function_tolerance: 1e-6         # Function tolerance for convergence
   gradient_tolerance: 1e-10        # Gradient tolerance for convergence  
   parameter_tolerance: 1e-8        # Parameter tolerance for convergence
@@ -118,20 +118,26 @@ optimization:
   # Outlier detection (mainly for PnP)
   enable_outlier_detection: true   # Enable outlier detection
   outlier_detection_rounds: 4      # Number of optimization rounds with outlier detection
-
-gravity_estimation:
-  enable: true                   # Enable gravity estimation in VIO mode
-  min_frames_for_estimation: 10  # Minimum number of frames before attempting gravity estimation
-  gravity_magnitude: 9.81        # Expected gravity magnitude (m/s²)
   
   # Information weighting parameters - now using logarithmic scaling (saturation_point=20)
   # Removed pnp_max_observation_weight and sliding_window_max_observation_weight
 
+# Gravity Estimation Parameters (VIO mode only)
+# Controls initial gravity direction estimation from visual-IMU alignment
+gravity_estimation:
+  enable: true                   # Enable gravity estimation in VIO mode
+  min_frames_for_estimation: 10  # Minimum number of frames before attempting gravity estimation
+  gravity_magnitude: 9.81        # Expected gravity magnitude (m/s²)
+
+# IMU Noise Model Parameters
+# Inertial sensor noise characteristics for preintegration
 imu_noise:
-  gyroscope_noise_density: 0.01     # [ rad / s / sqrt(Hz) ]   ( gyro "white noise" )
-  gyroscope_random_walk: 0.0001       # [ rad / s^2 / sqrt(Hz) ] ( gyro bias diffusion )
-  accelerometer_noise_density: 0.01  # [ m / s^2 / sqrt(Hz) ]   ( accel "white noise" )
-  accelerometer_random_walk: 0.0001    # [ m / s^3 / sqrt(Hz) ]   ( accel bias diffusion )
+  gyroscope_noise_density: 0.00016     # [ rad / s / sqrt(Hz) ]   ( gyro "white noise" )
+  gyroscope_random_walk: 0.000022       # [ rad / s^2 / sqrt(Hz) ] ( gyro bias diffusion )
+  accelerometer_noise_density: 0.0028  # [ m / s^2 / sqrt(Hz) ]   ( accel "white noise" )
+  accelerometer_random_walk: 0.00086    # [ m / s^3 / sqrt(Hz) ]   ( accel bias diffusion )
+
+
 
 # MapPoint Uncertainty Parameters
 # Controls uncertainty propagation for 3D map points
