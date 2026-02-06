@@ -328,10 +328,11 @@ bool BAFactor::Evaluate(double const* const* parameters,
                 // Jacobian of camera point w.r.t body rotation  
                 Eigen::Matrix<double, 3, 3> J_camera_rot = m_Tcb.block<3, 3>(0, 0) * Sophus::SO3d::hat(body_point);
                 
-                // Combine rotation and translation jacobians [3x6]
+                // Combine translation and rotation jacobians [3x6]
+                // Ceres order: [translation(0-2) | rotation(3-5)]
                 Eigen::Matrix<double, 3, 6> J_camera_pose;
-                J_camera_pose.block<3, 3>(0, 0) = J_camera_rot;  // w.r.t rotation
-                J_camera_pose.block<3, 3>(0, 3) = J_camera_trans; // w.r.t translation
+                J_camera_pose.block<3, 3>(0, 0) = J_camera_trans; // w.r.t translation
+                J_camera_pose.block<3, 3>(0, 3) = J_camera_rot;   // w.r.t rotation
                 
                 // Chain rule: J_residual_pose = J_proj_camera * J_camera_pose
                 Eigen::Matrix<double, 2, 6> J_pose = weighted_J_proj * J_camera_pose;
@@ -578,13 +579,12 @@ bool InertialGravityFactor::Evaluate(double const* const* parameters,
             Eigen::Map<Eigen::Matrix<double, 9, 6, Eigen::RowMajor>> J_posei(jacobians[0]);
             J_posei.setZero();
             
-            // rotation part
-            J_posei.block<3, 3>(0, 0) = -Jr_inv * R_wbj.transpose() * R_wbi;
-            J_posei.block<3, 3>(3, 0) = skew_symmetric(R_bwi * ((vj - vi) - g * dt));
-            J_posei.block<3, 3>(6, 0) = skew_symmetric(R_bwi * ((t_wbj - t_wbi - vi * dt) - 0.5 * g * dt * dt));
-            
-            // translation part
-            J_posei.block<3, 3>(6, 3) = -Eigen::Matrix3d::Identity();
+            // translation part (columns 0-2)
+            J_posei.block<3, 3>(6, 0) = -Eigen::Matrix3d::Identity();
+            // rotation part (columns 3-5)
+            J_posei.block<3, 3>(0, 3) = -Jr_inv * R_wbj.transpose() * R_wbi;
+            J_posei.block<3, 3>(3, 3) = skew_symmetric(R_bwi * ((vj - vi) - g * dt));
+            J_posei.block<3, 3>(6, 3) = skew_symmetric(R_bwi * ((t_wbj - t_wbi - vi * dt) - 0.5 * g * dt * dt));
         }
         
         // Jacobian w.r.t velocity [1] - parameters[1]: [3x9]
@@ -626,11 +626,11 @@ bool InertialGravityFactor::Evaluate(double const* const* parameters,
             Eigen::Map<Eigen::Matrix<double, 9, 6, Eigen::RowMajor>> J_posej(jacobians[4]);
             J_posej.setZero();
             
-            // rotation part
-            J_posej.block<3, 3>(0, 0) = Jr_inv;
+            // translation part (columns 0-2)
+            J_posej.block<3, 3>(6, 0) = R_bwi * R_wbj;
             
-            // translation part  
-            J_posej.block<3, 3>(6, 3) = R_bwi * R_wbj;
+            // rotation part (columns 3-5)
+            J_posej.block<3, 3>(0, 3) = Jr_inv;
         }
         
         // Jacobian w.r.t velocityj [5] - parameters[5]: [3x9]
