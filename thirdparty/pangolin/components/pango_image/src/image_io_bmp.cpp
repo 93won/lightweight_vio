@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <fstream>
 #include <pangolin/image/typed_image.h>
 
