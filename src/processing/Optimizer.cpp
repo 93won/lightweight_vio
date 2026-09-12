@@ -10,6 +10,8 @@
  */
 
 #include "processing/Optimizer.h"
+#include <cmath>
+#include <opencv2/core/eigen.hpp>
 #include "processing/IMUHandler.h"  // 🎯 Complete type for IMUPreintegration
 #include "database/Frame.h"
 #include "database/MapPoint.h"
@@ -793,6 +795,11 @@ SlidingWindowResult SlidingWindowOptimizer::optimize(
         spdlog::warn("[SlidingWindowOptimizer] ❌ Optimization failed (cost increased): {:.2e} -> {:.2e}, {}", result.initial_cost, result.final_cost, summary.BriefReport());
     }
     
+	spdlog::info("[VIO_SW] frame={} timestamp_ns={} success={} poses={} points={} visual={} imu={} inliers={} outliers={} "
+				 "cost_before={:.12g} cost_after={:.12g} gravity=[{:.9g},{:.9g},{:.9g}]",
+		keyframes.back()->get_frame_id(), keyframes.back()->get_timestamp(), result.success,
+		keyframes.size(), map_points.size(), observations.size(), num_imu_factors, result.num_inliers, result.num_outliers,
+		result.initial_cost, result.final_cost, m_gravity_direction.x(), m_gravity_direction.y(), m_gravity_direction.z());
     return result;
 }
 
@@ -819,6 +826,11 @@ std::vector<std::shared_ptr<MapPoint>> SlidingWindowOptimizer::collect_window_ma
 
     // Convert set to vector
     std::vector<std::shared_ptr<MapPoint>> result(unique_map_points.begin(), unique_map_points.end());
+	// Pointer order varies between processes; use persistent IDs for Ceres block ordering.
+	std::sort(result.begin(), result.end(), [](const auto& first, const auto& second)
+	{
+		return first->get_id() < second->get_id();
+	});
     
     // spdlog::info("[SlidingWindowOptimizer] Collected {} unique map points from {} keyframes",
     //             result.size(), keyframes.size());
@@ -972,6 +984,19 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
     
 
     unsigned int total_constraints = 0;
+	unsigned int right_constraints = 0;
+	unsigned int rejected_stereo_geometry = 0;
+	const cv::Mat right_K = config.right_camera_matrix();
+	const cv::Mat right_T_BC = config.right_T_BC();
+	Eigen::Matrix4d right_T_CB = Eigen::Matrix4d::Identity();
+	const bool right_calibrated = right_K.rows == 3 && right_K.cols == 3 &&
+		right_T_BC.rows == 4 && right_T_BC.cols == 4;
+	if (right_calibrated)
+	{
+		Eigen::Matrix4d T_BC;
+		cv::cv2eigen(right_T_BC, T_BC);
+		right_T_CB = T_BC.inverse();
+	}
 
     // Add observations for each keyframe with mutex protection
     {
@@ -1052,6 +1077,37 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
                 } 
 
                 observations.push_back(obs_info);
+				if (keyframe->is_stereo() && right_calibrated && feature->has_stereo_match())
+				{
+					const cv::Point2f pixel = feature->get_right_coord();
+					const Eigen::Vector2d normalized = feature->get_right_normalized_coord().cast<double>();
+					// Failed matches retain has_stereo_match=true but carry pixel=(-1,-1).
+					// Normalized coordinates may legitimately be negative.
+					if (std::isfinite(pixel.x) && std::isfinite(pixel.y) && normalized.allFinite() &&
+						pixel.x >= 0 && pixel.y >= 0 && pixel.x < config.m_image_width && pixel.y < config.m_image_height)
+					{
+						// Tracked left features retain their map point even when this frame's
+						// stereo triangulation rejects the right match. Do not reintroduce it.
+						if (!feature->has_3d_point())
+						{
+							++rejected_stereo_geometry;
+							continue;
+						}
+						const factor::CameraParameters right_camera(right_K.at<double>(0, 0), right_K.at<double>(1, 1),
+							right_K.at<double>(0, 2), right_K.at<double>(1, 2));
+						const Eigen::Vector2d right_observation(right_camera.fx * normalized.x() + right_camera.cx,
+							right_camera.fy * normalized.y() + right_camera.cy);
+						// ponytail: same fixed undistorted-pixel noise model as the left camera;
+						// propagate distortion uncertainty for both cameras before enabling adaptive weights.
+						const Eigen::Matrix2d information = create_information_matrix(m_pixel_noise_std);
+						auto* right_factor = new factor::BAFactor(right_observation, right_camera, right_T_CB, information);
+						const auto residual_id = problem.AddResidualBlock(right_factor, create_robust_loss(m_huber_delta),
+							pose_params_vec[kf_idx].data(), point_params_vec[mp_idx].data());
+						observations.emplace_back(residual_id, right_factor, static_cast<int>(kf_idx), mp_idx, information);
+						observations.back().is_right_camera = true;
+						++right_constraints;
+					}
+				}
             }
         }
     }
@@ -1094,6 +1150,8 @@ std::vector<BAObservationInfo> SlidingWindowOptimizer::setup_optimization_proble
     // spdlog::info("[SlidingWindowOptimizer] Setup problem: {} keyframes, {} map points, {} observations",
     //             keyframes.size(), map_points.size(), observations.size());
     
+	spdlog::info("[VIO_STEREO] frame={} left={} right={} rejected_geometry={}",
+		keyframes.back()->get_frame_id(), total_constraints, right_constraints, rejected_stereo_geometry);
     return observations;
 }
 
@@ -1191,7 +1249,11 @@ int SlidingWindowOptimizer::detect_ba_outliers(
             num_inliers++;
         } else {
             // Mark this map point index as outlier
-            outlier_map_point_indices.insert(obs_info.mappoint_index);
+			// A rejected right-image match must not destroy a valid left-image track.
+			if (!obs_info.is_right_camera)
+			{
+				outlier_map_point_indices.insert(obs_info.mappoint_index);
+			}
         }
         
         // Mark outlier in cost function (will return zero residuals)
@@ -1473,11 +1535,11 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     auto start_time = std::chrono::high_resolution_clock::now();
     
     // ===============================================================================
-    // STAGE 1: Optimize Gravity Direction ONLY (Rwg)
+    // STAGE 1: Optimize gravity direction and frame velocities jointly.
     // ===============================================================================
     
     spdlog::info("");
-    spdlog::info("[STAGE 1] Optimizing Gravity Direction...");
+    spdlog::info("[STAGE 1] Optimizing Gravity Direction and Frame Velocities...");
     
     ceres::Problem problem_stage1;
     ceres::Solver::Options options_stage1;
@@ -1496,7 +1558,7 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     // options_stage1.max_trust_region_radius = 1e2;  // Limit maximum step size
     // options_stage1.initial_trust_region_radius = 1e1;  // Start with moderate steps
     
-    // Add parameter blocks - FIX poses, velocities, biases
+    // Fix poses and biases. Velocity seeds are guesses, not measurements to freeze.
     for (size_t i = 0; i < pose_params_vec.size(); ++i) {
         problem_stage1.AddParameterBlock(pose_params_vec[i].data(), 6);
         auto* pose_param = new factor::SE3GlobalParameterization();
@@ -1506,7 +1568,6 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     
     for (size_t i = 0; i < velocity_params_vec.size(); ++i) {
         problem_stage1.AddParameterBlock(velocity_params_vec[i].data(), 3);
-        problem_stage1.SetParameterBlockConstant(velocity_params_vec[i].data());
     }
     
     for (size_t i = 0; i < accel_bias_params_vec.size(); ++i) {
@@ -1529,8 +1590,8 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         problem_stage1, frames, imu_handler,
         pose_params_vec, velocity_params_vec, accel_bias_params_vec, gyro_bias_params_vec, gravity_dir_params);
     
-    if (stage1_factors == 0) {
-        spdlog::error("[STAGE 1] No factors added - aborting");
+    if (stage1_factors != static_cast<int>(frames.size() - 1)) {
+        spdlog::error("[STAGE 1] Missing initialization interval - aborting");
         return result;
     }
     
@@ -1595,6 +1656,13 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     int stage2_factors = add_inertial_gravity_factors(
         problem_stage2, frames, imu_handler,
         pose_params_vec, velocity_params_vec, accel_bias_params_vec, gyro_bias_params_vec, gravity_dir_params);
+	spdlog::info("[INIT_COVERAGE] frames={} first_id={} last_id={} stage1={} stage2={}",
+		frames.size(), frames.front()->get_frame_id(), frames.back()->get_frame_id(), stage1_factors, stage2_factors);
+	if (stage2_factors != static_cast<int>(frames.size() - 1))
+	{
+		spdlog::error("[STAGE 2] Missing initialization interval - aborting");
+		return result;
+	}
     
     // Add priors
     add_imu_init_priors(problem_stage2, frames, velocity_params_vec, accel_bias_params_vec, gyro_bias_params_vec);
@@ -1646,12 +1714,12 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     spdlog::info("  theta_y (roll):  {:.6f} rad ({:.3f}°)", gravity_dir_params[1], gravity_dir_params[1] * 180.0 / M_PI);
 
     // I want log of velocity and biases of all frames
-    for (size_t i = 0; i < frames.size(); ++i) {
+    for (size_t i = 0; i < velocity_params_vec.size(); ++i) {
         spdlog::info("  Frame {}: Velocity = [{:.6f}, {:.6f}, {:.6f}] m/s | Accel Bias = [{:.6f}, {:.6f}, {:.6f}] m/s² | Gyro Bias = [{:.6f}, {:.6f}, {:.6f}] rad/s",
                      frames[i]->get_frame_id(),
                      velocity_params_vec[i][0], velocity_params_vec[i][1], velocity_params_vec[i][2],
-                     accel_bias_params_vec[i][0], accel_bias_params_vec[i][1], accel_bias_params_vec[i][2],
-                     gyro_bias_params_vec[i][0], gyro_bias_params_vec[i][1], gyro_bias_params_vec[i][2]);
+                     accel_bias_params_vec[0][0], accel_bias_params_vec[0][1], accel_bias_params_vec[0][2],
+                     gyro_bias_params_vec[0][0], gyro_bias_params_vec[0][1], gyro_bias_params_vec[0][2]);
     }   
     
     // Convert gravity_dir to rotation matrix using ExpSO3 (matching ORB-SLAM3)
@@ -1683,7 +1751,7 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
     
     // Evaluate each InertialGravityFactor to get detailed residuals
     for (size_t opt_idx = 0; opt_idx < velocity_params_vec.size() - 1; ++opt_idx) {
-        size_t frame_idx = opt_idx + 1;
+        size_t frame_idx = opt_idx;
         auto* frame_i = frames[frame_idx];
         auto* frame_j = frames[frame_idx + 1];
         
@@ -1697,8 +1765,8 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         const double* params[7] = {
             pose_params_vec[opt_idx].data(),           // pose_i
             velocity_params_vec[opt_idx].data(),       // velocity_i
-            gyro_bias_params_vec[opt_idx].data(),      // gyro_bias
-            accel_bias_params_vec[opt_idx].data(),     // accel_bias
+            gyro_bias_params_vec[0].data(),            // shared gyro bias
+            accel_bias_params_vec[0].data(),           // shared accel bias
             pose_params_vec[opt_idx + 1].data(),       // pose_j
             velocity_params_vec[opt_idx + 1].data(),   // velocity_j
             gravity_dir_params.data()                  // gravity_dir
@@ -1758,6 +1826,8 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
         result.Tgw_init = Eigen::Matrix4f::Identity();
         result.Tgw_init.block<3,3>(0,0) = Rwg.cast<float>().transpose();
         result.Rwg = Rwg; // World to Gravity frame
+        result.g_world_before_transform =
+            (Rwg * Eigen::Vector3d(0.0, 0.0, -9.81)).cast<float>();
         
         // 3. Extract optimized velocities
         result.optimized_velocities.resize(velocity_params_vec.size());
@@ -1769,29 +1839,11 @@ InertialOptimizationResult InertialOptimizer::optimize_imu_initialization(
             );
         }
         
-        // 4. Compute average bias (from frames 1,2,3 - exclude last frame)
-        Eigen::Vector3f avg_gyro_bias = Eigen::Vector3f::Zero();
-        Eigen::Vector3f avg_accel_bias = Eigen::Vector3f::Zero();
-        int bias_count = 0;
-        
-        for (size_t opt_idx = 0; opt_idx < velocity_params_vec.size() - 1; ++opt_idx) {
-            avg_gyro_bias += Eigen::Vector3f(
-                gyro_bias_params_vec[opt_idx][0],
-                gyro_bias_params_vec[opt_idx][1],
-                gyro_bias_params_vec[opt_idx][2]
-            );
-            avg_accel_bias += Eigen::Vector3f(
-                accel_bias_params_vec[opt_idx][0],
-                accel_bias_params_vec[opt_idx][1],
-                accel_bias_params_vec[opt_idx][2]
-            );
-            bias_count++;
-        }
-        
-        if (bias_count > 0) {
-            result.optimized_gyro_bias = avg_gyro_bias / bias_count;
-            result.optimized_accel_bias = avg_accel_bias / bias_count;
-        }
+        // One IMU has one bias state over this short initialization window.
+        result.optimized_gyro_bias = Eigen::Map<const Eigen::Vector3d>(
+            gyro_bias_params_vec[0].data()).cast<float>();
+        result.optimized_accel_bias = Eigen::Map<const Eigen::Vector3d>(
+            accel_bias_params_vec[0].data()).cast<float>();
         
         // 5. Store first frame position for visualization
         if (!frames.empty() && frames[0]) {
@@ -1820,25 +1872,23 @@ void InertialOptimizer::setup_imu_init_vertices(
     
 
     // spdlog::info("🔧 [IMU_INIT] Setting up IMU initialization vertices...");
-    // Skip first frame (index 0) - only use frames 1,2,3,4... for IMU initialization
-    size_t num_frames_for_optimization = frames.size() - 1;
+    // One pose and velocity for every input keyframe, including frame 0.
+    size_t num_frames_for_optimization = frames.size();
     
     if (num_frames_for_optimization == 0) {
         // spdlog::error("[IMU_INIT] No frames available for optimization after skipping first frame");
         return;
     }
     
-    // spdlog::info("🔄 [IMU_INIT] Using frames 1-{} for optimization (skipping first keyframe)", frames.size() - 1);
-    
-    // Resize parameter vectors for optimization frames only (excluding first frame)
+    // Parameter index is exactly the input frame index.
     pose_params_vec.resize(num_frames_for_optimization, std::vector<double>(6));
     velocity_params_vec.resize(num_frames_for_optimization, std::vector<double>(3));  // velocity (3D)
-    accel_bias_params_vec.resize(num_frames_for_optimization, std::vector<double>(3)); // accel bias (3D)
-    gyro_bias_params_vec.resize(num_frames_for_optimization, std::vector<double>(3));  // gyro bias (3D)
+    accel_bias_params_vec.resize(1, std::vector<double>(3, 0.0));
+    gyro_bias_params_vec.resize(1, std::vector<double>(3, 0.0));
     
-    // Setup pose parameters for optimization frames (frames[1] to frames[n-1])
+    // Setup all frame parameters. Frame 0 has no incoming preintegration.
     for (size_t opt_idx = 0; opt_idx < num_frames_for_optimization; ++opt_idx) {
-        size_t frame_idx = opt_idx + 1; // Skip first frame: frames[1], frames[2], ...
+        size_t frame_idx = opt_idx;
         auto* frame = frames[frame_idx];
         
         // spdlog::info("🎯 [IMU_INIT] Processing Frame[{}] (ID: {}) -> OptIdx[{}]", frame_idx, frame->get_frame_id(), opt_idx);
@@ -1909,14 +1959,6 @@ void InertialOptimizer::setup_imu_init_vertices(
         velocity_params_vec[opt_idx][1] = static_cast<double>(frame_velocity.y());  // vy  
         velocity_params_vec[opt_idx][2] = static_cast<double>(frame_velocity.z());  // vz
         
-        accel_bias_params_vec[opt_idx][0] = 0.0;  // ba_x (accel bias)
-        accel_bias_params_vec[opt_idx][1] = 0.0;  // ba_y  
-        accel_bias_params_vec[opt_idx][2] = 0.0;  // ba_z
-        
-        gyro_bias_params_vec[opt_idx][0] = 0.0;  // bg_x (gyro bias)
-        gyro_bias_params_vec[opt_idx][1] = 0.0;  // bg_y
-        gyro_bias_params_vec[opt_idx][2] = 0.0;  // bg_z
-        
     }
     
    
@@ -1935,13 +1977,12 @@ int InertialOptimizer::add_inertial_gravity_factors(
     int factors_added = 0;
     
     // Add InertialGravityFactor factors between consecutive optimization frames
-    // Note: pose_params_vec and velocity_bias_params_vec only contain optimization frames (excluding first keyframe)
+    // All consecutive keyframe intervals, including frame 0 -> frame 1.
     size_t num_opt_frames = pose_params_vec.size();
     
     for (size_t opt_idx = 0; opt_idx < num_opt_frames - 1; ++opt_idx) {
-        // Map optimization indices to actual frame indices (skip first frame)
-        size_t frame_i_idx = opt_idx + 1;      // frames[1], frames[2], ...
-        size_t frame_j_idx = frame_i_idx + 1;  // frames[2], frames[3], ...
+        size_t frame_i_idx = opt_idx;
+        size_t frame_j_idx = frame_i_idx + 1;
         
         Frame* frame_i = frames[frame_i_idx];
         Frame* frame_j = frames[frame_j_idx];
@@ -1963,25 +2004,24 @@ int InertialOptimizer::add_inertial_gravity_factors(
                          frame_i->get_frame_id(), frame_j->get_frame_id());
             continue;
         }
+		spdlog::info("[INIT_INTERVAL] index={} first_id={} last_id={} first_ns={} last_ns={} preint_dt={:.12g}",
+			opt_idx, frame_i->get_frame_id(), frame_j->get_frame_id(), frame_i->get_timestamp(),
+			frame_j->get_timestamp(), preintegration->dt_total);
         
         
         // Create InertialGravityFactor
         double gravity_magnitude = 9.81; // Standard gravity
         auto* inertial_gravity_factor = new factor::InertialGravityFactor(preintegration, gravity_magnitude);
         
-        // Create Huber loss for IMU factor
-        // IMU measurements can have outliers, especially during rapid motion
-        // Chi-square(15 DOF, 99%) = 16.63 for 15 degrees of freedom at 99% confidence
-        double imu_huber_delta = sqrt(16.63);  // 15 DOF, 99% 
-        auto* imu_loss_function = new ceres::HuberLoss(imu_huber_delta);
+        ceres::LossFunction* imu_loss_function = nullptr;
         
         // Add residual block using separate parameter arrays (7 parameter version) with Huber loss
         // NOTE: InertialGravityFactor expects [pose1, velocity1, GYRO_bias, ACCEL_bias, pose2, velocity2, gravity_dir]
         problem.AddResidualBlock(inertial_gravity_factor, imu_loss_function,
                                 const_cast<double*>(pose_params_vec[opt_idx].data()),           // pose1 (6D)
                                 const_cast<double*>(velocity_params_vec[opt_idx].data()),       // velocity1 (3D)
-                                const_cast<double*>(gyro_bias_params_vec[opt_idx].data()),      // GYRO_bias1 (3D) - parameters[2]
-                                const_cast<double*>(accel_bias_params_vec[opt_idx].data()),     // ACCEL_bias1 (3D) - parameters[3]
+                                const_cast<double*>(gyro_bias_params_vec[0].data()),            // shared GYRO bias (3D)
+                                const_cast<double*>(accel_bias_params_vec[0].data()),           // shared ACCEL bias (3D)
                                 const_cast<double*>(pose_params_vec[opt_idx+1].data()),         // pose2 (6D)
                                 const_cast<double*>(velocity_params_vec[opt_idx+1].data()),     // velocity2 (3D)
                                 const_cast<double*>(gravity_dir_params.data()));                // gravity_dir (2D)
@@ -2001,69 +2041,21 @@ void InertialOptimizer::add_imu_init_priors(
     const std::vector<std::vector<double>>& accel_bias_params_vec,
     const std::vector<std::vector<double>>& gyro_bias_params_vec) {
     
-    // Add velocity+bias priors for each optimization frame (excluding first keyframe)
-    for (size_t opt_idx = 0; opt_idx < velocity_params_vec.size(); ++opt_idx) {
-        size_t frame_idx = opt_idx + 1; // Convert optimization index to actual frame index
-        auto* frame = frames[frame_idx];
-        
-        // Create velocity+bias prior [v(3), ba(3), bg(3)]
-        Eigen::VectorXd velocity_bias_prior(9);
-        
-        // Use ACTUAL preintegration velocity as prior (not zero!) - includes gravity effects
-        Eigen::Vector3f frame_velocity = frame->get_velocity();
+    // A delta-v seed is not an absolute-velocity observation. The IMU position
+    // and velocity residuals already constrain velocity for the fixed visual poses.
+    // Keep the existing bias priors, but do not add this duplicate, invalid prior.
 
-        velocity_bias_prior[0] = static_cast<double>(frame_velocity.x());
-        velocity_bias_prior[1] = static_cast<double>(frame_velocity.y());
-        velocity_bias_prior[2] = static_cast<double>(frame_velocity.z());
-        
-        // Zero priors for biases
-        velocity_bias_prior[3] = 0.0; // ba_x
-        velocity_bias_prior[4] = 0.0; // ba_y
-        velocity_bias_prior[5] = 0.0; // ba_z
-        velocity_bias_prior[6] = 0.0; // bg_x
-        velocity_bias_prior[7] = 0.0; // bg_y
-        velocity_bias_prior[8] = 0.0; // bg_z
-        
-        // Information matrix (9x9) - different weights for velocity and biases
-        Eigen::MatrixXd information = Eigen::MatrixXd::Zero(9, 9);
-        double velocity_weight = 0.01;  // Small velocity prior weight
-        double bias_weight = 1.0;      // Stronger bias prior weight 
-        
-        // Set diagonal elements
-        information(0, 0) = velocity_weight; // vx
-        information(1, 1) = velocity_weight; // vy
-        information(2, 2) = velocity_weight; // vz
-        information(3, 3) = bias_weight;     // ba_x
-        information(4, 4) = bias_weight;     // ba_y
-        information(5, 5) = bias_weight;     // ba_z
-        information(6, 6) = bias_weight;     // bg_x
-        information(7, 7) = bias_weight;     // bg_y
-        information(8, 8) = bias_weight;     // bg_z
-        
-        // Create separate priors for velocity and biases
-        Eigen::Vector3d velocity_prior(velocity_bias_prior[0], velocity_bias_prior[1], velocity_bias_prior[2]);
-        Eigen::Vector3d accel_bias_prior(velocity_bias_prior[3], velocity_bias_prior[4], velocity_bias_prior[5]); 
-        Eigen::Vector3d gyro_bias_prior(velocity_bias_prior[6], velocity_bias_prior[7], velocity_bias_prior[8]);
-        
-        // Information matrices (3x3 each)
-        Eigen::Matrix3d velocity_info = Eigen::Matrix3d::Identity() * velocity_weight;
-        Eigen::Matrix3d accel_bias_info = Eigen::Matrix3d::Identity() * bias_weight;
-        Eigen::Matrix3d gyro_bias_info = Eigen::Matrix3d::Identity() * bias_weight;
-        
-        // Create cost functions
-        auto* velocity_prior_cost = new factor::VectorPriorFactor<3>(velocity_prior, velocity_info);
-        auto* accel_bias_prior_cost = new factor::VectorPriorFactor<3>(accel_bias_prior, accel_bias_info);
-        auto* gyro_bias_prior_cost = new factor::VectorPriorFactor<3>(gyro_bias_prior, gyro_bias_info);
-        
-        // Add residual blocks for separate parameters
-        problem.AddResidualBlock(velocity_prior_cost, nullptr, const_cast<double*>(velocity_params_vec[opt_idx].data()));
-        problem.AddResidualBlock(accel_bias_prior_cost, nullptr, const_cast<double*>(accel_bias_params_vec[opt_idx].data()));
-        problem.AddResidualBlock(gyro_bias_prior_cost, nullptr, const_cast<double*>(gyro_bias_params_vec[opt_idx].data()));
-        
-    }
+    auto* accel_bias_prior_cost = new factor::VectorPriorFactor<3>(
+        Eigen::Vector3d::Zero(), Eigen::Matrix3d::Identity());
+    auto* gyro_bias_prior_cost = new factor::VectorPriorFactor<3>(
+        Eigen::Vector3d::Zero(), Eigen::Matrix3d::Identity());
+    problem.AddResidualBlock(accel_bias_prior_cost, nullptr,
+                             const_cast<double*>(accel_bias_params_vec[0].data()));
+    problem.AddResidualBlock(gyro_bias_prior_cost, nullptr,
+                             const_cast<double*>(gyro_bias_params_vec[0].data()));
     
     if (Config::getInstance().m_enable_debug_output) {
-        spdlog::info("📌 [IMU_INIT] Added velocity+bias priors for {} frames", velocity_params_vec.size());
+        spdlog::info("📌 [IMU_INIT] Added shared bias priors; no delta-v velocity prior");
     }
 }
 
@@ -2378,8 +2370,7 @@ int SlidingWindowOptimizer::add_inertial_factors_to_sliding_window(
         // Create InertialGravityFactor (reusing existing implementation)
         auto* inertial_gravity_factor = new factor::InertialGravityFactor(preintegration, m_gravity_magnitude);
   
-        double imu_huber_delta = sqrt(16.63);  // 15 DOF, 99%
-        auto* imu_loss_function = new ceres::HuberLoss(imu_huber_delta);
+        ceres::LossFunction* imu_loss_function = nullptr;
         
         // Add residual block using InertialGravityFactor with shared bias parameters and Huber loss
         // NOTE: InertialGravityFactor expects [pose1, velocity1, GYRO_bias, ACCEL_bias, pose2, velocity2, gravity_dir]
@@ -2480,7 +2471,8 @@ void SlidingWindowOptimizer::setup_imu_parameter_blocks(
     // Compute bias prior weights dynamically from IMU handler covariance
     double accel_bias_weight, gyro_bias_weight;
     
-    if (m_imu_handler && !keyframes.empty()) {
+    const bool use_adaptive_bias_weights = false;
+    if (use_adaptive_bias_weights && m_imu_handler && !keyframes.empty()) {
         // Try to extract bias uncertainty from latest preintegration covariance
         auto latest_frame = keyframes.back();
         auto preintegration = latest_frame->get_imu_preintegration_from_last_keyframe();

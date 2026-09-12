@@ -22,6 +22,7 @@ int main(int argc, char* argv[]) {
     // Set random seed for reproducibility
     srand(42);
     cv::setRNGSeed(42);
+    cv::setNumThreads(1);
     
     // Initialize spdlog for immediate colored output
     spdlog::set_level(spdlog::level::debug);

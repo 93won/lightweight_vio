@@ -253,6 +253,7 @@ struct BAObservationInfo {
     factor::BAFactor* cost_function;
     int keyframe_index;  // Index in sliding window
     int mappoint_index;  // Index in map points vector
+    bool is_right_camera = false;
 
     Eigen::Matrix2d information_matrix; // Information matrix for this observation
 

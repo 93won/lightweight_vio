@@ -108,7 +108,6 @@ optimization:
 # MapPoint Uncertainty Parameters
 # Controls uncertainty propagation for 3D map points
 uncertainty:
-  enable: 1                  # Enable uncertainty propagation for MapPoints
+  enable: 0                  # SUL disabled by default; set to 1 to opt in
   max_eigenvalue: 1e-1       # Maximum covariance matrix eigenvalue
   min_eigenvalue: 1e-5       # Minimum covariance matrix eigenvalue
-

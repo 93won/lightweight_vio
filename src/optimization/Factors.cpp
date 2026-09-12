@@ -28,8 +28,8 @@ PnPFactor::PnPFactor(const Eigen::Vector2d& observation,
 bool PnPFactor::Evaluate(double const* const* parameters, double* residuals, double** jacobians) const {
     // If marked as outlier, set residuals to zero and jacobians to zero
     if (m_is_outlier) {
-        residuals[0] = 640.0;
-        residuals[1] = 480.0;
+        residuals[0] = 0.0;
+        residuals[1] = 0.0;
         
         if (jacobians && jacobians[0]) {
             Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jac(jacobians[0]);
@@ -63,11 +63,13 @@ bool PnPFactor::Evaluate(double const* const* parameters, double* residuals, dou
     
     // Check for valid depth
     if (z <= 1e-6) {
-         if (jacobians && jacobians[0]) {
+        residuals[0] = 0.0;
+        residuals[1] = 0.0;
+        if (jacobians && jacobians[0]) {
             Eigen::Map<Eigen::Matrix<double, 2, 6, Eigen::RowMajor>> jac(jacobians[0]);
             jac.setZero();
         }
-        return false;
+        return true;
     }
     
     double z_inv = 1.0 / z;
@@ -207,8 +209,8 @@ bool BAFactor::Evaluate(double const* const* parameters,
     
     if (m_is_outlier) {
         // If marked as outlier, set zero residual and jacobians
-        residuals[0] = 640.0;
-        residuals[1] = 480.0;
+        residuals[0] = 0.0;
+        residuals[1] = 0.0;
         
         if (jacobians) {
             if (jacobians[0]) {
@@ -255,9 +257,8 @@ bool BAFactor::Evaluate(double const* const* parameters,
         // Check for valid depth
         if (invz < 1e-3 || invz > 1e2)
         {
-            // Behind camera or too far - return large residual
-            residuals[0] = 640.0;
-            residuals[1] = 360.0;
+            residuals[0] = 0.0;
+            residuals[1] = 0.0;
 
             if (jacobians)
             {
@@ -645,12 +646,15 @@ bool InertialGravityFactor::Evaluate(double const* const* parameters,
             Eigen::Map<Eigen::Matrix<double, 9, 2, Eigen::RowMajor>> J_gravity(jacobians[6]);
             J_gravity.setZero();
             
-            // Compute gravity direction Jacobian
-            Eigen::Matrix<double, 3, 2> dGdTheta;
-            dGdTheta.setZero();
-            dGdTheta(0, 1) = -m_gravity_magnitude;
-            dGdTheta(1, 0) = m_gravity_magnitude;
-            Eigen::Matrix<double, 3, 2> dg_dtheta = R_wg * dGdTheta;
+            // Exp(w + dw) = Exp(w) Exp(Jr(w) dw), w = [theta_x, theta_y, 0].
+            Eigen::Vector3d gravity_rotation(gravity_dir[0], gravity_dir[1], 0.0);
+            Eigen::Matrix<double, 3, 2> gravity_parameter_basis;
+            gravity_parameter_basis << 1.0, 0.0,
+                                       0.0, 1.0,
+                                       0.0, 0.0;
+            Eigen::Matrix<double, 3, 2> dg_dtheta =
+                -R_wg * skew_symmetric(g_I) *
+                right_jacobian_SO3(gravity_rotation) * gravity_parameter_basis;
             
             J_gravity.block<3, 2>(3, 0) = -R_bwi * dg_dtheta * dt;
             J_gravity.block<3, 2>(6, 0) = -0.5 * R_bwi * dg_dtheta * dt * dt;

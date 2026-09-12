@@ -59,14 +59,9 @@ Estimator::Estimator()
     // Initialize inertial optimizer  
     m_inertial_optimizer = std::make_unique<InertialOptimizer>();
     
-    // // // Start sliding window optimization thread
-    m_sliding_window_thread_running = true;
-    m_sliding_window_thread = std::make_unique<std::thread>(&Estimator::sliding_window_thread_function, this);
-    
     if (Config::getInstance().m_enable_debug_output) {
         spdlog::info("[ESTIMATOR] Camera models created: {}", 
                      (Config::getInstance().get_camera_model() == CameraModel::PINHOLE) ? "PINHOLE" : "FISHEYE");
-        spdlog::info("[ESTIMATOR] Sliding window optimization thread started");
     }
 }
 
@@ -1037,6 +1032,15 @@ Estimator::EstimationResult Estimator::process_frame(const cv::Mat& left_image, 
     if (should_initialize_imu()) {
         initialize_imu();
     }
+	const auto diagnostic_velocity = m_current_frame->get_velocity();
+	const auto diagnostic_ba = m_current_frame->get_accel_bias();
+	const auto diagnostic_bg = m_current_frame->get_gyro_bias();
+	spdlog::info("[VIO_STATE] frame={} timestamp_ns={} initialized={} tracking_ok={} features={} inliers={} outliers={} "
+				 "v=[{:.9g},{:.9g},{:.9g}] ba=[{:.9g},{:.9g},{:.9g}] bg=[{:.9g},{:.9g},{:.9g}]",
+		m_current_frame->get_frame_id(), m_current_frame->get_timestamp(), m_success_imu_init, result.success,
+		result.num_features, result.num_inliers, result.num_outliers,
+		diagnostic_velocity.x(), diagnostic_velocity.y(), diagnostic_velocity.z(),
+		diagnostic_ba.x(), diagnostic_ba.y(), diagnostic_ba.z(), diagnostic_bg.x(), diagnostic_bg.y(), diagnostic_bg.z());
     
     return result;
 }
@@ -1382,8 +1386,15 @@ bool lightweight_vio::Estimator::initialize_imu() {
     
     // Run optimization (get results only, no frame modification)
     auto imu_init_result = try_initialize_imu();
+	spdlog::info("[VIO_INIT] frame={} timestamp_ns={} first_timestamp_ns={} keyframes={} accepted={} "
+				 "cost_before={:.12g} cost_after={:.12g} g=[{:.9g},{:.9g},{:.9g}] ba=[{:.9g},{:.9g},{:.9g}]",
+		m_current_frame->get_frame_id(), m_current_frame->get_timestamp(), m_keyframes.front()->get_timestamp(),
+		m_keyframes.size(), imu_init_result.success, imu_init_result.initial_cost, imu_init_result.final_cost,
+		imu_init_result.g_world_before_transform.x(), imu_init_result.g_world_before_transform.y(),
+		imu_init_result.g_world_before_transform.z(), imu_init_result.optimized_accel_bias.x(),
+		imu_init_result.optimized_accel_bias.y(), imu_init_result.optimized_accel_bias.z());
     
-    if (!imu_init_result.success) {
+    if (!imu_init_result.success || imu_init_result.optimized_velocities.size() != m_keyframes.size()) {
         spdlog::warn("================================================================================");
         spdlog::warn("[INIT_IMU] IMU Initialization FAILED");
         spdlog::warn("[INIT_IMU] Will retry with more keyframes");
@@ -1413,6 +1424,7 @@ bool lightweight_vio::Estimator::initialize_imu() {
     
     // 6. Apply Tgw transformation to all frames and map points
     apply_gravity_alignment_transform(imu_init_result.Tgw_init);
+    m_imu_handler->set_gravity_aligned_coordinate_system();
 
     // imu_init_result.Tgw_init = Eigen::Matrix4f::Identity();  // Reset to identity after application
     
@@ -1426,13 +1438,14 @@ bool lightweight_vio::Estimator::initialize_imu() {
     );
     m_sliding_window_optimizer->enable_imu_optimization(
         shared_imu_handler, 
-        imu_init_result.g_world_before_transform.cast<double>()
+        m_imu_handler->get_gravity().cast<double>()
     );
     
     // Update initialization flags
     m_gravity_initialized = true;
     m_enable_imu_optimization = true;
     m_success_imu_init = true;
+    notify_sliding_window_thread();
     
     // Log success with detailed information
     spdlog::info("================================================================================");
@@ -1873,7 +1886,7 @@ void Estimator::predict_state() {
 
         
         // Get from-last-keyframe IMU preintegration (more stable for longer intervals)
-        auto keyframe_to_frame_preint = m_current_frame->get_imu_preintegration_from_last_frame();
+        auto keyframe_to_frame_preint = m_current_frame->get_imu_preintegration_from_last_keyframe();
         
         if (keyframe_to_frame_preint && keyframe_to_frame_preint->is_valid() && m_last_keyframe) {
             // Use IMU preintegration from last keyframe (more robust)
@@ -2015,11 +2028,22 @@ double lightweight_vio::Estimator::calculate_grid_coverage_with_map_points(std::
 }
 
 void lightweight_vio::Estimator::notify_sliding_window_thread() {
+    const auto& config = Config::getInstance();
+    if (config.m_system_mode == "VIO" && !m_success_imu_init) {
+        return;
+    }
+
+    std::vector<std::shared_ptr<Frame>> keyframes_copy;
     {
         std::lock_guard<std::mutex> lock(m_keyframes_mutex);
-        m_keyframes_updated = true;
+        keyframes_copy = m_keyframes;
     }
-    m_keyframes_cv.notify_one();
+
+    // ponytail: synchronous optimization avoids shared-state races; use immutable
+    // snapshots before restoring a worker if tracking latency requires one.
+    if (keyframes_copy.size() >= 2) {
+        m_sliding_window_optimizer->optimize(keyframes_copy);
+    }
 }
 
 void lightweight_vio::Estimator::sliding_window_thread_function() {
@@ -2081,31 +2105,6 @@ void lightweight_vio::Estimator::transfer_imu_data_to_keyframe(std::shared_ptr<F
     // Transfer accumulated IMU data since last keyframe to the new keyframe
     if (!m_imu_vec_from_last_keyframe.empty()) {
         keyframe->set_imu_data_since_last_keyframe(m_imu_vec_from_last_keyframe);
-        
-        
-        // Log time range for verification
-        double first_time = m_imu_vec_from_last_keyframe.front().timestamp;
-        double last_time = m_imu_vec_from_last_keyframe.back().timestamp;
-        double frame_time = static_cast<double>(keyframe->get_timestamp()) / 1e9;
-        
-        // spdlog::debug("[IMU] IMU data range: {:.6f}s to {:.6f}s, Keyframe time: {:.6f}s", first_time, last_time, frame_time);
-        
-        // Create preintegration for this keyframe interval
-        if (m_imu_handler) {
-            // Always compute preintegration, regardless of IMU initialization status
-            // This allows us to use preintegration for velocity estimation during IMU initialization
-            
-            auto preint = m_imu_handler->preintegrate(m_imu_vec_from_last_keyframe, first_time, last_time);
-            if (preint && preint->is_valid()) {
-                // Store preintegration result from last keyframe in keyframe
-                keyframe->set_imu_preintegration_from_last_keyframe(preint);
-                // spdlog::debug("[IMU] Preintegration from last keyframe completed and stored for keyframe {}: dt={:.3f}s", keyframe->get_frame_id(), preint->dt_total);
-            } else {
-                spdlog::warn("[IMU] Failed to create preintegration from last keyframe for keyframe {}", keyframe->get_frame_id());
-            }
-        } else {
-            spdlog::warn("[IMU] IMU handler not available for preintegration");
-        }
         
         // Clear the buffer for next keyframe interval
         m_imu_vec_from_last_keyframe.clear();
@@ -2297,16 +2296,13 @@ InertialOptimizationResult lightweight_vio::Estimator::try_initialize_imu() {
 // ========================================================================
 
 void lightweight_vio::Estimator::apply_imu_optimization_results(const InertialOptimizationResult& result) {
-    // Update Frame[0] velocity from Frame[1]
-    if (m_keyframes.size() >= 2 && result.optimized_velocities.size() > 0) {
-        m_keyframes[0]->set_velocity(result.optimized_velocities[0]);
-    }
-    
-    // Update Frame[1..N] velocities
+    // All frames have their own optimized velocity; never copy frame 1 onto frame 0.
     for (size_t i = 0; i < result.optimized_velocities.size(); ++i) {
-        size_t frame_idx = i + 1;
+        size_t frame_idx = i;
         if (frame_idx < m_keyframes.size()) {
             m_keyframes[frame_idx]->set_velocity(result.optimized_velocities[i]);
+			spdlog::info("[INIT_APPLY] index={} frame_id={} timestamp_ns={}",
+				i, m_keyframes[frame_idx]->get_frame_id(), m_keyframes[frame_idx]->get_timestamp());
         }
     }
     
@@ -2464,11 +2460,6 @@ void lightweight_vio::Estimator::apply_gravity_alignment_transform(const Eigen::
     spdlog::info("🔄 [GRAVITY_ALIGN] Coordinate transformation complete!");
     spdlog::info("🔄 ===============================================================================\n");
     
-    // 🎯 Notify sliding window thread that IMU initialization is complete
-    // This will wake up the thread to start optimization
-    notify_sliding_window_thread();
-    spdlog::info("🚀 [SW_THREAD] Sliding window thread notified - optimization will resume");
-  
 }
 
 

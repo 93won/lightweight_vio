@@ -633,15 +633,11 @@ void TUMPlayer::save_trajectories(const Estimator& estimator,
             Eigen::Matrix3f rotation = T_wb.block<3, 3>(0, 0);
             Eigen::Quaternionf quat(rotation);
             
-            if (i < TUMUtils::get_matched_count()) {
-                long long matched_timestamp = TUMUtils::get_matched_timestamp(i);
-                double timestamp_sec = static_cast<double>(matched_timestamp) / 1e9;
-                
-                est_out << std::fixed << std::setprecision(6) << timestamp_sec << " "
-                        << std::setprecision(8)
-                        << translation.x() << " " << translation.y() << " " << translation.z() << " "
-                        << quat.x() << " " << quat.y() << " " << quat.z() << " " << quat.w() << std::endl;
-            }
+            double timestamp_sec = static_cast<double>(frame->get_timestamp()) / 1e9;
+            est_out << std::fixed << std::setprecision(6) << timestamp_sec << " "
+                    << std::setprecision(8)
+                    << translation.x() << " " << translation.y() << " " << translation.z() << " "
+                    << quat.x() << " " << quat.y() << " " << quat.z() << " " << quat.w() << std::endl;
         }
         est_out.close();
         spdlog::info("[TUMPlayer] Saved estimated trajectory to: {}", est_file);
